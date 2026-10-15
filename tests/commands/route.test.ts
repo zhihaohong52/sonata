@@ -14,6 +14,9 @@ import {
   routeSessionsFile,
   readSessions,
   writeSessions,
+  readSessionEntries,
+  writeSessionEntries,
+  sessionsSettling,
   sessionHookCommand,
   ensureServeCommand,
   routeEnv,
@@ -27,6 +30,8 @@ import {
   diagnoseRouteAuto,
   mergeCustomHeaders,
   stripSonataHeader,
+  ROUTE_SETTLE_MS,
+  SETTLE_SLACK_MS,
 } from '../../src/commands/route.js';
 import { ensureRouterToken } from '../../src/native/router-token.js';
 import type { Settings, HookEntry } from '../../src/settings.js';
@@ -494,6 +499,45 @@ describe('the session registry', () => {
     writeSessions(file, ['a']);
     writeFileSync(file, '{ not json');
     expect(readSessions(file)).toEqual([]);
+  });
+
+  it('round-trips entry timestamps, and reads legacy string entries as long-settled', () => {
+    const file = routeSessionsFile(cwd);
+    writeSessionEntries(file, [{ id: 'a', startedAt: 1_000 }, { id: 'b', startedAt: 2_000 }]);
+    expect(readSessionEntries(file)).toEqual([
+      { id: 'a', startedAt: 1_000 },
+      { id: 'b', startedAt: 2_000 },
+    ]);
+    expect(readSessions(file)).toEqual(['a', 'b']);
+
+    // The pre-timestamp format: no time recorded, so never "settling".
+    writeFileSync(file, JSON.stringify(['legacy']));
+    expect(readSessionEntries(file)).toEqual([{ id: 'legacy', startedAt: 0 }]);
+    expect(sessionsSettling({ cwd, home }, 'project', Date.now())).toBe(false);
+  });
+
+  it('sessionsSettling is true only inside the window, plus slack', () => {
+    const file = routeSessionsFile(cwd, 'project', home);
+    writeSessionEntries(file, [{ id: 's1', startedAt: 10_000 }]);
+    const o = { cwd, home };
+    // Inside the window: still settling.
+    expect(sessionsSettling(o, 'project', 10_000 + ROUTE_SETTLE_MS)).toBe(true);
+    // Inside the slack: still settling.
+    expect(sessionsSettling(o, 'project', 10_000 + ROUTE_SETTLE_MS + SETTLE_SLACK_MS)).toBe(true);
+    // Past window plus slack: settled, even though still registered.
+    expect(sessionsSettling(o, 'project', 10_000 + ROUTE_SETTLE_MS + SETTLE_SLACK_MS + 1)).toBe(false);
+  });
+
+  it('a stale s1 settle cannot end s2\'s window', async () => {
+    // Newest-wins by position, not by timestamp: s1 and s2 registering in the
+    // same millisecond still order, and s1's settle returns early.
+    writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
+    const o = { cwd, home, packageRoot: PACKAGE_ROOT, serveArgv: ['node', 'cli.js', 'serve'] };
+    const deps = { probe: async () => true, startDaemon: async () => ({}) };
+    await cmdRouteSession('start', 's1', o, { ...deps, settle: () => {} });
+    await cmdRouteSession('start', 's2', o, { ...deps, settle: () => {} });
+    await cmdRouteSettle('s1', o, { delay: async () => {} });
+    expect((await cmdRoute('status', o))?.on).toBe(true);
   });
 });
 
@@ -1299,6 +1343,71 @@ describe('cmdRouteSubagent — router identity', () => {
 
     const o = { cwd, home, packageRoot: PACKAGE_ROOT };
     await expect(cmdRouteSubagent('stop', 'ghost', o)).resolves.toEqual({ subagents: 0, routing: 'off' });
+  });
+
+  // The last SubagentStop must not strip the routing env out from under a
+  // session still inside its settle window: that session wrote the env but
+  // may not have read it yet, and would then run silently unrouted. The
+  // subagent stop holds only the subagent lock, so it cannot run the settle's
+  // newest-registration check — it leaves the env for the settle to remove.
+  it('a last subagent stop leaves the env for a session still inside its settle window', async () => {
+    writeMachineConfig(NATIVE_TOML);
+    const o = { cwd, home, packageRoot: PACKAGE_ROOT, scope: 'global' as const };
+    const sessionOpts = { ...o, serveArgv: ['node', 'cli.js', 'serve'] };
+    const sessionDeps = { probe: async () => true, startDaemon: async () => ({}) };
+    await cmdRouteSession('start', 's1', sessionOpts, sessionDeps);
+    await cmdRouteSubagent('start', 'a1', o, OFFLINE);
+
+    const stopped = await cmdRouteSubagent('stop', 'a1', o, OFFLINE);
+    // Not routed off: s1's settle owns the env until its window closes.
+    expect(stopped).toEqual({ subagents: 0, routing: 'on' });
+    expect((await cmdRoute('status', o))?.scopes.global.on).toBe(true);
+
+    // The settle still clears it once the window closes.
+    await cmdRouteSettle('s1', sessionOpts, { delay: async () => {} });
+    expect((await cmdRoute('status', o))?.scopes.global.on).toBe(false);
+    expect(readSessions(routeSessionsFile(cwd, 'global', home))).toEqual(['s1']);
+  });
+
+  it('a last subagent stop clears the env for a session whose window has closed, even while it is still live', async () => {
+    // The regression test for the whole-lifetime bug: s1 starts and settles,
+    // so the env is gone — but s1 stays registered until its SessionEnd. A
+    // subagent running minutes later must still route off when it stops, or
+    // the next session launches routed and loses Remote Control. The stop's
+    // clock is moved ten minutes on; the registration write used the real
+    // one, so the window is long closed.
+    writeMachineConfig(NATIVE_TOML);
+    const o = { cwd, home, packageRoot: PACKAGE_ROOT, scope: 'global' as const };
+    const sessionOpts = { ...o, serveArgv: ['node', 'cli.js', 'serve'] };
+    const sessionDeps = { probe: async () => true, startDaemon: async () => ({}) };
+    const registeredAt = Date.now();
+    await cmdRouteSession('start', 's1', sessionOpts, sessionDeps);
+    await cmdRouteSettle('s1', sessionOpts, { delay: async () => {} });
+    expect((await cmdRoute('status', o))?.scopes.global.on).toBe(false);
+
+    // s1 is still live (registered) but long settled: the stop clears.
+    const later = () => registeredAt + 10 * 60_1000;
+    await cmdRouteSubagent('start', 'a1', o, { ...OFFLINE, now: later });
+    const stopped = await cmdRouteSubagent('stop', 'a1', o, { ...OFFLINE, now: later });
+    expect(stopped).toEqual({ subagents: 0, routing: 'off' });
+    expect((await cmdRoute('status', o))?.scopes.global.on).toBe(false);
+    expect(readSessions(routeSessionsFile(cwd, 'global', home))).toEqual(['s1']);
+  });
+
+  it('a last subagent stop clears the env once every session has settled', async () => {
+    writeMachineConfig(NATIVE_TOML);
+    const o = { cwd, home, packageRoot: PACKAGE_ROOT, scope: 'global' as const };
+    const sessionOpts = { ...o, serveArgv: ['node', 'cli.js', 'serve'] };
+    const sessionDeps = { probe: async () => true, startDaemon: async () => ({}) };
+    await cmdRouteSession('start', 's1', sessionOpts, sessionDeps);
+    await cmdRouteSettle('s1', sessionOpts, { delay: async () => {} });
+    await cmdRouteSubagent('start', 'a1', o, OFFLINE);
+
+    // s1 settled (env cleared) and then ended: no live session remains.
+    await cmdRouteSession('end', 's1', sessionOpts, sessionDeps);
+    const stopped = await cmdRouteSubagent('stop', 'a1', o, OFFLINE);
+    expect(stopped).toEqual({ subagents: 0, routing: 'off' });
+    expect((await cmdRoute('status', o))?.scopes.global.on).toBe(false);
   });
 });
 

@@ -1225,23 +1225,40 @@ async function pruneRetention(home: string): Promise<void> {
 }
 
 /**
- * SIGTERM, a bounded wait for the exit, then SIGKILL (once). Shared by the
- * startup-failure path and `stop()`, so the two cannot drift apart again.
+ * SIGTERM, a bounded wait for the exit, SIGKILL (once), then a second bounded
+ * wait. Shared by the startup-failure path, the lazy-failure path, and
+ * `stop()`, so the three cannot drift apart again.
+ *
+ * The second wait is what keeps a retry from racing the dying process for the
+ * LiteLLM port: without it the next spawn binds while the SIGKILLed child is
+ * still exiting, and its health probe can see the stale process. When the
+ * process outlives even SIGKILL, the caller proceeds anyway and the log names
+ * it — a stray holding the port fails the next bind loudly, which is
+ * recoverable; a hung termination wait is not.
  */
 async function terminateLitellm(
   dying: SpawnedLitellm,
   timeoutMs: number,
   sleepFn: (ms: number) => Promise<void>,
-): Promise<void> {
-  const exited = new Promise<void>((resolve) => {
-    if (dying.onExit) dying.onExit(() => resolve());
-    else resolve();
+): Promise<boolean> {
+  let exited = false;
+  const onExit = new Promise<void>((resolve) => {
+    if (dying.onExit) dying.onExit(() => { exited = true; resolve(); });
+    else { exited = true; resolve(); }
   });
   dying.kill();
-  if (await raceTimeout(exited, timeoutMs, sleepFn)) {
+  if (await raceTimeout(onExit, timeoutMs, sleepFn)) {
     console.error('sonata serve: litellm did not exit after SIGTERM — sending SIGKILL');
     (dying.forceKill ?? dying.kill).call(dying);
+    if (await raceTimeout(onExit, timeoutMs, sleepFn)) {
+      console.error(
+        'sonata serve: litellm still has not exited after SIGKILL — proceeding anyway; ' +
+        'a stray process may be holding the litellm port',
+      );
+      return false;
+    }
   }
+  return true;
 }
 
 /** Resolves `true` if `promise` had not settled after `timeoutMs`, `false` if it settled first. Never rejects. */
@@ -2525,6 +2542,11 @@ export async function cmdServe(
           // recorded here; the lazy start is the first spawn after it, so it
           // clears it exactly as an eager start does.
           await clearOrphan('lazy');
+          // A stop (or a concurrent `clearOrphan` failure path) may have begun
+          // while that await was in flight. Spawning now would strand a child
+          // nobody owns — the same window the eager path closes by clearing
+          // orphans only after it owns the router port.
+          if (stopping) return;
           const spawned = spawnLitellmChild();
           child = spawned;
           // The readiness await owns this child. Its exit can race the failed
@@ -2532,14 +2554,24 @@ export async function cmdServe(
           abandonedChildren.add(spawned);
           try {
             await (opts.waitForLitellm ?? defaultWaitForLitellm)(ports.litellm, masterKey);
+            if (stopping) throw new Error('serve is stopping');
             if (exitedChildren.has(spawned)) throw new Error('litellm exited before becoming ready');
           } catch (error) {
             // A spawned process is not a usable child until its health probe
             // passes. It remains abandoned while being terminated, so only
             // the next request owns the retry.
+            //
+            // Termination is SIGTERM, a bounded wait, SIGKILL, and a second
+            // bounded wait — the same escalation the eager-failure path and
+            // `stop()` use. A child stuck in a device-code login ignores
+            // SIGTERM for the whole of its poll; SIGTERM alone orphaned it
+            // here on every failed lazy start, while `child = undefined`
+            // above had already forgotten the only pid that could stop it.
+            // The second wait is what keeps the retry from racing the dying
+            // process for the LiteLLM port.
             if (child === spawned) {
-              child = undefined;
-              if (!exitedChildren.has(spawned)) spawned.kill();
+              await terminateLitellm(spawned, opts.litellmExitTimeoutMs ?? LITELLM_EXIT_TIMEOUT_MS, sleep);
+              if (child === spawned) child = undefined;
             }
             exitedChildren.delete(spawned);
             throw error;
@@ -2924,15 +2956,42 @@ export interface DaemonDeps {
   spawn?: typeof spawn;
   /** Resolves true once the router answers on `port` with the given instance id. */
   probe?: (port: number, instanceId: string) => Promise<boolean>;
+  /**
+   * Resolves true once ANY healthy multi-tenant sonata router answers on
+   * `port` — not just the child this call spawned. The fallback two sessions
+   * starting together need: both spawn, one wins the bind, and the loser's
+   * only way out of its full-deadline wait is to join the winner. A
+   * non-sonata listener, or a pre-multi-tenant router, still never matches.
+   */
+  probeAny?: (port: number) => Promise<boolean>;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
   timeoutMs?: number;
+  /**
+   * How long to insist on this call's own instance id before accepting any
+   * healthy router. A child that has already exited skips the wait: it cannot
+   * be the one serving, so anything healthy on the port is the winner.
+   *
+   * `undefined` disables the fallback entirely: only this call's own child
+   * can satisfy the wait. `sonata restart` passes that — joining whatever
+   * happens to answer the port after its own stop failed would report
+   * "restarted" for a router it never started.
+   */
+  fallbackAfterMs?: number;
 }
 
 export interface DaemonResult {
-  pid: number;
+  pid: number | undefined;
   port: number;
-  logPath: string;
+  logPath: string | undefined;
+  /**
+   * True when the wait ended by joining a router this call did not spawn —
+   * the two-sessions-start-together loser joining the winner. The pid is then
+   * whatever the spawn returned (a dead EADDRINUSE loser, not the winner),
+   * so callers must not print it as the router's pid, and the log is the
+   * loser's, not the winner's.
+   */
+  joined: boolean;
 }
 
 /**
@@ -2955,9 +3014,13 @@ export async function startServeDaemon(
 ): Promise<DaemonResult> {
   const spawnFn = deps.spawn ?? spawn;
   const probe = deps.probe ?? (async (port: number, id: string) => (await sonataRouterReady(port, fetch, id)));
+  const probeAny = deps.probeAny ?? (async (port: number) => (
+    (await sonataRouterReady(port, fetch)) === true && (await sonataRouterMultiTenant(port, fetch)) === true
+  ));
   const now = deps.now ?? Date.now;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const timeoutMs = deps.timeoutMs ?? 60_000;
+  const fallbackAfterMs = deps.fallbackAfterMs ?? 5_000;
 
   const port = routerPorts(home).router;
 
@@ -2999,8 +3062,37 @@ export async function startServeDaemon(
   child.unref();
 
   const deadline = now() + timeoutMs;
+  // `undefined` disables the fallback: only this call's own child can satisfy
+  // the wait. `sonata restart` relies on that — its stop already failed to
+  // free the port, so joining whatever answers it would report success for a
+  // router this restart never started.
+  const fallbackAt = fallbackAfterMs === undefined ? Number.POSITIVE_INFINITY : now() + fallbackAfterMs;
+  // Whether the spawned child is known to have exited — set when the spawn
+  // result exposes an exit channel, and observed by the fallback below. A
+  // child that lost the port race (EADDRINUSE) exits promptly; once it has,
+  // only the winner can be answering, so the instance-id filter is dropped
+  // and the wait ends on the first healthy router instead of the deadline.
+  let childExited = false;
+  if (typeof (child as { on?: unknown }).on === 'function') {
+    (child as unknown as { on(event: string, cb: () => void): void }).on('exit', () => { childExited = true; });
+  } else if (typeof (child as { exitCode?: unknown }).exitCode === 'number') {
+    childExited = true;
+  }
   for (;;) {
-    if (await probe(port, instanceId)) return { pid: child.pid ?? 0, port, logPath };
+    if (await probe(port, instanceId)) return { pid: child.pid ?? 0, port, logPath, joined: false };
+    // Same identity gate as the instance-id probe, minus the id: a sonata
+    // router that is ready AND multi-tenant. `isSonataRouter` alone is not
+    // enough — a pre-multi-tenant router answers it, and joining that would
+    // route this session under a single-config daemon. A non-sonata listener
+    // answers neither, so it never matches either.
+    //
+    // The result is marked `joined`: the pid and log are the LOSER's — a dead
+    // EADDRINUSE child and its log — not the winner's. Callers print the port,
+    // never these, on the joined path. The winner's own pid stays in its
+    // state file, which is where `sonata restart` finds it.
+    if ((childExited || now() >= fallbackAt) && await probeAny(port)) {
+      return { pid: undefined, port, logPath: undefined, joined: true };
+    }
     if (now() > deadline) {
       throw new Error(
         `sonata serve: the daemon did not answer on port ${port} within ${Math.round(timeoutMs / 1000)}s. ` +
@@ -3258,5 +3350,16 @@ export async function cmdRestart(
   // pid 111 happens to be a live process. `startServeDaemon` reads the same
   // object, so a `DaemonDeps` key riding along here is inert.
   await stopServe({ ...opts, home });
-  return startServeDaemon(home, argv, opts);
+  // No fallback: the stop above either freed the port or failed to. Joining
+  // whatever answers it now would report "restarted" for a router this call
+  // never started — the same false success the instance-id probe was built
+  // to prevent (see its comment above `startServeDaemon`).
+  const restarted = await startServeDaemon(home, argv, { ...opts, fallbackAfterMs: undefined });
+  if (restarted.joined) {
+    throw new Error(
+      `sonata restart: a router is already answering on port ${restarted.port} that this restart did not start — ` +
+      `the old one was not stopped. Kill it yourself, then run \`sonata serve --daemon\`.`,
+    );
+  }
+  return restarted;
 }
