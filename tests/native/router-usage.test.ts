@@ -73,18 +73,21 @@ describe('router usage recording', () => {
     const session = { gateway: 'claude', id: 'claude-opus-4-1', transport: 'direct' as const, baseUrl: 'https://api.anthropic.com/v1', auth: 'session' as const };
     const rows: LedgerRow[] = [];
     const sessionDeps: RouterDeps = {
-      fetch: (async () => new Response(JSON.stringify({ usage: { input_tokens: 1, output_tokens: 1 } }), { status: 200 })) as typeof fetch,
+      fetch: (async () => new Response(JSON.stringify({ usage: { input_tokens: 1, output_tokens: 1 } }), { status: 200, headers: { 'content-type': 'application/json' } })) as typeof fetch,
       litellmBase: 'http://litellm.invalid', litellmKey: 'k', recordUsage: (row) => rows.push(row),
       resolveTier: () => ({ role: 'code', tier: 'simple', routes: [{ key: 'opus', native: session }] }),
     };
     await drain((await routeRequest({ ...req('sonata-code-simple'), headers: { authorization: 'Bearer sk-ant-oat01-SECRET' } }, sessionDeps)).body);
     expect(rows[0]).toMatchObject({ credential: 'subscription', gateway: 'claude', upstream: 'direct' });
     expect(JSON.stringify(rows[0])).not.toContain('SECRET');
+    // A non-streamed JSON 200 on a direct gateway records its usage, not 0 tokens.
+    expect(rows[0]).toMatchObject({ complete: true, tokens: { input: 1, output: 1 } });
 
     rows.length = 0;
     await drain((await routeRequest({ ...req('sonata-code-simple'), headers: { 'x-api-key': 'SECRET2' } }, sessionDeps)).body);
     expect(rows[0].credential).toBe('key');
     expect(JSON.stringify(rows[0])).not.toContain('SECRET2');
+    expect(rows[0]).toMatchObject({ complete: true, tokens: { input: 1, output: 1 } });
 
     rows.length = 0;
     await drain((await routeRequest(req('sonata-code-simple'), deps(rows, () => sse(DELTA)))).body);
