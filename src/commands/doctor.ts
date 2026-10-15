@@ -25,7 +25,7 @@ import {
   modeHookPresent,
   readSettings,
   settingsPath,
-  missingAllowEntries,
+  missingAllowEntriesAcross,
   staleAllowEntries,
 } from '../settings.js';
 import type { Settings } from '../settings.js';
@@ -1658,14 +1658,18 @@ export async function cmdDoctor(
   // permissive than the session that spawned it, silently.
   {
     const scopes = ['project', 'global'] as const;
-    const missing = scopes
-      .map((scope) => missingAllowEntries(readSettings(settingsPath(scope, opts.cwd, homedir()))))
-      .reduce((a, b) => (a.length <= b.length ? a : b));
+    // Union across scopes: an entry allow-listed in either scope covers the
+    // call, so a list split across the two files (dispatch in one, wait in
+    // the other) is complete. The old per-scope min-length comparison
+    // false-failed exactly that shape.
+    const missing = missingAllowEntriesAcross(
+      scopes.map((scope) => readSettings(settingsPath(scope, opts.cwd, home))),
+    );
     // Union, not min-length like missing above: a stale entry in EITHER scope
     // keeps the model-approved approval path alive, so either scope failing
     // fails the check.
     const stale = [...new Set(scopes
-      .flatMap((scope) => staleAllowEntries(readSettings(settingsPath(scope, opts.cwd, homedir())))))];
+      .flatMap((scope) => staleAllowEntries(readSettings(settingsPath(scope, opts.cwd, home)))) )];
     const detail = stale.length > 0
       ? `${stale.join(', ')} still allow-listed — approvals must reach a human, so every ` +
         '`sonata approve` call goes through the permission prompt. Run `sonata init` to remove it'

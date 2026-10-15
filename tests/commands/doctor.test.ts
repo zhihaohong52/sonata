@@ -548,6 +548,22 @@ code = ["a"]
     const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
     expect(checks.find((c) => c.name === 'tool permissions')!.ok).toBe(true);
   });
+
+  it('passes when the allow list is split across scopes', async () => {
+    // dispatch in project, wait in global: neither file alone has both, but
+    // the union is complete. The old per-scope min-length comparison
+    // false-failed exactly this shape.
+    const { cwd, home } = setup();
+    const { settingsPath, writeSettings } = await import('../../src/settings.js');
+    writeSettings(settingsPath('project', cwd, home), {
+      permissions: { allow: ['Bash(sonata dispatch:*)'] },
+    });
+    writeSettings(settingsPath('global', cwd, home), {
+      permissions: { allow: ['Bash(sonata wait:*)'] },
+    });
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    expect(checks.find((c) => c.name === 'tool permissions')!.ok).toBe(true);
+  });
 });
 
 describe('cmdDoctor — opencode agents sonata needs', () => {

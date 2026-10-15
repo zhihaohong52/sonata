@@ -81,6 +81,17 @@ export function missingAllowEntries(settings: Settings): string[] {
 }
 
 /**
+ * Which of the sonata tools are missing from the *combined* allow lists of
+ * several settings files (project + global). An entry in either scope covers
+ * the call, so a list split across scopes — dispatch in one, wait in the
+ * other — is complete, and only entries absent from both are missing.
+ */
+export function missingAllowEntriesAcross(settingsList: Settings[]): string[] {
+  const allow = new Set(settingsList.flatMap((s) => s.permissions?.allow ?? []));
+  return SONATA_TOOLS.filter((t) => !allow.has(t));
+}
+
+/**
  * Adds the sonata tools to `permissions.allow`, preserving order and every
  * unrelated entry. Idempotent: re-running `sonata init` cannot duplicate them.
  * Also removes entries sonata no longer grants (see REMOVED_SONATA_TOOLS), so

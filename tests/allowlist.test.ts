@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { allowSonataTools, missingAllowEntries, staleAllowEntries, SONATA_TOOLS, REMOVED_SONATA_TOOLS } from '../src/settings.js';
+import { allowSonataTools, missingAllowEntries, missingAllowEntriesAcross, staleAllowEntries, SONATA_TOOLS, REMOVED_SONATA_TOOLS } from '../src/settings.js';
 
 /**
  * The wrapper's tools must never be left to Claude Code's `auto` mode
@@ -75,6 +75,19 @@ describe('allow-listing the sonata tools', () => {
 
   it('reports nothing missing once both are present', () => {
     expect(missingAllowEntries({ permissions: { allow: [...SONATA_TOOLS] } })).toEqual([]);
+  });
+
+  it('treats an allow list split across scopes as complete', () => {
+    // An entry allow-listed in either scope covers the call, so project
+    // holding dispatch and global holding wait is missing nothing.
+    expect(missingAllowEntriesAcross([
+      { permissions: { allow: ['Bash(sonata dispatch:*)'] } },
+      { permissions: { allow: ['Bash(sonata wait:*)'] } },
+    ])).toEqual([]);
+    expect(missingAllowEntriesAcross([
+      { permissions: { allow: ['Bash(sonata dispatch:*)'] } },
+      { permissions: { allow: [] } },
+    ])).toEqual(['Bash(sonata wait:*)']);
   });
 
   it('does not mutate the settings it was given', () => {
