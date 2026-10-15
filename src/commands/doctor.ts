@@ -43,6 +43,7 @@ import { configUpstreamFor, proposePricingProvider } from '../pricing.js';
 import { CURRENT_SCHEMA_VERSION } from '../migrations.js';
 import { mainWorktreeDir } from '../git-worktree.js';
 import { keyReport, resolveDecisionKey, resolveKeyDetail } from '../native/credentials.js';
+import { gatewayHostBound, readTrustBindings, unboundMessage } from '../native/host-bindings.js';
 import { decisionKeyFor } from '../native/auto-route.js';
 import { ModelListCache, chooseDecisionModel } from '../native/decision-models.js';
 import { loadDecisionCatalog } from '../decision-catalog.js';
@@ -1492,6 +1493,40 @@ export async function cmdDoctor(
             ok: false,
             detail: `no key — \`sonata auth add ${report.gateway}\``,
           });
+    }
+
+    // A stored key is looked up by gateway NAME, but the `base_url` it is sent
+    // to comes from a config — including a cloned repo's project config
+    // pointing the name at an attacker's host. Serve withholds a key from any
+    // host not bound to its gateway name (well-known, user-confirmed, or the
+    // machine config's own), so the gateway fails here with the exact command
+    // that binds it, rather than only as a 502 on the first request.
+    {
+      const trust = readTrustBindings(home);
+      const machineGateways = (() => {
+        try {
+          const machine = join(home, GLOBAL_CONFIG_RELATIVE);
+          if (resolved !== null && canonicalConfigPath(resolved) === canonicalConfigPath(machine)) return config.native!.gateways;
+          if (!existsSync(machine)) return {};
+          return parseConfig(readFileSync(machine, 'utf8')).native?.gateways ?? {};
+        } catch {
+          return {};
+        }
+      })();
+      const check = (name: string, baseUrl: string | undefined, auth: string | undefined): void => {
+        if ((auth ?? 'api-key') !== 'api-key' || baseUrl === undefined) return;
+        const binding = gatewayHostBound(name, baseUrl, {
+          trusted: trust[name] ?? [],
+          machineUrl: machineGateways[name]?.baseUrl,
+        });
+        if (binding.bound) return;
+        checks.push({
+          name: `credential host: ${name}`,
+          ok: false,
+          detail: `${unboundMessage(name, [binding.host])}\n  ! serve withholds this gateway's key until that host is trusted`,
+        });
+      };
+      for (const [name, gateway] of Object.entries(config.native!.gateways)) check(name, gateway.baseUrl, gateway.auth);
     }
 
     // A credential store that exists but cannot be read. serve treats one as
