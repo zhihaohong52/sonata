@@ -13,6 +13,7 @@ import {
 } from '../../src/commands/serve.js';
 import type { RouterTenant } from '../../src/native/router.js';
 import { writeSonataKey } from '../../src/native/credentials.js';
+import { addTrustBinding } from '../../src/native/host-bindings.js';
 import { credentialDir } from '../../src/native/oauth-login.js';
 import { recordSession } from '../../src/sessions.js';
 import { managedLitellmPath, venvDir, LITELLM_VERSION } from '../../src/native/litellm-venv.js';
@@ -104,6 +105,19 @@ beforeEach(async () => {
   handles = [];
   litellmPort = await freePort();
   installFakeVenv(home);
+  // `acme` is the fixture gateway name throughout this file, and its fixture
+  // URLs are not well-known: bind every host the fixtures use, so these tests
+  // exercise credential plumbing rather than the host-binding refusal. Tests
+  // of the refusal itself bind nothing.
+  for (const host of ['gateway.example', 'acme.example', 'a.example', 'b.example', 'other.example',
+    'other-gateway.example', 'or.example', 'newgw.example', 'bgw.example', 'direct.example',
+    'pd.example', 'anth.example']) {
+    addTrustBinding(home, 'acme', host);
+  }
+  for (const [gateway, host] of [['other', 'other-gateway.example'], ['machdirect', 'direct.example'],
+    ['pd', 'pd.example'], ['anth', 'anth.example'], ['newgw', 'newgw.example'], ['bgw', 'bgw.example']] as const) {
+    addTrustBinding(home, gateway, host);
+  }
   writeMachineConfig(`
 [native.models."deepseek-v4-flash"]
 gateway = "acme"
