@@ -30,8 +30,8 @@ describe('normalizeTrustHost', () => {
     expect(normalizeTrustHost('Proxy.Example.COM')).toBe('proxy.example.com');
   });
 
-  it('accepts a full URL and keeps only its host', () => {
-    expect(normalizeTrustHost('https://proxy.example:8443/v1')).toBe('proxy.example');
+  it('accepts a full URL and keeps its host, with a non-default port', () => {
+    expect(normalizeTrustHost('https://proxy.example:8443/v1')).toBe('proxy.example:8443');
   });
 
   it('refuses non-https input', () => {
@@ -276,4 +276,19 @@ describe('trust-file writers', () => {
     expect(() => addTrustBinding(home, 'acme', 'proxy.example')).toThrow(/timed out waiting for lock/);
     expect(existsSync(trustedHostsPath(home))).toBe(false);
   }, 10_000);
+});
+
+describe('host comparison includes a non-default port', () => {
+  it('binds a trusted host with its port only on that port', () => {
+    const home = tmp();
+    addTrustBinding(home, 'auto-route', 'localhost:8443');
+    expect(gatewayHostBound('auto-route', 'https://localhost:8443/v1', { trusted: readTrustBindings(home)['auto-route'] })).toEqual({ bound: true });
+    expect(gatewayHostBound('auto-route', 'https://localhost:9443/v1', { trusted: readTrustBindings(home)['auto-route'] }).bound).toBe(false);
+  });
+
+  it('treats the scheme default port as no port', () => {
+    expect(gatewayHostBound('acme', 'https://proxy.example:443/v1', { trusted: ['proxy.example'] })).toEqual({ bound: true });
+    expect(normalizeTrustHost('https://PROXY.example:443')).toBe('proxy.example');
+    expect(normalizeTrustHost('proxy.example:8443')).toBe('proxy.example:8443');
+  });
 });

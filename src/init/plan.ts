@@ -503,7 +503,7 @@ function typedHostsToTrust(
   const hostOf = (url: string): string | undefined => {
     try {
       const parsed = new URL(url);
-      return parsed.protocol === 'https:' && parsed.hostname !== '' ? parsed.hostname.toLowerCase() : undefined;
+      return parsed.protocol === 'https:' && parsed.hostname !== '' ? parsed.host.toLowerCase() : undefined;
     } catch {
       return undefined;
     }

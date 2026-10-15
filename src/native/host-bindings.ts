@@ -94,7 +94,12 @@ function writeTrustBindings(home: string, bindings: TrustBindings): void {
   writeFileAtomic(trustedHostsPath(home), `${JSON.stringify(bindings, null, 2)}\n`);
 }
 
-/** A bare hostname or a full URL, normalized to a lowercase hostname. */
+/**
+ * A bare host (with an optional port) or a full URL, normalized to the
+ * lowercase `host` a trust entry is compared by: the hostname, plus a
+ * non-default port. `URL` drops the scheme's default port, so `:443` and no
+ * port are the same host.
+ */
 export function normalizeTrustHost(input: string): string {
   const text = input.trim();
   if (text === '') throw new Error('sonata auth trust: expected a host, got an empty string');
@@ -110,17 +115,18 @@ export function normalizeTrustHost(input: string): string {
   if (parsed.username !== '' || parsed.password !== '') {
     throw new Error(`sonata auth trust: "${input}" must be a bare host, without credentials`);
   }
-  const host = parsed.hostname.toLowerCase();
+  const host = parsed.host.toLowerCase();
   if (host === '') throw new Error(`sonata auth trust: "${input}" is not a host or URL`);
   return host;
 }
 
-function urlHostname(url: string | undefined): string | undefined {
+/** A URL's `host` (hostname and any non-default port), lowercased, or undefined unless https. */
+function urlHost(url: string | undefined): string | undefined {
   if (url === undefined) return undefined;
   try {
     const parsed = new URL(url);
     if (parsed.protocol !== 'https:') return undefined;
-    const host = parsed.hostname.toLowerCase();
+    const host = parsed.host.toLowerCase();
     return host === '' ? undefined : host;
   } catch {
     return undefined;
@@ -140,10 +146,10 @@ export interface HostBindingContext {
 
 /** Whether one lowercase hostname may receive this gateway's key. */
 export function hostBoundToGateway(gateway: string, host: string, ctx: HostBindingContext): boolean {
-  const wellKnown = urlHostname(WELL_KNOWN_PROVIDER_URLS[gateway]);
+  const wellKnown = urlHost(WELL_KNOWN_PROVIDER_URLS[gateway]);
   if (wellKnown !== undefined && wellKnown === host) return true;
   if ((ctx.trusted ?? []).includes(host)) return true;
-  const machine = urlHostname(ctx.machineGateways?.[gateway]?.baseUrl);
+  const machine = urlHost(ctx.machineGateways?.[gateway]?.baseUrl);
   if (machine !== undefined && machine === host) return true;
   return false;
 }
@@ -160,9 +166,9 @@ export function gatewayHostBound(
   try {
     const parsed = new URL(baseUrl);
     if (parsed.protocol !== 'https:' || parsed.hostname === '') {
-      return { bound: false, host: parsed.hostname !== '' ? parsed.hostname.toLowerCase() : baseUrl };
+      return { bound: false, host: parsed.hostname !== '' ? parsed.host.toLowerCase() : baseUrl };
     }
-    host = parsed.hostname.toLowerCase();
+    host = parsed.host.toLowerCase();
   } catch {
     return { bound: false, host: baseUrl };
   }
