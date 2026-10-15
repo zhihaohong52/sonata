@@ -49,6 +49,13 @@ describe('ratesFor', () => {
     expect(ratesFor(price, at('2026-08-27T08:00:00Z'))).toMatchObject({ input: 0.44, output: 1.32 });
   });
 
+  it('fills a rate the window does not set from the flat rate', () => {
+    const price = { input: 0.44, output: 1.32, cachedInput: 0.014, windows: [{ from: '09:00', to: '17:00', input: 0.11 }] };
+    // The bug this pins: previously { input: 0.11 } alone, charging output
+    // and cache reads at $0 for the whole window.
+    expect(ratesFor(price, at('2026-08-27T12:00:00Z'))).toMatchObject({ input: 0.11, output: 1.32, cachedInput: 0.014 });
+  });
+
   it('resolves overlapping windows by declaration order', () => {
     const two = {
       windows: [
@@ -92,6 +99,15 @@ describe('costOf', () => {
       { input: 1_000_000, output: 1_000_000, cacheRead: 0, cacheCreation: 0 },
       { input: 1 },
     )).toBeCloseTo(1, 10);
+  });
+
+  it('falls back to input for cache reads when cached_input is absent', () => {
+    // Errs toward overcounting rather than undercounting: a hand-written
+    // [price] without cached_input charges cache reads at the input rate.
+    expect(costOf(
+      { input: 0, output: 0, cacheRead: 1_000_000, cacheCreation: 0 },
+      { input: 0.44 },
+    )).toBeCloseTo(0.44, 10);
   });
 
   it('prices a zero rate as zero, not as unknown', () => {
@@ -515,6 +531,17 @@ pricing_provider = "acme"
       at, cache({ input: 2 }),
     );
     expect(price).toMatchObject({ source: 'models-dev', totalUsd: 2 });
+  });
+
+  // cacheRead still declines: a scraped table is not a statement of intent,
+  // so unlike a hand-written [price] it must not value reads at the input rate.
+  it('declines cache-read tokens when cached_input is absent, even with an input rate', () => {
+    const price = resolvePrice(
+      config, 'm',
+      { input: 0, output: 0, cacheRead: 1_000_000, cacheCreation: 0 },
+      at, cache({ input: 2 }),
+    );
+    expect(price).toEqual({ source: 'none' });
   });
 });
 

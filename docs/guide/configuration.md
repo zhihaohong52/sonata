@@ -303,4 +303,6 @@ The whole grammar `sonata.toml` parses. Top-level keys must sit above every
 `cached_input`, `cache_write`, `output`, each optional; a rate of `0` is a
 real price (a free tier). `windows` is an optional array of tables with
 `from` and `to` as UTC `HH:MM` plus the same rate keys; evaluated in order,
-the first match wins. A window whose `from` equals its `to` is refused.
+the first match wins. A rate a window does not set falls back to the flat
+rate, so a window setting only `input` still charges the flat `output`. A
+window whose `from` equals its `to` is refused.

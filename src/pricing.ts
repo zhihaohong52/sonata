@@ -38,11 +38,13 @@ export function ratesFor(price: PriceConfig | undefined, at: Date): Rates | unde
 
   for (const window of price.windows ?? []) {
     if (inWindow(window, at)) {
+      // A rate the window does not set falls back to the flat rate: a window
+      // setting only `input` must not charge output at $0 while it runs.
       const windowRates: Rates = {
-        input: window.input,
-        cachedInput: window.cachedInput,
-        cacheWrite: window.cacheWrite,
-        output: window.output,
+        input: window.input ?? price.input,
+        cachedInput: window.cachedInput ?? price.cachedInput,
+        cacheWrite: window.cacheWrite ?? price.cacheWrite,
+        output: window.output ?? price.output,
       };
       // An empty override must not turn unknown pricing into a confident zero.
       if (hasRates(windowRates)) return windowRates;
@@ -63,7 +65,7 @@ const PER_MILLION = 1_000_000;
 export function costOf(tokens: UsageTokens, rates: Rates): number {
   return (
     (tokens.input * (rates.input ?? 0)
-      + tokens.cacheRead * (rates.cachedInput ?? 0)
+      + tokens.cacheRead * (rates.cachedInput ?? rates.input ?? 0)
       + tokens.cacheCreation * (rates.cacheWrite ?? rates.input ?? 0)
       + tokens.output * (rates.output ?? 0))
     / PER_MILLION
@@ -73,9 +75,23 @@ export function costOf(tokens: UsageTokens, rates: Rates): number {
 /**
  * Whether `rates` can price every dimension `tokens` actually uses.
  *
- * A dimension with no tokens needs no rate — pricing a request that created no
- * cache entries must not fail for want of a cache-write rate. Cache creation
- * is covered by `cacheWrite` *or* `input`, matching what `costOf` charges it.
+ * This gates scraped models.dev tables only: hand-written `[price]` blocks
+ * are priced by `costOf` directly, which falls back to `input` for cache
+ * reads and cache creation alike. A scraped table is not a statement of
+ * intent the way a hand-written block is, so a partial one must decline
+ * rather than fill the gaps with zero: `costOf` prices an absent dimension
+ * at 0 by contract, and a row priced $0 is *worse* than an unpriced one — it
+ * counts as priced, so it disappears from the unpriced tally that would
+ * otherwise show it, and `[budget] daily_usd` treats the volume as free.
+ * Latent today (every one of the 7181 costed models on models.dev carries
+ * both input and output), which is exactly why it would go unnoticed if the
+ * feed ever changed.
+ *
+ * A dimension with no tokens needs no rate — pricing a request that created
+ * no cache entries must not fail for want of a cache-write rate. Cache
+ * creation is covered by `cacheWrite` *or* `input`, matching what `costOf`
+ * charges it; cache reads still require `cachedInput`, so a scraped table
+ * without one declines instead of valuing reads at the input rate.
  */
 export function ratesCoverTokens(tokens: UsageTokens, rates: Rates): boolean {
   if (tokens.input > 0 && rates.input === undefined) return false;
