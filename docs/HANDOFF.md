@@ -14,9 +14,7 @@ issue #47, dispatch-run usage (0.13.0); the test type errors (`typecheck` now
 chains `typecheck:tests`); the codex-oauth system-message hole (0.6.0);
 `SONATA_CAPTURE_TEXT_CALLS_DIR` (0.16.0). Still open: `gpt-6-luna` 400s on
 roughly every other request; `No tool call found for function call output with
-call_id …`; text-call recovery going 0 for 6; `serve.test.ts` failing under
-full-suite load; the doctor budget surface and `worktreeUnchanged` in
-`sonata runs`; the machine config's `[budget]`/`avoid_gateways` (a user
+call_id …`; text-call recovery going 0 for 6; the machine config's `[budget]`/`avoid_gateways` (a user
 decision). "Where things stood at 0.8.3" further down is historical.
 
 ## ChatGPT login revocation (2026-10-14) — open follow-ups
@@ -86,17 +84,17 @@ What is still open:
   a `review-normal` dispatch is confirmed working on 0.13.1.
 - **Only the first PR #69 commit was reviewed by CodeRabbit.** The header
   stripping, the test fix and the tmux retry passed CI unreviewed.
-- **The maintainer's machine config points both `opencode` and `opencode-go`
-  at the Go URL**, so each Go model is listed twice and the `opencode` one is
-  priced from the Zen table. How the Go URL got onto `opencode` is not
-  established — sonata's table never held it. Whether Zen serves the models
-  listed under that gateway is also unchecked.
+- ~~**The maintainer's machine config pointed both `opencode` and
+  `opencode-go` at the Go URL.**~~ Checked 2026-10-15: it has only
+  `opencode-go` now.
 - **`gpt-6-luna` answers a 400 on roughly every other request** on
   `code-simple`/`review-simple` in other sessions (each followed by a 200).
   Seen in the 2026-09-26 ledger, not investigated.
-- **`tests/commands/serve.test.ts` fails under full-suite load** (different
-  tests on different runs; 111/111 in isolation, with or without the PR #69
-  changes). Load-dependent timing, not yet diagnosed.
+- ~~**`tests/commands/serve.test.ts` fails under full-suite load**~~ — not
+  seen in the last 60 CI runs (checked 2026-10-15) or in local full-suite
+  runs. The one CI failure in that window was `tests/e2e-log.test.ts`
+  ("prints all of a non-interactive run's output once": `burst-1` appeared
+  twice, run 38278834456, 2026-10-12) — a one-off flake, untraced.
 - **A LiteLLM or router restart is needed for any router fix to apply** — the
   running daemon keeps the code it started with. A user who upgrades and does
   not `sonata restart` still has the bug.
@@ -778,11 +776,10 @@ All five are cheap and none blocks anything.
    and its models still go through LiteLLM. Adding `provider = "anthropic"`
    flips them to the direct path; that exact config was verified live in an
    earlier session. Verified still absent 2026-09-04.
-3. **Item 04 has no `sonata doctor` surface.** A configured budget cap is
-   invisible until it refuses. A line naming the cap and today's spend costs
-   very little and removes a silent-until-it-bites surprise.
-4. **Item 07 is not surfaced in `sonata runs`.** `TailResult.worktreeUnchanged`
-   already exists; only the report prefix consumes it today.
+3. ~~**Item 04 has no `sonata doctor` surface.**~~ Done 2026-10-15: a
+   `budget` check per cap, failing once spent.
+4. ~~**Item 07 is not surfaced in `sonata runs`.**~~ Done 2026-10-15:
+   `unchanged`, from the exit capture only.
 5. **`deepseek`, `mistral`, `groq` sit in `PROVIDER_FOR_GATEWAY` without live
    verification.** The table's own comment says only exercised endpoints
    belong there, so a wrong row is a real defect — but nobody has hit one,

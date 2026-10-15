@@ -4,8 +4,10 @@ import { VERSION_PROBE_TIMEOUT_MS, runProbe } from '../version-probe.js';
 import { execFile } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { promisify } from 'node:util';
+import { spentTodayUsd } from '../budget.js';
 import {
   loadConfig,
+  parseConfig,
   configPath,
   GLOBAL_CONFIG_RELATIVE,
   expectedAgentNames,
@@ -58,7 +60,7 @@ import { jsonStoreRead, opencodeDbRead, UNREADABLE_SKIP_RULE } from '../native/c
 import { copilotAuthReport, copilotTokenCanExchange, readCopilotToken } from '../native/copilot-auth.js';
 import { credentialDir, credentialFileFor } from '../native/oauth-login.js';
 import { LITELLM_HOST, mergeTenantGateways, resolvedOauthIdentity, serveHealthUrl, healthReportsUi } from './serve.js';
-import { TenantRegistry, canonicalConfigPath } from '../native/tenants.js';
+import { TenantRegistry, canonicalConfigPath, tenantId } from '../native/tenants.js';
 import { routerPorts } from './ports.js';
 import { nativeSessionEnv } from './code.js';
 import { routeEnv, routeSettingsFile, autoInstalled, readSessions, routeSessionsFile, diagnoseRouteAuto, isLocalhostUrl } from './route.js';
@@ -899,6 +901,50 @@ export async function cmdDoctor(
       ok: true,
       detail: shared.map((group) => sharedBaseUrlWarning(group, resolved ?? undefined)).join('; '),
     });
+  }
+
+  // A `[budget] daily_usd` cap is otherwise invisible until it refuses a
+  // request. The project's cap counts this project's priced spend, the
+  // machine's counts all of it (`budgetStatusesFor`, serve.ts); both are
+  // named, with what today has used. A spent cap fails: the router is
+  // refusing native requests until 00:00 UTC.
+  {
+    const machinePath = join(home, GLOBAL_CONFIG_RELATIVE);
+    const at = now().getTime();
+    const caps: { label: string; cap: number; spent: number }[] = [];
+    if (config?.budget?.dailyUsd !== undefined && resolved !== null && resolved !== machinePath) {
+      caps.push({
+        label: `this project (${resolved})`,
+        cap: config.budget.dailyUsd,
+        spent: spentTodayUsd(home, at, { tenant: tenantId(canonicalConfigPath(resolved)) }),
+      });
+    }
+    let machineCap: number | undefined;
+    if (resolved === machinePath) machineCap = config?.budget?.dailyUsd;
+    else if (existsSync(machinePath)) {
+      try {
+        machineCap = parseConfig(readFileSync(machinePath, 'utf8')).budget?.dailyUsd;
+      } catch (error) {
+        // Not reported anywhere else when a project config answered, and a cap
+        // that cannot be read is not the same as no cap.
+        checks.push({
+          name: 'budget',
+          ok: false,
+          detail: `the machine config (${machinePath}) does not load, so its [budget] cap cannot be checked: `
+            + (error instanceof Error ? error.message : String(error)),
+        });
+      }
+    }
+    if (machineCap !== undefined) caps.push({ label: `the machine (${machinePath})`, cap: machineCap, spent: spentTodayUsd(home, at) });
+    for (const { label, cap, spent } of caps) {
+      const over = spent >= cap;
+      checks.push({
+        name: 'budget',
+        ok: !over,
+        detail: `$${spent.toFixed(2)} of $${cap.toFixed(2)} priced spend today (UTC) for ${label}`
+          + (over ? ' — spent: native requests are refused until 00:00 UTC' : ''),
+      });
+    }
   }
 
   // `sonata init` run in $HOME used to write here, and nothing reads it. It

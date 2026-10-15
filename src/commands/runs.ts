@@ -5,7 +5,8 @@
  * enumerate every run it had ever launched and exposed that only to `gc`,
  * while `sonata log <id>` required an id the user had no way to find.
  */
-import { listRuns, readMeta, readExit, readReport } from '../store.js';
+import { listRuns, readMeta, readExit, readReport, runDir } from '../store.js';
+import { worktreeFingerprintAtExit } from '../worktree.js';
 
 export interface RunSummary {
   id: string;
@@ -15,6 +16,14 @@ export interface RunSummary {
   model?: string;
   started?: string;
   report: boolean;
+  /**
+   * The run finished with the worktree exactly as it found it — the
+   * `[no worktree change: …]` the report carries, visible in the list too.
+   * Only from the fingerprint the launch wrapper captured at exit, never a
+   * fresh sample: the tree has been free to move since. Absent when either
+   * side was not captured (a read-only role, outside git, a run still going).
+   */
+  worktreeUnchanged?: true;
 }
 
 export function summarizeRuns(cwd: string): RunSummary[] {
@@ -41,6 +50,9 @@ export function summarizeRuns(cwd: string): RunSummary[] {
         // The store's rule, not file presence: an empty or whitespace-only
         // report.md is no report.
         report: report !== null,
+        ...(exit !== null && meta.worktreeAtLaunch !== undefined
+          && worktreeFingerprintAtExit(runDir(cwd, id)) === meta.worktreeAtLaunch
+          ? { worktreeUnchanged: true as const } : {}),
       });
     } catch {
       // A half-written or hand-edited run directory is skipped, not fatal.

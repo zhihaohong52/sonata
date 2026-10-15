@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRun, runDir, writeMeta } from '../../src/store.js';
 import { summarizeRuns } from '../../src/commands/runs.js';
+import { WORKTREE_CAPTURE_FILE } from '../../src/worktree.js';
+import { createHash } from 'node:crypto';
 
 let cwd: string;
 beforeEach(() => { cwd = mkdtempSync(join(tmpdir(), 'sonata-runs-')); });
@@ -45,6 +47,25 @@ describe('summarizeRuns', () => {
     const meta = createRun(cwd, { role: 'code', model: 'm' } as never);
     writeFileSync(join(runDir(cwd, meta.id), 'exit'), '1\n');
     expect(summarizeRuns(cwd)[0].degraded).toBe(true);
+  });
+
+  it('marks a finished run whose worktree was captured unchanged at exit, and only that', () => {
+    // The report says `[no worktree change: …]`; the list said nothing.
+    const capture = Buffer.from('HEAD abc\n');
+    const launched = createHash('sha256').update(capture).digest('hex');
+    const finished = (worktree: string | undefined, atExit: Buffer | undefined, exit = true) => {
+      const meta = createRun(cwd, { role: 'code', model: 'm', ...(worktree === undefined ? {} : { worktreeAtLaunch: worktree }) } as never);
+      if (exit) writeFileSync(join(runDir(cwd, meta.id), 'exit'), '0\n');
+      if (atExit !== undefined) writeFileSync(join(runDir(cwd, meta.id), WORKTREE_CAPTURE_FILE), atExit);
+      return meta.id;
+    };
+    const unchanged = finished(launched, capture);
+    const changed = finished(launched, Buffer.from('HEAD def\n'));
+    const readOnly = finished(undefined, capture);
+    const running = finished(launched, capture, false);
+    const byId = Object.fromEntries(summarizeRuns(cwd).map((r) => [r.id, r]));
+    expect(byId[unchanged].worktreeUnchanged).toBe(true);
+    for (const id of [changed, readOnly, running]) expect(byId[id].worktreeUnchanged).toBeUndefined();
   });
 
   it('returns nothing when no runs exist', () => {

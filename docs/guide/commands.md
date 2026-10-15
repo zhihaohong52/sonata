@@ -47,7 +47,7 @@ mistyped command suggests the nearest real one.
 | `sonata tail <id>` | A human view of a run's progress |
 | `sonata log <id>` | Print what a run printed |
 | `sonata verify <id> [--model <key>]` | Verify a completed run |
-| `sonata runs [--json]` | List this project's dispatch runs, with state and whether each wrote a report |
+| `sonata runs [--json]` | List this project's dispatch runs, with state, whether each wrote a report, and `unchanged` for a finished run that left the worktree as it found it |
 | `sonata gc` | Kill finished tmux sessions |
 
 Any live run can also be watched directly: `tmux attach -t sonata-<id>` (add
