@@ -2590,9 +2590,10 @@ async function routeTierCandidates(
   // rather than a 529: a request every candidate refuses may really be
   // malformed, and the caller should see the refusal itself.
   let lastMessageless: { at: number; headers: Record<string, string>; body: Buffer; route: TierRoute } | undefined;
-  // The most recent turn withdrawn for an unrecoverable text tool call. If no
+  // The turn withdrawn for an unrecoverable text tool call, if one was. If no
   // candidate serves after it, it is served after all: the client is no worse
-  // off than before the turn could be withdrawn, and better off than with a 529.
+  // off than before the turn could be withdrawn, and better off than with a
+  // 529 or a later candidate's 400.
   let lastUnrecoverable: {
     at: number; turn: WithdrawnTurn; route: TierRoute; counts: TextToolCallCounts;
   } | undefined;
@@ -3051,13 +3052,16 @@ async function routeTierCandidates(
       body: anthropicErrorBody('router_error', unavailable!),
     };
   }
-  if (lastUnrecoverable !== undefined && lastUnrecoverable.at === attempts.length) {
-    // Nothing served after the last withdrawn turn: serve it, as the router
-    // did before turns could be withdrawn. Its own attempt comes off the list,
-    // because the row is now the candidate that served.
+  if (lastUnrecoverable !== undefined) {
+    // Nothing served after the withdrawn turn: serve it, as the router did
+    // before turns could be withdrawn — whatever later candidates answered
+    // (a 5xx, a refusal 400), since the client is better off with a turn it
+    // can read than with their error. Checked before `lastMessageless` for
+    // that reason. Its own attempt comes off the list, because the row is
+    // now the candidate that served.
     const last = lastUnrecoverable;
     last.turn.served = true;
-    attempts.pop();
+    attempts.splice(last.at - 1, 1);
     deps.log?.(`router: no other route for ${label} served; returning ${last.route.key}'s turn with its unrecovered text tool call`);
     if (conversation !== undefined) stickyIncomplete(conversation, last.route.key, now());
     // A held stream is replayed as a stream, so its usage is read as one.

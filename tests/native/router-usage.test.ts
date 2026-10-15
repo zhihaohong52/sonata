@@ -479,6 +479,25 @@ describe('router — text-form tool calls', () => {
     expect(rows.filter((r) => r.withdrawn === true).map((r) => r.key)).toEqual(['flash']);
   });
 
+  for (const [what, later] of [
+    ['a 503', () => new Response('{"error":"down"}', { status: 503 })],
+    ['a message-less 400', () => new Response('', { status: 400 })],
+  ] as const) {
+    it(`serves the withdrawn turn when the next candidate answers ${what}`, async () => {
+      clearCooldowns();
+      const rows: LedgerRow[] = [];
+      const { seen, d } = twoCandidates(rows, (key) => key === 'flash' ? sse(stream(UNPARSED)) : later());
+      const res = await routeRequest(withTools('sonata-code-simple'), d);
+      expect(res.status).toBe(200);
+      expect(await drain(res.body)).toContain('<tool_call>');
+      expect(seen).toEqual(['default/flash', 'default/pro']);
+      const served = rows.find((r) => r.withdrawn !== true)!;
+      expect(served.key).toBe('flash');
+      expect(served.attempts).toEqual([{ key: 'pro', status: later().status }]);
+      expect(rows.some((r) => r.withdrawn === true)).toBe(false);
+    });
+  }
+
   it('prices a withdrawn turn and counts it toward the budget, but not as a served request', async () => {
     clearCooldowns();
     const home = mkdtempSync(join(tmpdir(), 'sonata-withdrawn-'));
