@@ -199,8 +199,7 @@ export async function loginGateway(opts: {
       try {
         if (existsSync(dir)) {
           fixPermissions(dir);
-          setAside(dir, backup);
-          backedUp = true;
+          setAside(dir, backup, () => { backedUp = true; });
         }
         renameSync(staging, dir);
       } catch {
@@ -242,10 +241,17 @@ const STALE_LOGIN_STAGING_MS = 24 * 60 * 60_000;
  * be months old, so without the stamp a fresh rollback copy would already look
  * stale to a concurrent sweep. The sweep ages a backup from this stamp.
  */
-export function setAside(dir: string, backup: string): void {
+export function setAside(dir: string, backup: string, onMoved?: () => void): void {
   renameSync(dir, backup);
-  const now = new Date();
-  utimesSync(backup, now, now);
+  // Reported before the stamp, so a stamp that fails cannot leave the caller
+  // thinking the previous credential is still in place.
+  onMoved?.();
+  try {
+    const now = new Date();
+    utimesSync(backup, now, now);
+  } catch {
+    // An unstamped copy is aged from its rename: older than it looks, never lost.
+  }
 }
 
 /**

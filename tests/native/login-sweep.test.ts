@@ -54,3 +54,16 @@ describe('sweepStaleLoginBackups', () => {
     expect(existsSync(backup)).toBe(true);
   });
 });
+
+describe('setAside reports the move before it stamps', () => {
+  it('calls onMoved once the credential is aside, so a rollback is known to be owed', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'login-setaside-'));
+    const dir = join(parent, 'codex');
+    const backup = join(parent, '.login-fff-old');
+    mkdirSync(dir);
+    let moved = 0;
+    setAside(dir, backup, () => { moved += 1; });
+    expect(moved).toBe(1);
+    expect(existsSync(backup)).toBe(true);
+  });
+});
