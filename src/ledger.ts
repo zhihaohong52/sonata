@@ -114,12 +114,24 @@ export interface LedgerRow {
   complete: boolean;
   tokens: UsageTokens;
   price: LedgerPrice;
-  attempts: { key: string; status: number }[];
+  attempts: LedgerAttempt[];
   litellm?: { fallbacks: number; retries: number };
   /**
    * Tool calls the model wrote as text: `recovered` were turned into real
    * calls by the router, `unparsed` could not be (and cooled the candidate).
    * Absent when there were none.
+   */
+  textToolCalls?: { recovered: number; unparsed: number };
+}
+
+/** A candidate a request fell past before one served it (or none did). */
+export interface LedgerAttempt {
+  key: string;
+  status: number;
+  /**
+   * Set when the candidate answered 200 but its turn was withdrawn for a tool
+   * call written as text that could not be recovered — the counts that turn
+   * carried, so they stay attributed to the model that wrote them.
    */
   textToolCalls?: { recovered: number; unparsed: number };
 }

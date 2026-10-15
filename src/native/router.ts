@@ -5,7 +5,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 
 import { budgetRefusal, type BudgetStatus } from '../budget.js';
 import { isTierAliasShape, TIER_NAMES, tiersCollapse, type NativeGatewayAuth, type SonataConfig, type AutoRouteConfig } from '../config.js';
-import type { AutoRouteRecord, LedgerRow } from '../ledger.js';
+import type { AutoRouteRecord, LedgerAttempt, LedgerRow } from '../ledger.js';
 import { autoRole, cleanTask, decideTier, DecisionStore, type TierClassifier } from './auto-route.js';
 import { SONATA_PROJECT_HEADER, TenantError } from './tenants.js';
 import { SONATA_TOKEN_HEADER, projectHintAuthorised } from './router-token.js';
@@ -13,6 +13,7 @@ import { OPENCODE_SESSION_HEADER, type Transport } from './providers.js';
 import { joinCandidate, splitCandidate, wireEffort, type Effort } from '../effort.js';
 import { createUsageCollector, type UsageTokens, usageFromJsonBody } from './usage.js';
 import { rewriteTextToolCallJson, rewriteTextToolCallStream, toolSchemas, type TextToolCallCounts } from './text-tool-calls.js';
+import { holdForTextToolCalls, type HoldLimits } from './text-tool-call-hold.js';
 import { handleUiRequest, type UiDeps } from './ui.js';
 
 export interface TierRoute {
@@ -185,6 +186,12 @@ export interface RouterDeps {
    */
   textToolCallReadLimits?: { maxBytes: number; idleMs: number };
   /**
+   * Bounds on holding a streamed tier response back while deciding whether
+   * it carries an unrecoverable text tool call. Test seam; defaults to
+   * `TEXT_TOOL_CALL_HOLD_LIMITS`.
+   */
+  textToolCallHoldLimits?: HoldLimits;
+  /**
    * Where to write the outbound body of every 400 a tier candidate answers,
    * one 0600 file per refusal. Unset (the default) writes nothing: bodies
    * hold conversation content. `serve` sets it from `SONATA_CAPTURE_400_DIR`.
@@ -217,6 +224,14 @@ export const ERROR_BODY_LIMITS = { maxBytes: 1024 * 1024, timeoutMs: 10_000 };
  * its text, and far past what rewriting needs.
  */
 export const TEXT_TOOL_CALL_READ_LIMITS = { maxBytes: 64 * 1024 * 1024, idleMs: 10_000 };
+
+/**
+ * Bounds on holding a streamed turn back while deciding whether it carries an
+ * unrecoverable text tool call (`holdForTextToolCalls`). Past any of them the
+ * held bytes are released and the turn streams as it would have unheld — a
+ * call found after that can no longer be withdrawn, only cooled.
+ */
+export const TEXT_TOOL_CALL_HOLD_LIMITS: HoldLimits = { maxBytes: 8 * 1024 * 1024, idleMs: 10_000, maxMs: 120_000 };
 
 export interface RouterRequest {
   method: string;
@@ -449,7 +464,7 @@ interface RecordContext {
   effort?: Effort;
   gateway?: string;
   upstream: 'litellm' | 'anthropic' | 'direct';
-  attempts: { key: string; status: number }[];
+  attempts: LedgerAttempt[];
   credential?: 'subscription' | 'key';
   session?: string;
   project?: string;
@@ -985,6 +1000,69 @@ function providerCooldownKey(tenant: RouterTenant, gateway: string): string {
 const capability400Counts = new Map<string, number>();
 
 /**
+ * Unrecoverable text tool calls within `TEXT_TOOL_CALL_STRIKE_WINDOW_MS` that
+ * move a candidate from the ordinary cooldown to `TEXT_TOOL_CALL_COOLDOWN_MS`.
+ *
+ * A model that writes a call the router cannot parse almost always lacks a
+ * tool-call parser on its backend altogether, so a 60 s cooldown just puts it
+ * back in front of the next request to fail the same way. One such turn may be
+ * a fluke; two close together are the backend.
+ */
+export const TEXT_TOOL_CALL_STRIKES = 2;
+export const TEXT_TOOL_CALL_STRIKE_WINDOW_MS = 30 * 60_000;
+export const TEXT_TOOL_CALL_COOLDOWN_MS = 30 * 60_000;
+
+/**
+ * When each recent unrecoverable text tool call happened, per candidate (the
+ * tenant-scoped `cool` key the cooldowns use). A turn the candidate serves in
+ * full with nothing unrecovered clears its entry.
+ */
+const textToolCallStrikes = new Map<string, number[]>();
+
+/** The escalated cooldowns, for `/__sonata_health` to name. Keyed like `cooldowns`. */
+const textToolCallCooldowns = new Map<string, { tenant: string; model: string; until: number; strikes: number }>();
+
+/**
+ * Records one unrecoverable text tool call from `model` and answers how long
+ * to cool it: `TIER_COOLDOWN_MS`, or `TEXT_TOOL_CALL_COOLDOWN_MS` once it has
+ * done so `TEXT_TOOL_CALL_STRIKES` times within the window.
+ */
+function strikeTextToolCall(tenant: RouterTenant, model: string, cool: string, at: number): number {
+  const recent = (textToolCallStrikes.get(cool) ?? []).filter((t) => at - t < TEXT_TOOL_CALL_STRIKE_WINDOW_MS);
+  recent.push(at);
+  textToolCallStrikes.set(cool, recent);
+  if (recent.length < TEXT_TOOL_CALL_STRIKES) return TIER_COOLDOWN_MS;
+  textToolCallCooldowns.set(cool, { tenant: tenant.id, model, until: at + TEXT_TOOL_CALL_COOLDOWN_MS, strikes: recent.length });
+  return TEXT_TOOL_CALL_COOLDOWN_MS;
+}
+
+/** A candidate on the long cooldown for writing tool calls as text, as `/__sonata_health` reports it. */
+export interface TextToolCallCooldown {
+  tenant: string;
+  model: string;
+  /** ISO time the cooldown ends. */
+  until: string;
+  reason: string;
+}
+
+/** Every escalated text-tool-call cooldown still in force, dropping those that have lapsed. */
+export function activeTextToolCallCooldowns(at: number = Date.now()): TextToolCallCooldown[] {
+  const active: TextToolCallCooldown[] = [];
+  for (const [cool, entry] of textToolCallCooldowns) {
+    // Lapsed, or cut short: a cooldown the router has since cleared or replaced is not this one.
+    if (entry.until <= at || cooldowns.get(cool) !== entry.until) { textToolCallCooldowns.delete(cool); continue; }
+    active.push({
+      tenant: entry.tenant,
+      model: entry.model,
+      until: new Date(entry.until).toISOString(),
+      reason: `wrote tool calls as text that could not be recovered (${entry.strikes}× within ` +
+        `${TEXT_TOOL_CALL_STRIKE_WINDOW_MS / 60_000} min) — its serving backend likely has no tool-call parser`,
+    });
+  }
+  return active;
+}
+
+/**
  * How long a conversation stays pinned to the candidate that served it.
  *
  * Long enough to cover a subagent's whole run — the agents this protects are
@@ -1303,6 +1381,8 @@ export function clearCooldowns(): void {
   cooldowns.clear();
   providerCooldowns.clear();
   capability400Counts.clear();
+  textToolCallStrikes.clear();
+  textToolCallCooldowns.clear();
   stickyCandidates.clear();
 }
 
@@ -1384,6 +1464,11 @@ async function readWholeOrPassThrough(
  * `counts` once the body has been read: at stream end for SSE, at once for
  * JSON. Calls `onUnparsed` when a call could not be recovered. Any other
  * status or content type passes through untouched and unbuffered.
+ *
+ * With `fallThrough` (a tier candidate, which has a next one to ask) a turn
+ * whose unrecoverable call can still be withdrawn — a JSON reply, or a stream
+ * held whole by `holdForTextToolCalls` — comes back `unrecoverable` instead of
+ * being served. Without it (a bare key) every turn is served as before.
  */
 async function recoverTextToolCalls(
   response: RouterResponse,
@@ -1392,7 +1477,8 @@ async function recoverTextToolCalls(
   counts: TextToolCallCounts,
   onUnparsed?: (unparsed: number) => void,
   capture?: { alias: string; candidate: string; outbound: Buffer },
-): Promise<RouterResponse> {
+  fallThrough = false,
+): Promise<RouterResponse | UnrecoverableResponse> {
   if (response.status !== 200) return response;
   const tools = toolSchemas(req.body);
   // Recovery has failed in production while every replay of the same text
@@ -1426,7 +1512,20 @@ async function recoverTextToolCalls(
       body = tee.stream;
       upstream = tee.seen;
     }
-    return { ...response, body: rewriteTextToolCallStream(body, tools, settle) };
+    if (!fallThrough) return { ...response, body: rewriteTextToolCallStream(body, tools, settle) };
+    // Held until it is clear the turn carries no call that cannot be
+    // recovered, so one that does can be withdrawn and the next candidate
+    // asked instead (`holdForTextToolCalls`).
+    const outcome = await holdForTextToolCalls(
+      body,
+      (input) => rewriteTextToolCallStream(input, tools, settle),
+      () => counts.unparsed,
+      deps.textToolCallHoldLimits ?? TEXT_TOOL_CALL_HOLD_LIMITS,
+      req.signal,
+    );
+    if (outcome.kind === 'client-gone') return clientGone();
+    if (outcome.kind === 'unrecoverable') return { ...response, body: outcome.held, unrecoverable: true };
+    return { ...response, body: outcome.body };
   }
   if (!type.includes('application/json')) return response;
   let read: { whole: Buffer } | { passThrough: AsyncIterable<Uint8Array> & { cancel(): void } };
@@ -1447,7 +1546,20 @@ async function recoverTextToolCalls(
   upstream = () => whole;
   const { body, counts: found } = rewriteTextToolCallJson(whole, tools);
   settle(found);
+  // Read whole, so nothing has reached the client yet.
+  if (fallThrough && found.unparsed > 0) return { ...response, body, unrecoverable: true };
   return { ...response, body };
+}
+
+/**
+ * A 200 whose turn held a tool call written as text that could not be
+ * recovered, read in full and never sent: the candidate loop falls past it,
+ * and serves `body` only when no other candidate serves instead.
+ */
+interface UnrecoverableResponse extends RouterResponse { body: Buffer; unrecoverable: true }
+
+function isUnrecoverable(response: RouterResponse): response is UnrecoverableResponse {
+  return (response as Partial<UnrecoverableResponse>).unrecoverable === true;
 }
 
 /**
@@ -2393,7 +2505,7 @@ async function routeTierRequest(
   const now = deps.now ?? Date.now;
   const flattened = litellmBody(req.body);
   const ranked = resolved.routes.filter((route) => route.native !== undefined);
-  const attempts: { key: string; status: number }[] = [];
+  const attempts: LedgerAttempt[] = [];
   let skippedUnavailableLitellm = false;
   // Why LiteLLM-routed candidates are being skipped: serve's own mark at the
   // start of the request, or the child refusing a connection partway through.
@@ -2416,6 +2528,12 @@ async function routeTierRequest(
   // rather than a 529: a request every candidate refuses may really be
   // malformed, and the caller should see the refusal itself.
   let lastMessageless: { at: number; headers: Record<string, string>; body: Buffer; route: TierRoute } | undefined;
+  // The most recent turn withdrawn for an unrecoverable text tool call. If no
+  // candidate serves after it, it is served after all: the client is no worse
+  // off than before the turn could be withdrawn, and better off than with a 529.
+  let lastUnrecoverable: {
+    at: number; response: UnrecoverableResponse; route: TierRoute; counts: TextToolCallCounts;
+  } | undefined;
 
   // Which candidate already served this conversation, if any. Preferring it
   // keeps a multi-turn agent on one model, which is what stops its transcript
@@ -2755,17 +2873,34 @@ async function routeTierRequest(
     }
     // A model whose serving backend has no tool-call parser writes its calls
     // as text and ends the turn; Claude Code then ends the agent. Recover
-    // what parses; an unparsable call still reaches the client as text (it
-    // has started streaming), but cools this candidate so the next request
-    // takes the next one. LiteLLM path only: Anthropic speaks tool_use itself.
+    // what parses. A turn with a call that does not parse is withdrawn and the
+    // next candidate asked, as for a 5xx — unless part of it had already
+    // streamed, when it reaches the client as text. Either way the candidate
+    // cools, for much longer once it keeps doing it (`strikeTextToolCall`).
+    // LiteLLM path only: Anthropic speaks tool_use itself.
     const textToolCalls: TextToolCallCounts = { recovered: 0, unparsed: 0 };
-    let servedResponse = response;
+    let servedResponse: RouterResponse = response;
     if (!direct) {
-      servedResponse = await recoverTextToolCalls(response, req, deps, textToolCalls, (n) => {
-        cooldowns.set(cool, now() + TIER_COOLDOWN_MS);
-        deps.log?.(`router: ${alias} ${variant} wrote ${n} tool call(s) as text that could not be recovered; cooling it`);
-      }, { alias, candidate: variant, outbound: body });
-      if (isClientGone(servedResponse)) return servedResponse;
+      const recovered = await recoverTextToolCalls(response, req, deps, textToolCalls, (n) => {
+        const at = now();
+        const coolMs = strikeTextToolCall(tenant, route.key, cool, at);
+        cooldowns.set(cool, at + coolMs);
+        deps.log?.(
+          `router: ${alias} ${variant} wrote ${n} tool call(s) as text that could not be recovered; ` +
+          (coolMs > TIER_COOLDOWN_MS
+            ? `cooling it for ${Math.round(coolMs / 60_000)} min (repeated: its backend likely has no tool-call parser)`
+            : 'cooling it'),
+        );
+      }, { alias, candidate: variant, outbound: body }, true);
+      if (isClientGone(recovered)) return recovered;
+      if (isUnrecoverable(recovered)) {
+        attempts.push({ key: route.key, status: recovered.status, textToolCalls: { ...textToolCalls } });
+        if (conversation !== undefined) stickyDemote(conversation, route.key);
+        lastUnrecoverable = { at: attempts.length, response: recovered, route, counts: { ...textToolCalls } };
+        deps.log?.(`router: ${alias} ${variant} turn withdrawn before reaching the client; trying next`);
+        continue;
+      }
+      servedResponse = recovered;
     }
     // Pin only on a response the client actually receives IN FULL. A 400
     // handed back above is a request this candidate could not serve, and a
@@ -2773,11 +2908,16 @@ async function routeTierRequest(
     // either would make the next turn prefer the model that just failed. The
     // status alone arrives before a single byte of the body, so the decision
     // waits for the body's end.
-    const completed = conversation === undefined
+    // A served turn also clears the candidate's run of unrecoverable text
+    // calls; observed only when there is a run to clear, or a pin to set.
+    const completed = conversation === undefined && !textToolCallStrikes.has(cool)
       ? servedResponse
       : withCompletion(servedResponse, (complete) => {
+        const clean = complete && textToolCalls.unparsed === 0;
+        if (clean) textToolCallStrikes.delete(cool);
+        if (conversation === undefined) return;
         // An unparsed tool call is a turn the model never served: record it, but never prefer it again.
-        if (complete && textToolCalls.unparsed === 0) stickySet(conversation, route.key, now());
+        if (clean) stickySet(conversation, route.key, now());
         else stickyIncomplete(conversation, route.key, now());
       });
     deps.log?.(`${req.method} ${req.url} model=${alias} -> ${variant} -> ${direct ? 'direct' : 'litellm'}`);
@@ -2824,6 +2964,38 @@ async function routeTierRequest(
       headers: { 'content-type': 'application/json' },
       body: anthropicErrorBody('router_error', unavailable!),
     };
+  }
+  if (lastUnrecoverable !== undefined && lastUnrecoverable.at === attempts.length) {
+    // Nothing served after the last withdrawn turn: serve it, as the router
+    // did before turns could be withdrawn. Its own attempt comes off the list,
+    // because the row is now the candidate that served.
+    const last = lastUnrecoverable;
+    attempts.pop();
+    deps.log?.(`router: no other route for ${label} served; returning ${last.route.key}'s turn with its unrecovered text tool call`);
+    if (conversation !== undefined) stickyIncomplete(conversation, last.route.key, now());
+    // A held stream is replayed as a stream, so its usage is read as one.
+    const held = last.response.body;
+    const replay = (last.response.headers['content-type'] ?? '').includes('text/event-stream')
+      ? (async function* () { yield new Uint8Array(held); })()
+      : held;
+    return withUsageRecording({ status: last.response.status, headers: last.response.headers, body: replay }, {
+      startedAt,
+      session,
+      project: tenant.project,
+      tenant: tenant.id,
+      tenantConfig: tenant.config,
+      alias,
+      role: resolved.role,
+      tier: resolved.tier,
+      ...routeFields,
+      key: last.route.key,
+      effort: last.route.effort,
+      gateway: last.route.native!.gateway,
+      ...(last.route.native!.auth === 'session' ? sessionCredentialField(req.headers) : {}),
+      upstream: 'litellm',
+      attempts,
+      textToolCalls: last.counts,
+    }, deps);
   }
   if (lastMessageless !== undefined && lastMessageless.at === attempts.length) {
     const last = lastMessageless;
@@ -3284,6 +3456,9 @@ export function createRouterServer(deps: RouterDeps): Server {
           ui: deps.ui !== undefined,
           instanceId: deps.instanceId ?? null, tenants: deps.tenants?.() ?? [],
           problems: deps.healthProblems?.() ?? [],
+          // Candidates cooling for much longer than a failure usually earns,
+          // named with why, for `sonata doctor`.
+          cooldowns: activeTextToolCallCooldowns((deps.now ?? Date.now)()),
         }));
         return;
       }
