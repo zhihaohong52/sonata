@@ -2673,6 +2673,54 @@ litellm = ${litellmPort}
   });
 });
 
+describe('cmdServe — upstream requests refuse redirects', () => {
+  it('sends a direct request with redirects refused, and answers a redirect as an upstream failure', async () => {
+    // A redirect that was followed would carry the gateway key, and the
+    // conversation, to a host nothing checked. `redirect: "error"` makes fetch
+    // reject it, and the tier path answers that as an exhausted candidate.
+    writeMachineConfig(`
+[models."or-flash"]
+gateway = "openrouter"
+id = "deepseek/deepseek-v4-flash"
+context_window = 128000
+[tiers.code]
+simple = ["or-flash"]
+complex = ["or-flash"]
+[native.gateways."openrouter"]
+base_url = "https://openrouter.ai/api/v1"
+provider = "anthropic"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+    writeSonataKey(home, 'openrouter', 'OPENROUTER-KEY');
+    let redirect: RequestInit['redirect'] | undefined;
+    const realFetch = globalThis.fetch;
+    vi.stubGlobal('fetch', async (_url: string, init: RequestInit) => {
+      redirect = init.redirect;
+      if (init.redirect === 'error') throw new TypeError('fetch failed: redirect mode is set to error');
+      return new Response('{}', { status: 200 });
+    });
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill() {} }),
+    });
+    handles.push(handle);
+    try {
+      const res = await realFetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+      });
+      expect(redirect).toBe('error');
+      // The tier path answers an exhausted candidate with 529, as for any failed upstream.
+      expect(res.status).toBe(529);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
 describe('cmdServe — a config change refreshes direct credentials', () => {
   it('picks up a rotated gateway key on the litellm-restart path too', async () => {
     // A mixed config restarts litellm for its translated gateways, and that

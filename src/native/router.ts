@@ -2188,7 +2188,10 @@ async function forwardToLitellm(
     const served = chatgpt ? deps.chatgptTokenDir?.() : undefined;
     const response = await deps.fetch(
       targetUrl(deps.litellmBase, req.url),
-      { method: req.method, headers, body: body.length > 0 ? body as unknown as BodyInit : undefined, signal: req.signal },
+      // A redirect is refused, not followed: a followed one would carry the
+      // key (and the conversation) to a host nothing checked. It surfaces as
+      // the transport failure it is.
+      { method: req.method, headers, body: body.length > 0 ? body as unknown as BodyInit : undefined, signal: req.signal, redirect: 'error' },
     );
     // LiteLLM returns 500 when ChatGPT's Codex endpoint yields output:[]. That
     // usually means the upstream was overloaded and returned an empty completion
@@ -2311,7 +2314,7 @@ function withSessionHeader(
  */
 async function forwardDirect(
   body: Buffer,
-  gw: { baseUrl: string; key: string; authHeader?: string; auth?: NativeGatewayAuth },
+  gw: { baseUrl: string; key: string; auth?: NativeGatewayAuth },
   req: RouterRequest,
   deps: RouterDeps,
 ): Promise<RouterResponse> {
@@ -2320,8 +2323,7 @@ async function forwardDirect(
     for (const name of Object.keys(headers)) {
       if (name.toLowerCase() === 'authorization' || name.toLowerCase() === 'x-api-key') delete headers[name];
     }
-    if ((gw.authHeader ?? 'authorization').toLowerCase() === 'x-api-key') headers['x-api-key'] = gw.key;
-    else headers.authorization = `Bearer ${gw.key}`;
+    headers.authorization = `Bearer ${gw.key}`;
   }
 
   // A gateway's configured `base_url` already ends in `/v1` (the same
@@ -2334,7 +2336,10 @@ async function forwardDirect(
   try {
     const response = await deps.fetch(
       targetUrl(base, req.url),
-      { method: req.method, headers, body: body.length > 0 ? body as unknown as BodyInit : undefined, signal: req.signal },
+      // A redirect is refused, not followed: a followed one would carry the
+      // key (and the conversation) to a host nothing checked. It surfaces as
+      // the transport failure it is.
+      { method: req.method, headers, body: body.length > 0 ? body as unknown as BodyInit : undefined, signal: req.signal, redirect: 'error' },
     );
     return {
       status: response.status,
@@ -3188,7 +3193,10 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
   try {
     const response = await deps.fetch(
       targetUrl(deps.anthropicBase ?? 'https://api.anthropic.com', req.url),
-      { method: req.method, headers, body: body.length > 0 ? body as unknown as BodyInit : undefined, signal: req.signal },
+      // A redirect is refused, not followed: a followed one would carry the
+      // key (and the conversation) to a host nothing checked. It surfaces as
+      // the transport failure it is.
+      { method: req.method, headers, body: body.length > 0 ? body as unknown as BodyInit : undefined, signal: req.signal, redirect: 'error' },
     );
     return withUsageRecording({
       status: response.status,
