@@ -308,9 +308,19 @@ describe('plain-http loopback hosts', () => {
     expect(gatewayHostBound('acme', 'http://localhost:9000/v1', { trusted: readTrustBindings(home).acme }).bound).toBe(false);
   });
 
-  it('is never bound implicitly: not by the machine config, nor by the well-known table', () => {
+  it('is bound implicitly by the machine config, port-aware, and is not by the well-known table', () => {
+    // The machine config is trusted by definition, so its own loopback URL
+    // needs no trust step; the same URL on another port is a different host.
     const machine = { acme: gw('http://127.0.0.1:8000/v1') };
-    expect(gatewayHostBound('acme', 'http://127.0.0.1:8000/v1', { machineGateways: machine }).bound).toBe(false);
+    expect(gatewayHostBound('acme', 'http://127.0.0.1:8000/v1', { machineGateways: machine })).toEqual({ bound: true });
+    expect(gatewayHostBound('acme', 'http://127.0.0.1:9000/v1', { machineGateways: machine }).bound).toBe(false);
+    // A loopback name in another gateway's machine entry binds nothing for this one.
+    expect(gatewayHostBound('other', 'http://127.0.0.1:8000/v1', { machineGateways: machine }).bound).toBe(false);
+  });
+
+  it('a non-loopback plain-http machine URL still binds nothing', () => {
+    const machine = { acme: gw('http://proxy.example/v1') };
+    expect(gatewayHostBound('acme', 'http://proxy.example/v1', { machineGateways: machine }).bound).toBe(false);
   });
 
   it('trusts an IPv6 loopback with its brackets', () => {

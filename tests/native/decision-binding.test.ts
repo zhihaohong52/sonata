@@ -51,6 +51,14 @@ describe('plain http decision URLs', () => {
     expect(decisionHostBinding('http://localhost:8000', home)).toEqual({ bound: true });
   });
 
+  it('bind the machine config’s own loopback [auto_route] URL without trust', () => {
+    // Trusted by definition, like a machine gateway: a keyed local decision
+    // server in the machine config keeps working across the upgrade.
+    const home = tmp();
+    expect(decisionKeyBinding('http://localhost:8000', 'k', home, 'http://localhost:8000')).toEqual({ bound: true });
+    expect(decisionKeyBinding('http://localhost:8001', 'k', home, 'http://localhost:8000')?.bound).toBe(false);
+  });
+
   it('never bind a non-loopback plain-http host, even when trusted', () => {
     const home = tmp();
     addTrustBinding(home, 'auto-route', 'decide.example');

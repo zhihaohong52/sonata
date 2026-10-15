@@ -18,16 +18,18 @@ import { readOnce } from './read-snapshot.js';
  * (a) it is the host in `WELL_KNOWN_PROVIDER_URLS` for that gateway name;
  * (b) the user confirmed it with `sonata auth trust <gateway> <host>`;
  * (c) it is the host of the machine config's own gateway of that name (the
- *     machine config is trusted; project configs are not);
+ *     machine config is trusted by definition; project configs are not);
  * (d) `sonata auth add` or `sonata init` recorded it while storing a key for
  *     a gateway whose URL the user chose — which lands in the same trust
  *     file as (b).
  *
- * Hostnames compare lowercased and exactly — never suffix-matched. Only https
- * URLs take the implicit bindings (a, c, d). A plain-http URL can be bound at
- * all only when its host is loopback (`localhost`, `127.0.0.0/8`, `::1`), and
- * then only by an explicit `sonata auth trust` (b): a local server's own
- * binding is never implicit, so nothing a config says can bind it by itself.
+ * Hostnames compare lowercased and exactly — never suffix-matched. The
+ * well-known table (a) is https only. A plain-http URL can be bound at all only
+ * when its host is loopback (`localhost`, `127.0.0.0/8`, `::1`). Such a URL
+ * takes the implicit bindings in the two places the user owns: the machine
+ * config (c) and the upgrade seed (e). Anywhere else — a project config, or a
+ * URL typed later — a loopback http host is bound only by an explicit trust
+ * (b). Non-loopback plain http is never bindable.
  */
 
 /**
@@ -162,14 +164,31 @@ export function normalizeTrustHost(input: string): string {
 
 /**
  * A URL's `host` (hostname and any non-default port), lowercased, or undefined
- * unless https. The implicit bindings (well-known, machine config, seeding) use
- * this: plain http is never bound implicitly, loopback included.
+ * unless https. The well-known table uses this: it is https only.
  */
 function urlHost(url: string | undefined): string | undefined {
   if (url === undefined) return undefined;
   try {
     const parsed = new URL(url);
     if (parsed.protocol !== 'https:') return undefined;
+    const host = parsed.host.toLowerCase();
+    return host === '' ? undefined : host;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The host a URL may be bound by, when it is implicitly bound (the machine
+ * config and the upgrade seed): https, or plain http to a loopback host. Its
+ * `host` keeps the port, so a loopback binding is for that port only.
+ */
+export function bindableUrlHost(url: string | undefined): string | undefined {
+  if (url === undefined) return undefined;
+  try {
+    const parsed = new URL(url);
+    const loopbackHttp = parsed.protocol === 'http:' && isLoopbackHostname(parsed.hostname);
+    if (parsed.protocol !== 'https:' && !loopbackHttp) return undefined;
     const host = parsed.host.toLowerCase();
     return host === '' ? undefined : host;
   } catch {
@@ -193,7 +212,7 @@ export function hostBoundToGateway(gateway: string, host: string, ctx: HostBindi
   const wellKnown = urlHost(WELL_KNOWN_PROVIDER_URLS[gateway]);
   if (wellKnown !== undefined && wellKnown === host) return true;
   if ((ctx.trusted ?? []).includes(host)) return true;
-  const machine = urlHost(ctx.machineGateways?.[gateway]?.baseUrl);
+  const machine = bindableUrlHost(ctx.machineGateways?.[gateway]?.baseUrl);
   if (machine !== undefined && machine === host) return true;
   return false;
 }
@@ -332,7 +351,7 @@ export function removeTrustBinding(home: string, gateway: string, host: string):
  * The one-time seed an upgrade makes. Before this, a stored key went to
  * whatever host a config named, and an existing user's configs already name
  * the hosts they use. So the first run after the upgrade binds, once, every
- * https api-key gateway in those configs that has a stored or opencode-sourced
+ * https (or loopback http) api-key gateway in those configs that has a stored or opencode-sourced
  * key, to its URL's host. The marker records that it ran: a config first seen
  * after it is never seeded. Returns one line per binding it wrote.
  *
@@ -351,7 +370,7 @@ export function seedUpgradeTrust(
     for (const { configPath, gateways } of configs) {
       for (const [gateway, settings] of Object.entries(gateways)) {
         if ((settings.auth ?? 'api-key') !== 'api-key') continue;
-        const host = urlHost(settings.baseUrl);
+        const host = bindableUrlHost(settings.baseUrl);
         if (host !== undefined) candidates.push({ gateway, host, configPath });
       }
     }

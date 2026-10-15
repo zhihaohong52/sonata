@@ -11,7 +11,7 @@ import { decisionGatewayFor } from './auto-route.js';
  * This is the binding that gates a stored key. Whether one is sent at all is
  * `decisionKeyBinding`'s question.
  */
-export function decisionHostBinding(baseUrl: string, home: string): HostBinding {
+export function decisionHostBinding(baseUrl: string, home: string, machineUrl?: string): HostBinding {
   const gateway = decisionGatewayFor(baseUrl);
   if (gateway === 'typesafe' || gateway === 'openrouter') {
     try {
@@ -21,7 +21,13 @@ export function decisionHostBinding(baseUrl: string, home: string): HostBinding 
       return { bound: false, host: baseUrl };
     }
   }
-  return gatewayHostBound('auto-route', baseUrl, { trusted: readTrustBindings(home)['auto-route'] ?? [] });
+  // The machine config's own [auto_route] URL is trusted by definition, as its
+  // gateways are: the same rule (c) that binds a machine gateway's host.
+  const machineGateways = machineUrl === undefined ? undefined : { 'auto-route': { baseUrl: machineUrl } };
+  return gatewayHostBound('auto-route', baseUrl, {
+    trusted: readTrustBindings(home)['auto-route'] ?? [],
+    machineGateways,
+  });
 }
 
 /**
@@ -43,7 +49,12 @@ export function decisionUnboundMessage(baseUrl: string, host: string, configFile
  * whole conversation to any keyless host it names, so the task text alone is
  * not what this protects: the stored key is.
  */
-export function decisionKeyBinding(baseUrl: string, key: string | undefined, home: string): HostBinding | undefined {
+export function decisionKeyBinding(
+  baseUrl: string,
+  key: string | undefined,
+  home: string,
+  machineUrl?: string,
+): HostBinding | undefined {
   if (key === undefined) return undefined;
-  return decisionHostBinding(baseUrl, home);
+  return decisionHostBinding(baseUrl, home, machineUrl);
 }

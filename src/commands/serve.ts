@@ -2828,7 +2828,7 @@ export async function cmdServe(
         // bound first; with no key there is nothing to protect. Checked per
         // request, not cached: a trust change takes effect at once, and an
         // unbound host is never handed the classifier that would send the key.
-        const binding = decisionKeyBinding(settings.baseUrl, credential().key, opts.home);
+        const binding = decisionKeyBinding(settings.baseUrl, credential().key, opts.home, machineConfig()?.autoRoute?.baseUrl);
         if (binding !== undefined && !binding.bound) {
           const message = decisionUnboundMessage(settings.baseUrl, binding.host, tenant.configPath ?? 'the config');
           if (!loggedDecisionRefusals.has(message)) {

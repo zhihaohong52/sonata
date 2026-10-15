@@ -1019,7 +1019,18 @@ export async function cmdDoctor(
     const keyRequired = decisionHost === 'openrouter.ai' || decisionHost === 'api.typesafe.ai';
     // An unbound host is refused outright: serve sends it neither the key nor
     // the task text, and every -auto request takes the fallback tier.
-    const binding = decisionKeyBinding(auto.baseUrl, credential.key, home);
+    // The machine config's own [auto_route] URL is trusted by definition.
+    const machineAutoUrl = (() => {
+      try {
+        const machine = join(home, GLOBAL_CONFIG_RELATIVE);
+        if (resolved !== null && canonicalConfigPath(resolved) === canonicalConfigPath(machine)) return config.autoRoute?.baseUrl;
+        if (!existsSync(machine)) return undefined;
+        return parseConfig(readFileSync(machine, 'utf8')).autoRoute?.baseUrl;
+      } catch {
+        return undefined;
+      }
+    })();
+    const binding = decisionKeyBinding(auto.baseUrl, credential.key, home, machineAutoUrl);
     if (binding !== undefined && !binding.bound) {
       checks.push({
         name: 'auto route',

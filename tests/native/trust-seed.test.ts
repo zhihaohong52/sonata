@@ -24,6 +24,21 @@ describe('seedUpgradeTrust', () => {
     expect(JSON.parse(readFileSync(trustedHostsPath(home), 'utf8'))).toMatchObject({ seeded: '0.16.5' });
   });
 
+  it('seeds an existing loopback http gateway, port-aware, and never a non-loopback http one', () => {
+    const home = tmp();
+    writeSonataKey(home, 'local', 'sk-local');
+    writeSonataKey(home, 'remote', 'sk-remote');
+    const lines = seedUpgradeTrust(home, '0.16.5', [{
+      configPath: '/p/sonata.toml',
+      gateways: {
+        local: gw('http://localhost:4000/v1'),
+        remote: gw('http://remote.example/v1'),
+      },
+    }]);
+    expect(lines).toHaveLength(1);
+    expect(readTrustBindings(home)).toEqual({ local: ['localhost:4000'] });
+  });
+
   it('seeds nothing for a gateway with no key, a plain-http URL, or a non-key auth', () => {
     const home = tmp();
     writeSonataKey(home, 'plain', 'sk-plain');
