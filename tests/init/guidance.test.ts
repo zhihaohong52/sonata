@@ -212,7 +212,11 @@ describe('guidanceBlock with auto-routing', () => {
   it('makes -auto the default when auto-routing is on', () => {
     const block = guidanceBlock({ autoRoute: true });
     expect(block).toContain('`-auto` agents are the default');
-    expect(block).toContain('explicit tier agents are the manual override');
+    expect(block).toContain('explicit tier agents are a manual override, used only when the user asks');
+    // An orchestrator that saw one bad -auto turn must report it, not route around -auto.
+    expect(block).toContain('earlier tier failures in the session do not count');
+    expect(block).toContain('never pin explicit tiers for later');
+    expect(block).toContain('that task only — never other tasks or reviews');
     expect(block).not.toContain('`-normal` is the default');
     expect(block.startsWith(GUIDANCE_BEGIN)).toBe(true);
     expect(block.trimEnd().endsWith(GUIDANCE_END)).toBe(true);

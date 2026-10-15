@@ -73,8 +73,8 @@ function tierChoice(available: readonly Tier[]): string {
   // Without a middle rung there is no default to name, and naming one anyway
   // is what sent 74% of dispatches to `complex`.
   const pick = available.includes('normal')
-    ? 'Start at the tier the task actually needs rather than a rung higher. A task\nthat fails review is re-run one tier up, so starting low is cheap to correct\nand starting high is not cheap at all.'
-    : 'Prefer `-simple` whenever the task is specified closely enough to write\nwithout asking a question; a task that fails review is re-run at `-complex`,\nso starting low is cheap to correct and starting high is not cheap at all.';
+    ? 'Start at the tier the task actually needs rather than a rung higher. A task\nthat fails review is re-run one tier up (that task only — never other tasks or\nreviews), so starting low is cheap to correct and starting high is not cheap\nat all.'
+    : 'Prefer `-simple` whenever the task is specified closely enough to write\nwithout asking a question; a task that fails review is re-run at `-complex`\n(that task only — never other tasks or reviews), so starting low is cheap to\ncorrect and starting high is not cheap at all.';
   return `## Choosing a tier
 
 Size is not difficulty. A large mechanical change is \`simple\`; a three-line
@@ -585,7 +585,7 @@ export function autoAgentMarkdown(spec: {
   const model = spec.extendedContext === true ? `${alias}${EXTENDED_CONTEXT_SUFFIX}` : alias;
   const tools = toolsForRole(spec.role);
   const delegating = delegatingForRole(spec.role, spec.planTiers, 'simple', spec.availableTiers);
-  const description = `Runs ${blurb} on a ranked list of foreign models, natively inside Claude Code's loop; sonata chooses the tier (${spec.availableTiers.join(', ')}) for each task. The default choice — use an explicit -${spec.availableTiers.join(' / -')} agent only when you know the tier better. ${NO_MODEL_ARG} Requires a routed session (sonata route auto, then a new session; or sonata code).`;
+  const description = `Runs ${blurb} on a ranked list of foreign models, natively inside Claude Code's loop; sonata chooses the tier (${spec.availableTiers.join(', ')}) for each task. The default choice — use an explicit -${spec.availableTiers.join(' / -')} agent only when the user asks for a specific tier; earlier tier failures do not count. If this agent misbehaves, retry it and report it to the user rather than pinning an explicit tier. ${NO_MODEL_ARG} Requires a routed session (sonata route auto, then a new session; or sonata code).`;
   return `---
 name: ${spec.role}-auto
 description: ${description}
@@ -599,7 +599,10 @@ ${NO_MODEL_ARG}
 Sonata chooses the tier for this task once, from its first message, and keeps
 it for the whole conversation. The tier it chose is not visible to the caller,
 so if the work fails review twice, re-run it from scratch on the explicit
--complex agent rather than "one tier up".
+-complex agent rather than "one tier up" — that task only, never other tasks
+or reviews. If a dispatch of this agent misbehaves, retry it here and report
+it to the user, naming the agent and what failed; do not pin explicit tiers
+for later dispatches.
 
 ${TIER_AGENT_MARKER} — edits here are overwritten on the next sync.
 

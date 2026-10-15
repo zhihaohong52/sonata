@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { chmodSync, mkdtempSync, mkdirSync, readdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { agentMarkdown, cmdSync, nativeAgentMarkdown, outdatedAgents, plannedAgents, tierAgentMarkdown, TIER_AGENT_MARKER } from '../../src/commands/sync.js';
+import { agentMarkdown, autoAgentMarkdown, cmdSync, nativeAgentMarkdown, outdatedAgents, plannedAgents, tierAgentMarkdown, TIER_AGENT_MARKER } from '../../src/commands/sync.js';
 import { parseConfig, type SonataConfig } from '../../src/config.js';
 
 let cwd: string;
@@ -978,5 +978,23 @@ describe('cmdSync — refreshing the installed loop skill', () => {
     expect(res.skills).toContain(join(dirname(skillPath), 'hooks', 'register.tsx'));
     expect((res.skills ?? []).some((p) => p.endsWith('.test.ts'))).toBe(false);
     expect(readFileSync(skillPath, 'utf8')).toBe(shipped);
+  });
+});
+
+describe('autoAgentMarkdown — tier trouble is reported, not routed around', () => {
+  // Line breaks in the prompt are layout, not wording.
+  const body = autoAgentMarkdown({ role: 'code', availableTiers: ['simple', 'normal', 'complex'], planTiers: ['simple', 'normal', 'complex'] }).replace(/\s+/g, ' ');
+
+  it('reserves explicit tiers for a user who asks for one', () => {
+    expect(body).toContain('only when the user asks for a specific tier; earlier tier failures do not count');
+  });
+
+  it('keeps later dispatches on -auto when one misbehaves', () => {
+    expect(body).toContain('retry it here and report it to the user');
+    expect(body).toContain('do not pin explicit tiers');
+  });
+
+  it('scopes review-failure escalation to the task that failed', () => {
+    expect(body).toContain('that task only, never other tasks or reviews');
   });
 });
