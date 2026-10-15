@@ -10,6 +10,7 @@ import {
   removeTrustBinding,
 } from '../native/host-bindings.js';
 import { configPath, GLOBAL_CONFIG_RELATIVE, isOauthGatewayAuth, loadConfig, parseConfig } from '../config.js';
+import { seedTrustBeforeKeyWrite } from '../native/trust-seed.js';
 import { credentialDir, loginGateway } from '../native/oauth-login.js';
 
 export function cmdAuthList(opts: { home: string; gateways: string[] }): { text: string } {
@@ -25,7 +26,9 @@ export function cmdAuthList(opts: { home: string; gateways: string[] }): { text:
  * bind a repo's host to the user's key for good. A well-known host needs no
  * binding, and any other is named by `unboundConfigUrlNotice`.
  */
-export function cmdAuthAdd(opts: { home: string; gateway: string; key: string }): void {
+export function cmdAuthAdd(opts: { home: string; gateway: string; key: string; cwd?: string }): void {
+  // The upgrade's seed first: see `seedTrustBeforeKeyWrite`.
+  seedTrustBeforeKeyWrite(opts.home, opts.cwd ?? process.cwd());
   writeSonataKey(opts.home, opts.gateway, opts.key);
 }
 

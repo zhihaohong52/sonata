@@ -9,6 +9,7 @@ import { cmdSync } from '../commands/sync.js';
 import { cmdRoute } from '../commands/route.js';
 import { writeSonataKey } from '../native/credentials.js';
 import { addTrustBinding } from '../native/host-bindings.js';
+import { seedTrustBeforeKeyWrite } from '../native/trust-seed.js';
 import { litellmStatus } from '../native/litellm-venv.js';
 import { guidanceBlock, mergeGuidance } from './guidance.js';
 import type { InitPlan } from './plan.js';
@@ -58,6 +59,8 @@ export async function apply(
   // ---- credentials (first, so a partially-failed run still leaves keys behind) ----
   // Keys typed in the wizard are stored here and nowhere earlier: a cancelled
   // run must leave no credential behind. The gateway is printed, never the key.
+  // The upgrade's seed before the first key lands: see `seedTrustBeforeKeyWrite`.
+  if (plan.keysToStore.length > 0) seedTrustBeforeKeyWrite(home, cwd);
   for (const { gateway, key } of plan.keysToStore) {
     writeSonataKey(home, gateway, key);
     io.out(`  ✓ stored the key for ${gateway}`);

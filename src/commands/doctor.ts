@@ -45,6 +45,7 @@ import { mainWorktreeDir } from '../git-worktree.js';
 import { keyReport, resolveDecisionKey, resolveKeyDetail } from '../native/credentials.js';
 import { gatewayHostBound, readTrustBindings, unboundMessage } from '../native/host-bindings.js';
 import { decisionKeyFor } from '../native/auto-route.js';
+import { seedTrustOnUpgrade } from '../native/trust-seed.js';
 import { decisionHostBinding, decisionUnboundMessage } from '../native/decision-binding.js';
 import { ModelListCache, chooseDecisionModel } from '../native/decision-models.js';
 import { loadDecisionCatalog } from '../decision-catalog.js';
@@ -1427,6 +1428,13 @@ export async function cmdDoctor(
     const thisConfig = resolved === null ? undefined : canonicalConfigPath(resolved);
     const registry = new TenantRegistry(home);
     registry.noteProject(opts.cwd);
+    // The same one-time seed serve runs, before the bindings are read below.
+    try {
+      const seeded = seedTrustOnUpgrade(home, registry);
+      if (seeded.length > 0) checks.push({ name: 'trust seed', ok: true, detail: seeded.join('\n  ') });
+    } catch (error) {
+      checks.push({ name: 'trust seed', ok: false, detail: error instanceof Error ? error.message : String(error) });
+    }
     const tenants = registry.loadable().map(({ configPath, config: tenant }) => ({
       id: configPath, gateways: tenant.native?.gateways ?? {},
     }));

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 
 import type { NativeConfig } from '../config.js';
 import { WELL_KNOWN_PROVIDER_URLS } from '../detect.js';
-import { writeFileAtomic } from './credentials.js';
+import { resolveKeys, writeFileAtomic } from './credentials.js';
 import { withSessionLockSync } from '../filelock.js';
 import { readOnce } from './read-snapshot.js';
 
@@ -58,19 +58,32 @@ export function readTrustBindings(home: string): TrustBindings {
 }
 
 /**
+ * The key the upgrade-seed marker is stored under in the trust file. A string
+ * value, so the request path's reader (which keeps only array values) ignores
+ * it. Reserved: no gateway may be named this, since its hosts would collide.
+ */
+export const TRUST_SEED_MARKER = 'seeded';
+
+/** The trust file as a writer sees it: the bindings, and the upgrade-seed marker if written. */
+interface TrustFile {
+  bindings: TrustBindings;
+  seeded?: string;
+}
+
+/**
  * The trust file for a writer. Strict, unlike the request path's reader: a
  * corrupt file is refused, naming the path, rather than read as empty and then
  * overwritten — which would silently drop every confirmed binding. Absent is
  * no bindings yet.
  */
-function readTrustBindingsForWrite(home: string): TrustBindings {
+function readTrustFileForWrite(home: string): TrustFile {
   const path = trustedHostsPath(home);
   let text: string;
   try {
     // Read fresh, never from a read snapshot: a writer must see the file as it is.
     text = readFileSync(path, 'utf8');
   } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return {};
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return { bindings: {} };
     throw new Error(`cannot update the host trust file ${path}: ${(error as Error).message}`);
   }
   let value: unknown;
@@ -82,16 +95,28 @@ function readTrustBindingsForWrite(home: string): TrustBindings {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error(`${path} does not hold a JSON object (refusing to rewrite it — fix or remove it, then retry)`);
   }
-  const out: TrustBindings = {};
+  const file: TrustFile = { bindings: {} };
   for (const [gateway, hosts] of Object.entries(value as Record<string, unknown>)) {
+    if (gateway === TRUST_SEED_MARKER) {
+      if (typeof hosts === 'string') file.seeded = hosts;
+      continue;
+    }
     if (!Array.isArray(hosts)) continue;
-    out[gateway] = [...new Set(hosts.filter((h): h is string => typeof h === 'string').map((h) => h.toLowerCase()))];
+    file.bindings[gateway] = [...new Set(hosts.filter((h): h is string => typeof h === 'string').map((h) => h.toLowerCase()))];
   }
-  return out;
+  return file;
 }
 
-function writeTrustBindings(home: string, bindings: TrustBindings): void {
-  writeFileAtomic(trustedHostsPath(home), `${JSON.stringify(bindings, null, 2)}\n`);
+function writeTrustFile(home: string, file: TrustFile): void {
+  const out: Record<string, string | string[]> = { ...file.bindings };
+  if (file.seeded !== undefined) out[TRUST_SEED_MARKER] = file.seeded;
+  writeFileAtomic(trustedHostsPath(home), `${JSON.stringify(out, null, 2)}\n`);
+}
+
+function refuseReservedGateway(gateway: string): void {
+  if (gateway === TRUST_SEED_MARKER) {
+    throw new Error(`sonata auth trust: "${TRUST_SEED_MARKER}" is reserved for the upgrade's trust record — name the gateway differently`);
+  }
 }
 
 /**
@@ -255,12 +280,13 @@ export function refreshHostReasons(input: {
  * runs cannot each drop the other's binding.
  */
 export function addTrustBinding(home: string, gateway: string, host: string): void {
+  refuseReservedGateway(gateway);
   withSessionLockSync(trustedHostsPath(home), () => {
-    const bindings = readTrustBindingsForWrite(home);
-    const hosts = bindings[gateway] ?? [];
+    const file = readTrustFileForWrite(home);
+    const hosts = file.bindings[gateway] ?? [];
     if (!hosts.includes(host)) {
-      bindings[gateway] = [...hosts, host];
-      writeTrustBindings(home, bindings);
+      file.bindings[gateway] = [...hosts, host];
+      writeTrustFile(home, file);
     }
   });
 }
@@ -268,15 +294,57 @@ export function addTrustBinding(home: string, gateway: string, host: string): vo
 /** Remove one binding. Refuses when there is nothing to remove. */
 export function removeTrustBinding(home: string, gateway: string, host: string): void {
   withSessionLockSync(trustedHostsPath(home), () => {
-    const bindings = readTrustBindingsForWrite(home);
-    const hosts = bindings[gateway];
+    const file = readTrustFileForWrite(home);
+    const hosts = file.bindings[gateway];
     if (hosts === undefined || !hosts.includes(host)) {
       throw new Error(`sonata auth untrust: no trusted host "${host}" for gateway "${gateway}"`);
     }
     const rest = hosts.filter((h) => h !== host);
-    if (rest.length === 0) delete bindings[gateway];
-    else bindings[gateway] = rest;
-    writeTrustBindings(home, bindings);
+    if (rest.length === 0) delete file.bindings[gateway];
+    else file.bindings[gateway] = rest;
+    writeTrustFile(home, file);
+  });
+}
+
+/**
+ * The one-time seed an upgrade makes. Before this, a stored key went to
+ * whatever host a config named, and an existing user's configs already name
+ * the hosts they use. So the first run after the upgrade binds, once, every
+ * https api-key gateway in those configs that has a stored or opencode-sourced
+ * key, to its URL's host. The marker records that it ran: a config first seen
+ * after it is never seeded. Returns one line per binding it wrote.
+ *
+ * Runs under the trust file's lock. A corrupt file throws, naming it, and
+ * nothing is written — the marker is only ever written with the seed.
+ */
+export function seedUpgradeTrust(
+  home: string,
+  version: string,
+  configs: readonly { configPath: string; gateways: NativeConfig['gateways'] }[],
+): string[] {
+  return withSessionLockSync(trustedHostsPath(home), () => {
+    const file = readTrustFileForWrite(home);
+    if (file.seeded !== undefined) return [];
+    const candidates: Array<{ gateway: string; host: string; configPath: string }> = [];
+    for (const { configPath, gateways } of configs) {
+      for (const [gateway, settings] of Object.entries(gateways)) {
+        if ((settings.auth ?? 'api-key') !== 'api-key') continue;
+        const host = urlHost(settings.baseUrl);
+        if (host !== undefined) candidates.push({ gateway, host, configPath });
+      }
+    }
+    const withKey = new Set(resolveKeys([...new Set(candidates.map((c) => c.gateway))], home).map((hit) => hit.gateway));
+    const lines: string[] = [];
+    for (const { gateway, host, configPath } of candidates) {
+      if (!withKey.has(gateway) || gateway === TRUST_SEED_MARKER) continue;
+      const hosts = file.bindings[gateway] ?? [];
+      if (hosts.includes(host)) continue;
+      file.bindings[gateway] = [...hosts, host];
+      lines.push(`trusted ${host} for gateway "${gateway}" (from ${configPath}) — run \`sonata auth untrust ${gateway} ${host}\` to remove it`);
+    }
+    file.seeded = version;
+    writeTrustFile(home, file);
+    return lines;
   });
 }
 

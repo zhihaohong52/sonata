@@ -12,6 +12,7 @@ import { appendRow, LEDGER_RETENTION_DAYS, pruneLedger, type LedgerRow } from '.
 import { pruneSessions } from '../sessions.js';
 import { resolveDecisionKey, resolveKeyDetail, resolveKeys, sonataKeyStorePath } from '../native/credentials.js';
 import { trustedHostsPath, unboundKeyHosts } from '../native/host-bindings.js';
+import { seedTrustOnUpgrade } from '../native/trust-seed.js';
 import {
   boundUnreadable, boundUnreadableDb, fileStoreRead, jsonStoreRead, newUnreadableMemory, opencodeDbRead,
   UNREADABLE_SKIP_RULE, type StoreRead, type UnreadableMemory,
@@ -2185,6 +2186,14 @@ export async function cmdServe(
       return built;
     };
 
+    // The upgrade's one-time trust seed, before any credential check reads the
+    // trust file. A failure is logged and serving goes on: the request path
+    // reads the file tolerantly, so nothing is trusted that was not before.
+    try {
+      for (const line of seedTrustOnUpgrade(opts.home, registry)) console.error(`sonata serve: ${line}`);
+    } catch (error) {
+      console.error(`sonata serve: could not record the upgrade's trust seed: ${error instanceof Error ? error.message : String(error)}`);
+    }
     const tornAtStart = credentialMemory.unreadable.torn;
     // The merge and the build read the stores once, together (`withReadSnapshot`).
     const { startupNative, startup } = withReadSnapshot(() => {

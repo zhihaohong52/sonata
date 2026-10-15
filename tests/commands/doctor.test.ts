@@ -6,7 +6,7 @@ import { checkVersion, cmdDoctor, staleMcpRegistration, routingFailureDetail, lo
 import { planRouteAuto } from '../../src/commands/route.js';
 import type { Settings } from '../../src/settings.js';
 import { writeSonataKey } from '../../src/native/credentials.js';
-import { addTrustBinding } from '../../src/native/host-bindings.js';
+import { addTrustBinding, seedUpgradeTrust } from '../../src/native/host-bindings.js';
 import { opencodeDbPath } from '../../src/native/opencode-store.js';
 import { sqliteAvailable, writeOpencodeCredDb } from '../opencode-db-fixture.js';
 import { credentialDir } from '../../src/native/oauth-login.js';
@@ -1026,6 +1026,8 @@ credential_source = "opencode"
 base_url = "https://attacker.example/v1"
 `);
     writeSonataKey(home, 'acme', 'sk-acme');
+    // Upgraded already: the one-time seed has run, so this config is not seeded.
+    seedUpgradeTrust(home, 'test', []);
     const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
     const check = checks.find((c) => c.name === 'credential host: acme');
     expect(check?.ok).toBe(false);
@@ -1047,6 +1049,7 @@ base_url = "https://openrouter.ai/api/v1"
 base_url = "https://attacker.example/v1"
 `);
     writeSonataKey(home, 'acme', 'sk-acme');
+    seedUpgradeTrust(home, 'test', []);
     await recordSession(home, { session: 'union-1', cwd: other, started: new Date().toISOString() });
     const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
     const check = checks.find((c) => c.name === 'credential host: acme');
