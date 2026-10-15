@@ -87,7 +87,10 @@ export const WELL_KNOWN_PROVIDER_URLS: Record<string, string> = {
 
   // OpenCode's own gateways
   'opencode': 'https://opencode.ai/zen/v1',
-  'opencode-go': 'https://opencode.ai/zen/go/v1',
+  // The URL models.dev lists. The older `/zen/go/v1` still answers chat
+  // completions, Responses and Messages, but not Google's `generateContent`,
+  // which OpenCode Go's Gemini models need (measured 2026-10-14).
+  'opencode-go': 'https://opencode.ai/inference/go/v1',
 
   // Major providers
   'anthropic': 'https://api.anthropic.com/v1',

@@ -78,7 +78,7 @@ describe('plan — the config it emits', () => {
     writeFileSync(modelsDevPath(home), JSON.stringify({
       fetchedAt: '2026-10-14T00:00:00.000Z', providers: { 'opencode-go': { 'gpt-6-luna': { input: 1, output: 2 } } },
       names: { 'opencode-go': { 'gpt-6-luna': 'GPT-6 Luna', 'minimax-m3': 'MiniMax M3' } },
-      responsesOnly: { 'opencode-go': { api: 'https://opencode.ai/inference/go/v1', ids: ['gpt-6-luna'] } },
+      protocols: { 'opencode-go': { api: 'https://opencode.ai/inference/go/v1', models: { 'gpt-6-luna': 'responses' } } },
     }));
     const go = (id: string) => ({ key: `opencode-go-${id}`, gateway: 'opencode-go', id, contextWindow: 128000,
       baseUrl: 'https://opencode.ai/zen/go/v1', auth: 'api-key' as const });

@@ -82,9 +82,11 @@ export interface UnifiedModelConfig {
    * `responses` sends this model to the gateway's `/responses` endpoint instead
    * of `/chat/completions`. For a model that refuses function tools with
    * `reasoning_effort` on chat-completions — every Claude Code request carries
-   * tools, so it can serve none of them there. See `litellmModelEntry`.
+   * tools, so it can serve none of them there. `google` sends it over
+   * Google's own `generateContent` protocol, for a model its endpoint serves
+   * on nothing else (OpenCode Go's Gemini models). See `litellmModelEntry`.
    */
-  api?: 'responses';
+  api?: ModelApi;
   harness?: string;
   harnessId?: string;
   price?: PriceConfig;
@@ -100,7 +102,11 @@ export interface TierRoute {
   harness?: { harness: string; id: string };
 }
 
-export interface NativeModelConfig { gateway: string; id: string; contextWindow: number; api?: 'responses' }
+/** The per-model endpoint override: `[models."<key>"] api = "…"`. */
+export type ModelApi = 'responses' | 'google';
+export const MODEL_APIS: readonly ModelApi[] = ['responses', 'google'];
+
+export interface NativeModelConfig { gateway: string; id: string; contextWindow: number; api?: ModelApi }
 
 /**
  * How a gateway authenticates.
@@ -458,8 +464,8 @@ export function parseConfig(text: string): SonataConfig {
       if (d.context_window !== undefined && typeof d.context_window !== 'number') {
         throw new Error(`sonata.toml: model "${name}" has non-number "context_window"`);
       }
-      if (d.api !== undefined && d.api !== 'responses') {
-        throw new Error(`sonata.toml: model "${name}" has unknown "api" ${JSON.stringify(d.api)}; the only value is "responses"`);
+      if (d.api !== undefined && !MODEL_APIS.includes(d.api as ModelApi)) {
+        throw new Error(`sonata.toml: model "${name}" has unknown "api" ${JSON.stringify(d.api)}; it is one of ${MODEL_APIS.map((a) => `"${a}"`).join(', ')}`);
       }
       // Only opencode/pi/reasonix take provider-qualified ids; defaulting
       // codex the same way synthesized `<gateway>/<id>` (e.g. `openai/gpt-5.6-sol`)
@@ -475,7 +481,7 @@ export function parseConfig(text: string): SonataConfig {
         gateway: d.gateway,
         id: d.id,
         contextWindow: d.context_window ?? 128000,
-        ...(d.api === 'responses' ? { api: 'responses' as const } : {}),
+        ...(d.api !== undefined ? { api: d.api as ModelApi } : {}),
         price: parsePrice(d.price, `[models."${name}"]`),
         ...(typeof d.harness === 'string' ? {
           harness: d.harness,

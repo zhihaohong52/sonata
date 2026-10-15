@@ -1625,7 +1625,7 @@ pricing_provider = ["opencode-go"]
       fetchedAt: '2026-10-14T00:00:00.000Z',
       providers: { 'opencode-go': { 'gpt-6-luna': { input: 1, output: 2 } } },
       names: { 'opencode-go': { 'gpt-6-luna': 'GPT-6 Luna', 'minimax-m3': 'MiniMax M3' } },
-      responsesOnly: { 'opencode-go': { api: 'https://opencode.ai/inference/go/v1', ids: ['gpt-6-luna'] } },
+      protocols: { 'opencode-go': { api: 'https://opencode.ai/inference/go/v1', models: { 'gpt-6-luna': 'responses' } } },
     }));
     const at = new Date('2026-10-14T00:00:00.000Z');
     const flagged = (await doctorChecks(cwd, home, at)).find((check) => check.name === 'model protocol');
@@ -1637,6 +1637,36 @@ pricing_provider = ["opencode-go"]
     writeFileSync(join(cwd, 'sonata.toml'), config('api = "responses"'));
     expect((await doctorChecks(cwd, home, at)).find((check) => check.name === 'model protocol')?.detail)
       .not.toContain('"opencode-go-gpt-6-luna"');
+    // An explicit api that is the wrong protocol is named too.
+    writeFileSync(join(cwd, 'sonata.toml'), config('api = "google"'));
+    expect((await doctorChecks(cwd, home, at)).find((check) => check.name === 'model protocol')?.detail)
+      .toContain('"opencode-go-gpt-6-luna" (api = "google", but it is served on "responses")');
+  });
+
+  it('tells a Google-protocol model on OpenCode Go\'s older /zen/go path where it is served', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-goog-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-goog-home-'));
+    const config = (base: string) => `
+[models."argon"]
+gateway = "opencode-go"
+id = "gemini-4-argon-contributor"
+api = "google"
+
+[native.gateways."opencode-go"]
+base_url = "${base}"
+`;
+    writeFileSync(join(cwd, 'sonata.toml'), config('https://opencode.ai/zen/go/v1'));
+    mkdirSync(join(cwd, '.claude'), { recursive: true });
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(join(home, '.config', 'sonata', 'models-dev.json'), JSON.stringify({
+      fetchedAt: '2026-10-14T00:00:00.000Z', providers: { 'opencode-go': { 'gemini-4-argon-contributor': { input: 4, output: 20 } } },
+      protocols: { 'opencode-go': { api: 'https://opencode.ai/inference/go/v1', models: { 'gemini-4-argon-contributor': 'google' } } },
+    }));
+    const at = new Date('2026-10-14T00:00:00.000Z');
+    const check = async () => (await doctorChecks(cwd, home, at)).find((c) => c.name === 'model protocol endpoint');
+    expect((await check())?.detail).toContain('base_url = "https://opencode.ai/inference/go/v1"');
+    writeFileSync(join(cwd, 'sonata.toml'), config('https://opencode.ai/inference/go/v1'));
+    expect(await check()).toBeUndefined();
   });
 
   it('names each budget cap with today\'s spend, and fails one that is spent', async () => {

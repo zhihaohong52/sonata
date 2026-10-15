@@ -78,6 +78,26 @@ describe('LiteLLM config — unified [models] entries', () => {
     expect(cfg.litellm_settings.use_chat_completions_url_for_anthropic_messages).toBe(true);
   });
 
+  it('sends an api = "google" model to LiteLLM\'s Gemini provider at the gateway, with its session header forwarded', () => {
+    // Measured 2026-10-14: OpenCode Go serves its Gemini models only on
+    // `{base}/models/{id}:generateContent`, which is what LiteLLM's `gemini/`
+    // provider posts to when given an api_base.
+    const cfg = litellmConfig({
+      models: {},
+      gateways: { go: { baseUrl: 'https://opencode.ai/inference/go/v1', auth: 'api-key' } },
+      ports: { router: 4100, litellm: 4000 },
+      generate: {},
+    }, 'sk-master', {
+      argon: { gateway: 'go', id: 'gemini-4-argon-contributor', api: 'google' },
+    });
+    expect(cfg.model_list[0].litellm_params).toEqual({
+      model: 'gemini/gemini-4-argon-contributor',
+      api_base: 'https://opencode.ai/inference/go/v1',
+      api_key: 'os.environ/SONATA_KEY_GO',
+    });
+    expect(cfg.litellm_settings.model_group_settings?.forward_client_headers_to_llm_api).toEqual(['argon']);
+  });
+
   it('skips a unified entry with no gateway route (harness-only)', () => {
     const cfg = litellmConfig({
       models: {},

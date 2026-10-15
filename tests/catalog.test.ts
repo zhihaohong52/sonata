@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { parseConfig } from '../src/config.js';
@@ -10,8 +10,10 @@ import {
   aaCatalogAgeDays, aaLookupNames, catalogCoverage, SIMPLE_COST_CEILING,
   catalogFamily, expandCandidates, hasEffortVariants, unpinnedVariants, candidateLabel,
   unpinnedCandidates, assertEffortsPinned, hasTaskCost, candidateFacts, reasoningOf,
+  withContributorEntries,
   type AaCatalog,
 } from '../src/catalog.js';
+import { modelsDevPath } from '../src/modelsdev.js';
 import { plan, type CredentialProbe } from '../src/init/plan.js';
 import { rankableCandidates } from '../src/commands/agents.js';
 import { splitCandidate } from '../src/effort.js';
@@ -1802,5 +1804,70 @@ describe('proposeTiers — value is measured per task, never across units', () =
       },
     };
     expect(proposeTiers(['x', 'y'], tied).complex).toEqual(['x']);
+  });
+});
+
+describe('withContributorEntries', () => {
+  // Synthetic numbers throughout: AA data may not be committed. A contributor
+  // variant is the same weights on other terms at another price, so it keeps
+  // the standard model's scores and its cost per task scales by price.
+  const aa: AaCatalog = {
+    fetchedAt: '2026-10-15T00:00:00.000Z',
+    models: {
+      'acme-one': { intelligenceIndex: 40, blendedPriceUsd: 2, costPerTask: 1, family: 'acme-one', effort: 'max' },
+      'acme-one-low': { intelligenceIndex: 30, blendedPriceUsd: 2, costPerTask: 0.5, family: 'acme-one', effort: 'low' },
+      // No per-token rates: AA's blended price fell back to the task cost.
+      'acme-two': { intelligenceIndex: 40, blendedPriceUsd: 3, costPerTask: 3, family: 'acme-two', effort: 'high' },
+    },
+  };
+  const rates = (input: number, output: number) => ({ input, output });
+  const derived = (providers: Record<string, Record<string, { input: number; output: number }>>) =>
+    withContributorEntries(aa, { providers });
+
+  it('keeps the scores and rescales every effort level by the contributor\'s blended rate', () => {
+    // (3 × 0.5 + 1) / 4 = 0.625 against AA's 2: a 0.3125 ratio.
+    const out = derived({ go: { 'acme-one-contributor': rates(0.5, 1) } });
+    expect(out.models['acme-one-contributor']).toMatchObject({
+      intelligenceIndex: 40, costPerTask: 0.3125, blendedPriceUsd: 0.625, contributorOf: 'acme-one', effort: 'max',
+    });
+    expect(out.models['acme-one-contributor-low']).toMatchObject({ intelligenceIndex: 30, costPerTask: 0.15625 });
+    expect(hasTaskCost('go-acme-one-contributor@low', out, ['go'])).toBe(true);
+    expect(candidateLabel('go-acme-one-contributor', out, ['go'])).toContain('prompts may be used for training');
+    expect(aa.models['acme-one-contributor']).toBeUndefined();
+  });
+
+  it('never replaces a contributor level AA publishes itself', () => {
+    const published = { intelligenceIndex: 33, blendedPriceUsd: 1, costPerTask: 0.7, family: 'acme-one-contributor', effort: 'low' as const };
+    const out = withContributorEntries({ ...aa, models: { ...aa.models, 'acme-one-contributor-low': published } },
+      { providers: { go: { 'acme-one-contributor': rates(0.5, 1) } } });
+    expect(out.models['acme-one-contributor-low']).toEqual(published);
+    expect(out.models['acme-one-contributor']?.costPerTask).toBe(0.3125);
+  });
+
+  it('can price a contributor above the standard model, and reads a vendor-qualified id', () => {
+    const out = derived({ gw: { 'vendor/acme-one-contributor': rates(4, 4) } });
+    expect(out.models['acme-one-contributor']!.costPerTask).toBe(2);
+  });
+
+  it('leaves a contributor unscored when its price is free, ambiguous, or AA measured no real rate', () => {
+    expect(derived({ a: { 'acme-one-contributor': rates(0, 0) } }).models['acme-one-contributor']).toBeUndefined();
+    expect(derived({ a: { 'acme-one-contributor': rates(1, 1) }, b: { 'acme-one-contributor': rates(2, 2) } })
+      .models['acme-one-contributor']).toBeUndefined();
+    expect(derived({ a: { 'acme-two-contributor': rates(1, 1) } }).models['acme-two-contributor']).toBeUndefined();
+    expect(derived({ a: { 'other-contributor': rates(1, 1) } })).toBe(aa);
+    // A free listing beside a paid one leaves the price unknown.
+    expect(derived({ a: { 'acme-one-contributor': rates(0, 0) }, b: { 'acme-one-contributor': rates(1, 1) } })
+      .models['acme-one-contributor']).toBeUndefined();
+  });
+
+  it('is applied by loadAaCatalog from the models.dev cache, and never written to disk', () => {
+    const home = mkdtempSync(join(tmpdir(), 'sonata-contributor-'));
+    mkdirSync(dirname(aaCatalogPath(home)), { recursive: true });
+    writeFileSync(aaCatalogPath(home), JSON.stringify(aa));
+    writeFileSync(modelsDevPath(home), JSON.stringify({
+      fetchedAt: '2026-10-15T00:00:00.000Z', providers: { go: { 'acme-one-contributor': rates(0.5, 1) } },
+    }));
+    expect(loadAaCatalog(home)!.models['acme-one-contributor']?.costPerTask).toBe(0.3125);
+    expect(readFileSync(aaCatalogPath(home), 'utf8')).not.toContain('contributor');
   });
 });

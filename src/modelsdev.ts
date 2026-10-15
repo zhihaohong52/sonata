@@ -8,7 +8,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import type { Rates } from './config.js';
+import type { ModelApi, Rates } from './config.js';
 import { planEndpointFor } from './plans.js';
 
 export const MODELS_DEV_URL = 'https://models.dev/api.json';
@@ -40,20 +40,23 @@ export interface ModelsDevCache {
    */
   names?: Record<string, Record<string, string>>;
   /**
-   * provider id -> its endpoint and the model ids it serves only on the
-   * Responses API.
+   * provider id -> its endpoint and the models it serves only on another
+   * protocol than chat completions, and which.
    *
    * models.dev names each provider's SDK package and overrides it per model
    * where the model speaks another protocol. On an OpenAI-compatible provider
    * (`@ai-sdk/openai-compatible`, chat completions) a model overridden to
-   * `@ai-sdk/openai` is reached on `/responses` instead: measured 2026-10-14
-   * on OpenCode Go, `gpt-6-luna` answers chat completions with
-   * `ModelProtocolUnsupported` and serves on `/responses`. A protocol is a
-   * fact about an endpoint, so the provider's `api` URL is kept with it and a
-   * gateway is matched by its base URL, never by its name or pricing. Absent
-   * on a cache written before this field existed, which reads as "unknown".
+   * `@ai-sdk/openai` is reached on `/responses`, and one overridden to
+   * `@ai-sdk/google` on Google's `generateContent`. Measured 2026-10-14 on
+   * OpenCode Go: `gpt-6-luna` answers chat completions with
+   * `ModelProtocolUnsupported` and serves on `/responses`;
+   * `gemini-4-argon-contributor` refuses chat completions, `/responses` and
+   * `/messages` alike and serves `generateContent`. A protocol is a fact about
+   * an endpoint, so the provider's `api` URL is kept with it and a gateway is
+   * matched by its base URL, never by its name or pricing. Absent on a cache
+   * written before this field existed, which reads as "unknown".
    */
-  responsesOnly?: Record<string, { api: string; ids: string[] }>;
+  protocols?: Record<string, { api: string; models: Record<string, ModelApi> }>;
 }
 
 export function modelsDevPath(home: string): string {
@@ -140,18 +143,26 @@ export function normalizeModelsDevNames(doc: unknown): NonNullable<ModelsDevCach
   return names;
 }
 
-/** `ModelsDevCache.responsesOnly` from a models.dev document. */
-export function normalizeModelsDevResponsesOnly(doc: unknown): NonNullable<ModelsDevCache['responsesOnly']> {
+/** The SDK package models.dev names for each protocol a model may override to. */
+const PROTOCOL_FOR_NPM: Readonly<Record<string, ModelApi>> = {
+  '@ai-sdk/openai': 'responses',
+  '@ai-sdk/google': 'google',
+};
+
+/** `ModelsDevCache.protocols` from a models.dev document. */
+export function normalizeModelsDevProtocols(doc: unknown): NonNullable<ModelsDevCache['protocols']> {
   if (!isRecord(doc)) return {};
-  const out: NonNullable<ModelsDevCache['responsesOnly']> = {};
+  const out: NonNullable<ModelsDevCache['protocols']> = {};
   for (const [providerId, rawProvider] of Object.entries(doc)) {
     if (providerId === '' || !isRecord(rawProvider) || !isRecord(rawProvider.models)) continue;
     if (rawProvider.npm !== '@ai-sdk/openai-compatible' || typeof rawProvider.api !== 'string') continue;
-    const ids = Object.entries(rawProvider.models)
-      .filter(([id, model]) => id !== '' && isRecord(model) && isRecord(model.provider) && model.provider.npm === '@ai-sdk/openai')
-      .map(([id]) => id)
-      .sort();
-    if (ids.length > 0) out[providerId] = { api: rawProvider.api, ids };
+    const models: Record<string, ModelApi> = {};
+    for (const [id, model] of Object.entries(rawProvider.models).sort(([a], [b]) => a.localeCompare(b))) {
+      const npm = isRecord(model) && isRecord(model.provider) ? model.provider.npm : undefined;
+      const api = typeof npm === 'string' ? PROTOCOL_FOR_NPM[npm] : undefined;
+      if (id !== '' && api !== undefined) models[id] = api;
+    }
+    if (Object.keys(models).length > 0) out[providerId] = { api: rawProvider.api, models };
   }
   return out;
 }
@@ -167,7 +178,8 @@ function endpointOf(url: string): string | undefined {
 }
 
 /**
- * Whether the endpoint at `baseUrl` serves `id` only on the Responses API.
+ * The protocol the endpoint at `baseUrl` serves `id` on, when it is not chat
+ * completions, with the URL models.dev lists that provider at.
  *
  * Matched by endpoint: a provider counts when its models.dev `api` URL is
  * `baseUrl`, or when `baseUrl` is a plan endpoint whose list provider it is
@@ -175,19 +187,30 @@ function endpointOf(url: string): string | undefined {
  * and models.dev lists only the second). Never by gateway name or
  * `pricing_provider`, which say where a price comes from, not what the
  * endpoint speaks: a reseller priced at OpenCode Go's rates may well serve
- * the same model on chat completions.
+ * the same model on chat completions. `endpoint` lets a caller see that the
+ * match was by plan and the listed URL differs — OpenCode Go serves Google's
+ * protocol only on `/inference/go`.
  */
-export function needsResponsesApi(
-  cache: Pick<ModelsDevCache, 'responsesOnly'> | undefined,
+export function requiredApi(
+  cache: Pick<ModelsDevCache, 'protocols'> | undefined,
   baseUrl: string | undefined,
   id: string,
-): boolean {
-  if (cache?.responsesOnly === undefined || baseUrl === undefined) return false;
+): { api: ModelApi; endpoint: string } | undefined {
+  if (cache?.protocols === undefined || baseUrl === undefined) return undefined;
   const endpoint = endpointOf(baseUrl);
-  if (endpoint === undefined) return false;
+  if (endpoint === undefined) return undefined;
   const plan = planEndpointFor(baseUrl)?.listProvider;
-  return Object.entries(cache.responsesOnly).some(([provider, entry]) =>
-    (provider === plan || endpointOf(entry.api) === endpoint) && entry.ids.includes(id));
+  for (const [provider, entry] of Object.entries(cache.protocols)) {
+    const api = entry.models[id];
+    if (api !== undefined && (provider === plan || endpointOf(entry.api) === endpoint)) return { api, endpoint: entry.api };
+  }
+  return undefined;
+}
+
+/** Whether `a` and `b` name the same endpoint: host and path, trailing slash aside. */
+export function sameEndpoint(a: string, b: string): boolean {
+  const left = endpointOf(a);
+  return left !== undefined && left === endpointOf(b);
 }
 
 /**
@@ -316,8 +339,8 @@ export function loadModelsDev(home: string): ModelsDevCache | undefined {
     // inside a ranking. Keep the well-formed provider tables, drop the rest.
     const names = validNames(doc.names);
     if (names === undefined) delete doc.names; else doc.names = names;
-    const responsesOnly = validResponsesOnly(doc.responsesOnly);
-    if (responsesOnly === undefined) delete doc.responsesOnly; else doc.responsesOnly = responsesOnly;
+    const protocols = validProtocols(doc.protocols);
+    if (protocols === undefined) delete doc.protocols; else doc.protocols = protocols;
     return doc;
   } catch {
     return undefined;
@@ -338,13 +361,16 @@ function validNames(raw: unknown): NonNullable<ModelsDevCache['names']> | undefi
   return Object.keys(names).length > 0 ? names : undefined;
 }
 
-function validResponsesOnly(raw: unknown): NonNullable<ModelsDevCache['responsesOnly']> | undefined {
+function validProtocols(raw: unknown): NonNullable<ModelsDevCache['protocols']> | undefined {
   if (!isRecord(raw)) return undefined;
-  const out: NonNullable<ModelsDevCache['responsesOnly']> = {};
+  const out: NonNullable<ModelsDevCache['protocols']> = {};
   for (const [providerId, entry] of Object.entries(raw)) {
-    if (providerId === '' || !isRecord(entry) || typeof entry.api !== 'string' || !Array.isArray(entry.ids)) continue;
-    const ids = entry.ids.filter((id): id is string => typeof id === 'string' && id !== '');
-    if (ids.length > 0) out[providerId] = { api: entry.api, ids };
+    if (providerId === '' || !isRecord(entry) || typeof entry.api !== 'string' || !isRecord(entry.models)) continue;
+    const models: Record<string, ModelApi> = {};
+    for (const [id, api] of Object.entries(entry.models)) {
+      if (id !== '' && (api === 'responses' || api === 'google')) models[id] = api;
+    }
+    if (Object.keys(models).length > 0) out[providerId] = { api: entry.api, models };
   }
   return Object.keys(out).length > 0 ? out : undefined;
 }

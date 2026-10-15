@@ -1,4 +1,4 @@
-import { enrichContextWindows, loadModelsDev, needsResponsesApi } from '../modelsdev.js';
+import { enrichContextWindows, loadModelsDev, requiredApi } from '../modelsdev.js';
 import { catalogSpellingsForGateway, configUpstreamFor } from '../pricing.js';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -153,17 +153,18 @@ export function plan(
   // the development machine carried it, several of them 1M models.
   const modelsDev = loadModelsDev(opts.home);
   enrichContextWindows(nativeByKey, modelsDev?.contexts);
-  // A model its endpoint serves only on `/responses` is written with
-  // `api = "responses"`: on chat completions it refuses every request
-  // (OpenCode Go's `gpt-6-luna`, measured 2026-10-14). Matched by base URL
-  // (`needsResponsesApi`). Key-authenticated gateways only — an OAuth provider
+  // A model its endpoint serves only on another protocol is written with its
+  // `api` — `responses` or `google`: on chat completions it refuses every
+  // request (OpenCode Go's `gpt-6-luna` and Gemini models, measured
+  // 2026-10-14). Matched by base URL (`requiredApi`). Key-authenticated gateways only — an OAuth provider
   // picks its own endpoint — and never one speaking Anthropic's dialect, which
   // goes direct, where `api` is refused. Decided afresh on every plan.
   for (const candidate of nativeByKey.values()) {
     const declared = configForScope?.native?.gateways[candidate.gateway];
     const eligible = (declared?.auth ?? candidate.auth) === 'api-key'
       && (declared?.provider ?? declared?.wireFormat ?? candidate.wireFormat) !== 'anthropic';
-    if (eligible && needsResponsesApi(modelsDev, declared?.baseUrl ?? candidate.baseUrl, candidate.id)) candidate.api = 'responses';
+    const required = eligible ? requiredApi(modelsDev, declared?.baseUrl ?? candidate.baseUrl, candidate.id) : undefined;
+    if (required !== undefined) candidate.api = required.api;
     else delete candidate.api;
   }
 

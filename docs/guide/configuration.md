@@ -38,6 +38,12 @@ else. `sonata init` keeps the line when it rewrites the file, and adds it itself
 for a model models.dev says is served only there (OpenCode Go's GPT models, for
 one); `sonata doctor` names any such model that lacks it.
 
+`api = "google"` does the same for a model served only on Google's own
+protocol — OpenCode Go's Gemini models. OpenCode Go serves that protocol only at
+`https://opencode.ai/inference/go/v1`, not the older `…/zen/go/v1`; `sonata
+init` now writes the first, and `sonata doctor` tells you if a gateway needs
+switching.
+
 ## Where sonata.toml lives
 
 Sonata looks for a config in three places, in order, and uses exactly one:
@@ -287,8 +293,9 @@ The whole grammar `sonata.toml` parses. Top-level keys must sit above every
   takes `id` bare, opencode/pi/reasonix take `<gateway>/<id>`, and `claude`
   takes the config key.
 - `api = "responses"` — send to the gateway's `/responses` endpoint instead
-  of `/chat/completions`. Only on an `api-key` gateway reached through
-  LiteLLM; refused anywhere else.
+  of `/chat/completions`; `api = "google"` — send over Google's
+  `generateContent` protocol at the gateway's base URL. Only on an `api-key`
+  gateway reached through LiteLLM; refused anywhere else.
 - `context_window` — tokens, for the native route (default `128000`).
 - `price` — rates as below.
 

@@ -11,7 +11,7 @@ import { splitCandidate } from '../effort.js';
 import {
   GLOBAL_CONFIG_RELATIVE, parseConfig,
   isOauthGatewayAuth, oauthGatewayBaseUrl,
-  CREDENTIAL_SOURCES, type SonataConfig, type NativeGatewayAuth, type NativeGatewayWireFormat, type CredentialSource,
+  CREDENTIAL_SOURCES, type SonataConfig, type ModelApi, type NativeGatewayAuth, type NativeGatewayWireFormat, type CredentialSource,
 } from '../config.js';
 import { readChatGptOAuth, readOpencodeChatGptOAuth } from '../native/codex-auth.js';
 import { readCopilotToken } from '../native/copilot-auth.js';
@@ -279,8 +279,8 @@ export interface NativeCandidate {
   harness?: string;
   harnessId?: string;
   wireFormat?: NativeGatewayWireFormat;
-  /** Reached on the gateway's `/responses` endpoint; see `UnifiedModelConfig.api`. */
-  api?: 'responses';
+  /** The endpoint override init found the model needs; see `UnifiedModelConfig.api`. */
+  api?: ModelApi;
 }
 
 /**

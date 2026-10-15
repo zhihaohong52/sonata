@@ -38,7 +38,7 @@ import { defaultInstallerDeps, describeStatus, statusIsHealthy } from './litellm
 import { AA_CATALOG_MAX_AGE_DAYS, aaCatalogAgeDays, catalogCoverage, catalogFamily, hasTaskCost, loadAaCatalog, normalizedFor } from '../catalog.js';
 import { suggestedTiers } from './agents.js';
 import { planEndpointFor, sharedPlanFor } from '../plans.js';
-import { loadModelsDev, needsResponsesApi } from '../modelsdev.js';
+import { loadModelsDev, requiredApi, sameEndpoint } from '../modelsdev.js';
 import { configUpstreamFor, proposePricingProvider } from '../pricing.js';
 import { CURRENT_SCHEMA_VERSION } from '../migrations.js';
 import { mainWorktreeDir } from '../git-worktree.js';
@@ -829,23 +829,40 @@ export async function cmdDoctor(
     }
   }
 
-  // A model its provider serves only on `/responses`, configured without
-  // `api = "responses"`: every request to it is refused on chat completions
-  // (OpenCode Go's `gpt-6-luna`, which served nothing in 37 tries before
-  // 2026-10-14). The router falls through past it, so nothing else says so.
+  // A model its endpoint serves only on another protocol, configured without
+  // that `api`: every request to it is refused on chat completions (OpenCode
+  // Go's `gpt-6-luna`, which served nothing in 37 tries before 2026-10-14).
+  // The router falls through past it, so nothing else says so. A Google-
+  // protocol model also needs the endpoint models.dev lists: OpenCode Go
+  // serves `generateContent` on `/inference/go` only, not the older `/zen/go`.
   if (modelsDevForProviders !== undefined) {
-    const wrongProtocol = Object.entries(config.unifiedModels).flatMap(([key, model]) => {
+    const missing: string[] = [];
+    const wrongEndpoint: string[] = [];
+    for (const [key, model] of Object.entries(config.unifiedModels)) {
       const gw = model.gateway === undefined ? undefined : config.native?.gateways[model.gateway];
-      if (gw === undefined || model.id === undefined || model.api !== undefined || gw.auth !== 'api-key') return [];
-      if ((gw.provider ?? gw.wireFormat) === 'anthropic') return [];
-      return needsResponsesApi(modelsDevForProviders, gw.baseUrl, model.id) ? [`"${key}"`] : [];
-    });
-    if (wrongProtocol.length > 0) {
+      if (gw === undefined || model.id === undefined || gw.auth !== 'api-key') continue;
+      if ((gw.provider ?? gw.wireFormat) === 'anthropic') continue;
+      const required = requiredApi(modelsDevForProviders, gw.baseUrl, model.id);
+      if (required === undefined) continue;
+      if (model.api === undefined) missing.push(`"${key}" (api = "${required.api}")`);
+      else if (model.api !== required.api) missing.push(`"${key}" (api = "${model.api}", but it is served on "${required.api}")`);
+      if ((model.api ?? required.api) === 'google' && gw.baseUrl !== undefined && !sameEndpoint(gw.baseUrl, required.endpoint)) {
+        wrongEndpoint.push(`"${key}" — set base_url = "${required.endpoint}" on gateway "${model.gateway}"`);
+      }
+    }
+    if (missing.length > 0) {
       checks.push({
         name: 'model protocol',
         ok: false,
-        detail: `${wrongProtocol.join(', ')}: served only on the Responses API, so every request on chat completions is refused — `
-          + 'add api = "responses" to each [models] entry, or re-run `sonata init`',
+        detail: `${missing.join(', ')}: served only on that protocol, so every request on any other is refused — `
+          + 'set the api line on each [models] entry, or re-run `sonata init`',
+      });
+    }
+    if (wrongEndpoint.length > 0) {
+      checks.push({
+        name: 'model protocol endpoint',
+        ok: false,
+        detail: `${wrongEndpoint.join('; ')}: Google's protocol is served only at that URL`,
       });
     }
   }
