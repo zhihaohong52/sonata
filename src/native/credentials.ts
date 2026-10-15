@@ -1,5 +1,5 @@
-import { chmodSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { chmodSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 import { readOpencodeCredentials } from './opencode-store.js';
 import { readOnce } from './read-snapshot.js';
@@ -28,15 +28,44 @@ interface KeyStoreSource {
   read(home: string): Record<string, KeyStoreValue>;
 }
 
-function readJson(path: string): Record<string, unknown> {
+/**
+ * What went wrong reading a JSON credential store, for writers that must
+ * refuse rather than start from nothing.
+ */
+export type StoreReadProblem =
+  | { kind: 'missing' }
+  | { kind: 'unreadable'; reason: string }
+  | { kind: 'invalid'; reason: string };
+
+function errnoCode(error: unknown): string {
+  return (error as NodeJS.ErrnoException)?.code ?? (error instanceof Error ? error.message : String(error));
+}
+
+function readJsonStrict(path: string): { value?: Record<string, unknown>; problem?: StoreReadProblem } {
+  let bytes: Buffer;
   try {
-    const value: unknown = JSON.parse(readOnce(path).toString('utf8'));
-    return value !== null && typeof value === 'object' && !Array.isArray(value)
-      ? value as Record<string, unknown>
-      : {};
-  } catch {
-    return {};
+    bytes = readOnce(path);
+  } catch (error) {
+    const code = errnoCode(error);
+    return code === 'ENOENT' || code === 'ENOTDIR'
+      ? { problem: { kind: 'missing' } }
+      : { problem: { kind: 'unreadable', reason: `${path}: ${code}` } };
   }
+  let value: unknown;
+  try {
+    value = JSON.parse(bytes.toString('utf8'));
+  } catch {
+    return { problem: { kind: 'invalid', reason: `${path} is not valid JSON (refusing to rewrite it)` } };
+  }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return { problem: { kind: 'invalid', reason: `${path} does not hold a JSON object (refusing to rewrite it)` } };
+  }
+  return { value: value as Record<string, unknown> };
+}
+
+function readJson(path: string): Record<string, unknown> {
+  const { value } = readJsonStrict(path);
+  return value ?? {};
 }
 
 function usableKey(value: unknown): string | undefined {
@@ -49,12 +78,7 @@ function usableKey(value: unknown): string | undefined {
  * objects into keys.json silently corrupted the file on the second write.
  */
 function sonataKeyMap(home: string): Record<string, string> {
-  return Object.fromEntries(
-    Object.entries(readJson(sonataKeyStorePath(home))).flatMap(([gateway, key]) => {
-      const usable = usableKey(key);
-      return usable === undefined ? [] : [[gateway, usable]];
-    }),
-  );
+  return sonataKeyStrings(readJson(sonataKeyStorePath(home)));
 }
 
 function sonataKeys(home: string): Record<string, KeyStoreValue> {
@@ -180,14 +204,20 @@ export function keyReport(gateways: string[], home: string): KeyReport[] {
 
 export function writeSonataKey(home: string, gateway: string, key: string): void {
   const path = sonataKeyStorePath(home);
-  mkdirSync(join(home, '.config/sonata'), { recursive: true });
-  writeFileSync(path, `${JSON.stringify({ ...sonataKeyMap(home), [gateway]: key }, null, 2)}\n`, { mode: 0o600 });
-  chmodSync(path, 0o600);
+  const { value, problem } = readJsonStrict(path);
+  if (problem !== undefined && problem.kind !== 'missing') {
+    throw new Error(`cannot store the key for "${gateway}": ${problem.reason}`);
+  }
+  writeFileAtomic(path, `${JSON.stringify({ ...sonataKeyStrings(value ?? {}), [gateway]: key }, null, 2)}\n`);
 }
 
 export function removeSonataKey(home: string, gateway: string): void {
   const path = sonataKeyStorePath(home);
-  const keys = sonataKeyMap(home);
+  const { value, problem } = readJsonStrict(path);
+  if (problem !== undefined && problem.kind !== 'missing') {
+    throw new Error(`cannot remove the key for "${gateway}": ${problem.reason}`);
+  }
+  const keys = sonataKeyStrings(value ?? {});
   delete keys[gateway];
 
   if (Object.keys(keys).length === 0) {
@@ -199,6 +229,32 @@ export function removeSonataKey(home: string, gateway: string): void {
     return;
   }
 
-  writeFileSync(path, `${JSON.stringify(keys, null, 2)}\n`, { mode: 0o600 });
+  writeFileAtomic(path, `${JSON.stringify(keys, null, 2)}\n`);
+}
+
+/**
+ * Write a small credential JSON file atomically: a temp file in the same
+ * directory (so the rename stays on one filesystem), then rename, 0600.
+ *
+ * Without this, a crash or kill between truncate and write left a half file —
+ * and for keys.json the next read parsed it as empty and every stored key
+ * silently vanished.
+ */
+export function writeFileAtomic(path: string, content: string): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmp, content, { mode: 0o600 });
+  chmodSync(tmp, 0o600);
+  renameSync(tmp, path);
   chmodSync(path, 0o600);
+}
+
+/** The sonata store as persisted: plain gateway → key strings. */
+function sonataKeyStrings(raw: Record<string, unknown>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(raw).flatMap(([gateway, key]) => {
+      const usable = usableKey(key);
+      return usable === undefined ? [] : [[gateway, usable]];
+    }),
+  );
 }
