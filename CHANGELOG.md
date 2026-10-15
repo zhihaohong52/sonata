@@ -37,16 +37,19 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   is skipped for the next candidate instead of ending the request.
 - **A tool call a model writes as text that cannot be recovered no longer
   ends the agent.** The router holds the start of a tier response until its
-  first text rules a `<tool_call>` marker in or out (thinking and real tool
-  calls are not held), so a turn carrying an unrecoverable call is withdrawn
-  and the next ranked model asked, as for a 5xx. Text already sent before a
-  marker still reaches the client, as before; when no other model serves, the
-  withdrawn turn is served after all. A withdrawn turn was still billed, so it
-  gets a ledger row of its own, marked `withdrawn`: priced and counted toward
-  `[budget]`, and shown by `sonata usage` on its own line rather than as a
-  served request. A model that does this twice within 30
-  minutes is skipped for 30 minutes instead of 60 seconds, and `sonata doctor`
-  names it with the reason.
+  first text rules a tool call in or out (thinking and real tool calls are not
+  held), so a turn carrying an unrecoverable call is withdrawn and the next
+  ranked model asked, as for a 5xx — once per request; later models stream as
+  before. Only a `<tool_call>` tag followed by a call body (`<function=…>` or
+  `{`) counts: the tag mentioned in prose or quoted in code is ordinary text.
+  Text already sent before a call still reaches the client, as before; when
+  no other model serves, the withdrawn turn is served after all. A withdrawn
+  turn was still billed, so it gets a ledger row of its own, marked
+  `withdrawn`: priced and counted toward `[budget]`, and shown by `sonata
+  usage`, the usage screen and the web UI beside the totals rather than as a
+  served request. A model that does this twice within 30 minutes is skipped
+  for 30 minutes instead of 60 seconds, and `sonata doctor` names it with the
+  reason.
 
 ### Changed
 

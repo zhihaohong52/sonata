@@ -443,6 +443,27 @@ describe('router — text-form tool calls', () => {
     expect(seen).toEqual(['default/pro']);
   });
 
+  it('withdraws and recovers through CRLF-framed streams split across chunks, end to end', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const crlf = (text: string) => text.replace(/\n/g, '\r\n');
+    // Cut through a \r\n and through the marker.
+    const split = (text: string): string[] => {
+      const at = text.indexOf('tool_call>') + 3;
+      const cr = text.indexOf('\r\n', 30) + 1;
+      return [text.slice(0, cr), text.slice(cr, at), text.slice(at)];
+    };
+    const { seen, d } = twoCandidates(rows, (key) => chunked(split(crlf(stream(key === 'flash' ? UNPARSED : 'Go ' + CALL)))));
+    const out = await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
+    expect(seen).toEqual(['default/flash', 'default/pro']);
+    expect(out).toContain('"type":"tool_use"');
+    expect(out).toContain('"stop_reason":"tool_use"');
+    expect(out).not.toContain('Nope');
+    const served = rows.find((r) => r.withdrawn !== true)!;
+    expect(served.textToolCalls).toEqual({ recovered: 1, unparsed: 0 });
+    expect(rows.find((r) => r.withdrawn === true)).toMatchObject({ key: 'flash', complete: true, tokens: { input: 10, output: 5 } });
+  });
+
   it('times a withdrawn turn to its own end, not the request\'s', async () => {
     clearCooldowns();
     let clock = 1_000;
