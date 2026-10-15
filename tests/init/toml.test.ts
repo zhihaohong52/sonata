@@ -301,6 +301,25 @@ describe('nativeTomlFor — avoid_gateways', () => {
     expect(toml).not.toContain('avoid_gateways');
     expect(parseConfig(toml).avoidGateways).toBeUndefined();
   });
+
+  it('drops an avoided gateway the file does not write rather than emitting an unparseable name', () => {
+    // parseConfig refuses an unknown gateway name, so a saved avoidance for a
+    // gateway whose every model was deselected this run would make the whole
+    // config fail to load. Same filter gateway_order already carries.
+    const toml = nativeTomlFor(
+      { code: [candidate] }, {}, undefined, {}, [candidate], undefined, ['gone', 'acme'],
+    );
+    expect(toml).not.toContain('gone');
+    expect(parseConfig(toml).avoidGateways).toEqual(['acme']);
+  });
+
+  it('omits the key when every avoided gateway is unwritten', () => {
+    const toml = nativeTomlFor(
+      { code: [candidate] }, {}, undefined, {}, [candidate], undefined, ['gone'],
+    );
+    expect(toml).not.toContain('avoid_gateways');
+    expect(parseConfig(toml).avoidGateways).toBeUndefined();
+  });
 });
 
 describe('nativeTomlFor — gateway_order', () => {

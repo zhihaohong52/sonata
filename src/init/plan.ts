@@ -369,14 +369,15 @@ export function plan(
   // It includes the -auto agents `sync` adds when [auto_route] survives the
   // config rewrite; a config that will not parse promises the tier agents only.
   let autoAgents = 0;
-  try { autoAgents = autoAgentRoles(parsedPlanned).length; } catch { /* reported elsewhere */ }
+  try { autoAgents = autoAgentRoles(parsedPlanned).length; } catch { /* unreachable: the guard above
+    refused an unparseable plan, so this only fires on a shape parseConfig accepts but the tier
+    helpers reject */ }
   const totalAgents = tierAgentNames(tiers).length + autoAgents;
   // Parsed back out of the TOML about to be written: `serve` makes this same
   // call against that same file, and a summary derived from the selections
   // instead could promise something the written config does not say.
   let installLitellmNeeded = false;
-  try { installLitellmNeeded = litellmRequired(parsedPlanned); } catch { /* the config
-    is validated elsewhere; an unparseable one is not this line's error to raise */ }
+  try { installLitellmNeeded = litellmRequired(parsedPlanned); } catch { /* as above */ }
   // ---- guidance ----
   // Project scope writes the repository's own CLAUDE.md, so the preference
   // travels with the repo and applies to collaborators too; global scope

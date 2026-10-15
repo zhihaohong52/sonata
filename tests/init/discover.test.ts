@@ -144,4 +144,29 @@ describe('discover', () => {
     expect(env.configBaseUrlsByScope!.global).toEqual({ acme: 'https://global.example/v1' });
     expect(env.configBaseUrlsByScope!.project).toEqual({ acme: 'https://project.example/v1' });
   });
+
+  it('records an unreadable config instead of starting from defaults', async () => {
+    // A file that exists but fails to parse must stop init before the wizard:
+    // proceeding from defaults would silently replace the user's tiers, prices
+    // and [budget] with a fresh proposal.
+    writeFileSync(join(cwd, 'sonata.toml'), 'avoid_gateways = ["ghost"]\n');
+    const lines: string[] = [];
+    const env = await discover({ cwd, home, packageRoot: cwd, detect: detector }, (l) => lines.push(l));
+    expect(env.configsByScope.project).toBeUndefined();
+    expect(env.unreadableConfigs).toHaveLength(1);
+    expect(env.unreadableConfigs[0].path).toBe(join(cwd, 'sonata.toml'));
+    expect(env.unreadableConfigs[0].error).toMatch(/unknown gateway/);
+  });
+
+  it('records a newer-schema config the same way', async () => {
+    // A file stamped with a schema_version this sonata does not understand is
+    // refused by applyMigrations on purpose — rewriting it from defaults would
+    // delete work a newer sonata wrote.
+    const { CURRENT_SCHEMA_VERSION } = await import('../../src/migrations.js');
+    writeFileSync(join(cwd, 'sonata.toml'), `schema_version = ${CURRENT_SCHEMA_VERSION + 1}\n`);
+    const env = await discover({ cwd, home, packageRoot: cwd, detect: detector }, () => {});
+    expect(env.configsByScope.project).toBeUndefined();
+    expect(env.unreadableConfigs).toHaveLength(1);
+    expect(env.unreadableConfigs[0].error).toMatch(/understands up to/);
+  });
 });

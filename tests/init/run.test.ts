@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { mkdtempSync, existsSync } from 'node:fs';
+import { mkdtempSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { cmdInit } from '../../src/commands/init.js';
@@ -8,6 +8,7 @@ import type { Detector } from '../../src/init/discover.js';
 import { scriptedState } from '../../src/init/scripted-state.js';
 import { plan } from '../../src/init/plan.js';
 import { loadConfig } from '../../src/config.js';
+import { CURRENT_SCHEMA_VERSION } from '../../src/migrations.js';
 import { nullInitLog } from '../../src/commands/init-log.js';
 
 let home: string;
@@ -50,6 +51,34 @@ describe('a stranger’s first run', () => {
     const first = loadConfig(cwd, home).tiers;
     await cmdInit(base());
     expect(loadConfig(cwd, home).tiers).toEqual(first);
+  });
+});
+
+describe('an unreadable existing config', () => {
+  it('--yes refuses and writes nothing, naming the file and the error', async () => {
+    // A parse failure is not a default to start from: rewriting it would
+    // silently replace the user's tiers, prices and [budget] with a proposal.
+    const before = 'avoid_gateways = ["ghost"]\n\n[budget]\ndaily_usd = 25\n';
+    writeFileSync(join(cwd, 'sonata.toml'), before);
+    await expect(cmdInit(base())).rejects.toThrow(/cannot be read/);
+    // The file is untouched — and the refusal names both the file and why.
+    expect(readFileSync(join(cwd, 'sonata.toml'), 'utf8')).toBe(before);
+    try {
+      await cmdInit(base());
+    } catch (err) {
+      expect(String(err)).toMatch(/sonata\.toml/);
+      expect(String(err)).toMatch(/unknown gateway/);
+    }
+  });
+
+  it('--yes refuses a newer-schema config rather than replacing it', async () => {
+    // A stamp from the future is refused by applyMigrations on purpose — a
+    // newer sonata may have moved a field this one still reads, so rewriting
+    // it from defaults would delete work this sonata cannot even understand.
+    const before = `schema_version = ${CURRENT_SCHEMA_VERSION + 1}\n`;
+    writeFileSync(join(cwd, 'sonata.toml'), before);
+    await expect(cmdInit(base())).rejects.toThrow(/cannot be read/);
+    expect(readFileSync(join(cwd, 'sonata.toml'), 'utf8')).toBe(before);
   });
 });
 
