@@ -37,6 +37,57 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   now runs into a fresh temp directory swapped in only on success, so a
   failed login leaves the working credential untouched. Permission fix-up
   (0700/0600) runs on failure paths too.
+- **Withholding a key is per tenant, not machine-wide.** One routed request
+  from a cloned repo whose `base_url` host was unbound used to 502 that gateway
+  for every project. Each project's own gateways are checked now: only the
+  project whose host is unbound loses that gateway (its LiteLLM models and its
+  direct requests), and a project that binds the same name keeps its key.
+- **Unbound-host messages name the config that set the URL.** The 502 and
+  `sonata doctor` say to remove a URL you did not choose rather than trust it,
+  and to run `sonata auth trust <gateway> <host>` only if you chose it. Doctor
+  checks every routed config, not only the one in the current directory.
+- **`sonata auth add` binds nothing from a config.** It read the gateway URL
+  off the config in effect, which a cloned repo can carry, so `auth add` could
+  trust a repo's host for good. It now reports the unbound host, the config
+  that set it, and the trust command. `sonata init` binds only the URLs typed
+  in its own run, never one read from an existing config.
+- **`[auto_route]` sends the key and the task text only to a bound host.** A
+  project's `base_url` received the decision key and up to 8,000 characters of
+  the task with no host check. TypeSafe and OpenRouter are bound by name; a
+  custom host needs `sonata auth trust auto-route <host>`, or a URL typed in
+  `sonata init`. An unbound host skips the decision, the tier falls back, and
+  the reason is logged and recorded. Decision fetches refuse redirects.
+- **`sonata init` does not refresh a model list from an unbound host.** The
+  wizard sent each stored key to its URL's host to list models. It now checks
+  first: an unbound host is not asked, the harness list stands, and the reason
+  is shown. A URL typed in the same run counts as bound.
+- **Trust-file writers refuse a corrupt file.** `addTrustBinding` read the file
+  tolerantly, so one corrupt `trusted-hosts.json` was wiped by the next `trust`,
+  and every confirmed binding with it. Writers now refuse, naming the file, and
+  the read-modify-write of the trust file and of `keys.json` runs under the
+  existing session lock, so concurrent `auth add`, `auth trust` and `init` runs
+  cannot drop each other's changes.
+- **Upstream requests refuse redirects.** A gateway's 3xx would have carried the
+  key and the conversation to whatever host it named. Upstream fetches now fail
+  on a redirect instead of following it.
+- **Host bindings compare the port.** A host bound on one port was bound on
+  every port. A non-default port is part of the host now; the https default
+  port is the same as none.
+- **Upgrade: existing configs are trusted once.** On the first run after
+  upgrading, `sonata serve` and `sonata doctor` bind, once, the host of every
+  https api-key gateway that has a stored or opencode-sourced key, in the
+  machine config and in each project sonata already knows about. Each binding is
+  reported by `sonata serve` and `sonata doctor` when it is written, and
+  `sonata auth untrust <gateway> <host>` removes one. A marker in
+  `trusted-hosts.json` makes this run once: a config first seen afterwards is
+  never seeded, and a fresh install seeds nothing. Projects are found through
+  sonata's session records and its tenant registry; `route-sessions.json` holds
+  only session ids, so a project it alone names is not seeded. The gateway name
+  `seeded` is reserved for the marker.
+- **`sonata auth login` leftover backups are swept.** A login that crashed while
+  swapping in its new credential left the previous one beside it; a later
+  successful login now removes such a backup once it is ten minutes old, so a
+  login in progress keeps its rollback copy.
 
 ### Fixed
 

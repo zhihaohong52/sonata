@@ -41,7 +41,9 @@ have not set routing up.
   provider's own endpoint, a host you confirmed with
   `sonata auth trust <gateway> <host>`, or the machine config's own URL for
   that name — so a project config pointing the name elsewhere gets no key and
-  a named 502 naming the trust command, instead of your credential
+  a named 502 naming the config that set the URL and the trust command,
+  instead of your credential. `sonata auth add` binds nothing from a config;
+  init binds the URLs typed in its own run
 - `sonata auth login <gateway>` — starts LiteLLM's device login for an OAuth gateway.
   The login runs into a fresh directory that replaces the old one only on
   success, so a failed login never damages the working credential
