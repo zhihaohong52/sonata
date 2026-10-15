@@ -1880,7 +1880,8 @@ context_window = 128000
     expect(result.pid).toBe(4242);
     expect(result.port).toBe(4100);
     expect(opts[0]).toMatchObject({ detached: true });
-    expect(existsSync(result.logPath)).toBe(true);
+    expect(result.joined).toBe(false);
+    expect(existsSync(result.logPath!)).toBe(true);
   });
 
   it('waits for the router rather than reporting success immediately', async () => {
