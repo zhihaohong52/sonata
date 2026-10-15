@@ -1519,8 +1519,27 @@ export function usesUnicodePropertyEscape(pattern: string): boolean {
 }
 
 /**
+ * A pattern with each NUL escape `\0` written as `\x00`, the same character.
+ *
+ * Muse Spark 1.3 Contributor on OpenCode Go refuses a tool whose schema
+ * carries `"pattern": "^[^\\0]*$"` — 400 `Invalid JSON schema: "^[^\\0]*$" is
+ * not a "regex"` — for every request, since Claude Code sends every tool.
+ * Probed 2026-10-15: the identical tool with `^[^\\x00]*$`, a plain pattern, or
+ * `minLength`/`maxLength` alone is accepted. Its validator's regex dialect has
+ * no `\0` escape (RE2 has none either), while `\x00` means NUL in every
+ * dialect a schema meets — JavaScript, Python, RE2 — so the rewrite keeps the
+ * constraint rather than dropping it. Only a `\0` not followed by a digit: with
+ * one it is an octal or backreference form whose meaning differs by dialect,
+ * and it is left as written.
+ */
+export function rewriteNulEscapes(pattern: string): string {
+  return pattern.replace(/(?<!\\)((?:\\\\)*)\\0(?![0-9])/g, '$1\\x00');
+}
+
+/**
  * Strips, from every tool's `input_schema`, each `pattern` that Python's `re`
- * cannot parse — and only those.
+ * cannot parse — and only those — and rewrites each NUL escape another
+ * upstream refuses (`rewriteNulEscapes`).
  *
  * A tool schema may constrain a string with `\p{Cc}`-style Unicode property
  * classes. JavaScript and Anthropic accept them. An OpenAI-style endpoint
@@ -1575,6 +1594,14 @@ export function sanitizeToolSchemas(body: Buffer): Buffer {
       if (key === 'pattern' && typeof value === 'string' && usesUnicodePropertyEscape(value)) {
         changed = true;
         continue;
+      }
+      if (key === 'pattern' && typeof value === 'string') {
+        const rewritten = rewriteNulEscapes(value);
+        if (rewritten !== value) {
+          changed = true;
+          out[key] = rewritten;
+          continue;
+        }
       }
       out[key] = strip(value);
     }

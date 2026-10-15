@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from 'vitest';
-import { routeRequest, sessionCredential, flattenSystemBlocks, sanitizeToolSchemas, usesUnicodePropertyEscape, demoteSystemTurns, requestedModel, withModel, clearCooldowns, TIER_CAPABILITY_400_THRESHOLD, TIER_COOLDOWN_MS, conversationKey, stripForeignThinking, repairNamelessToolCalls, withEffort, STICKY_TTL_MS, STICKY_MAX_CONVERSATIONS, stickyConversationCount, createRouterServer, respond, responseBodyForTest, isMessagelessError, litellmModelName, DEFAULT_TENANT } from '../../src/native/router.js';
+import { routeRequest, sessionCredential, flattenSystemBlocks, sanitizeToolSchemas, usesUnicodePropertyEscape, rewriteNulEscapes, demoteSystemTurns, requestedModel, withModel, clearCooldowns, TIER_CAPABILITY_400_THRESHOLD, TIER_COOLDOWN_MS, conversationKey, stripForeignThinking, repairNamelessToolCalls, withEffort, STICKY_TTL_MS, STICKY_MAX_CONVERSATIONS, stickyConversationCount, createRouterServer, respond, responseBodyForTest, isMessagelessError, litellmModelName, DEFAULT_TENANT } from '../../src/native/router.js';
 import type { RouterTenant } from '../../src/native/router.js';
 import { TenantError, SONATA_PROJECT_HEADER } from '../../src/native/tenants.js';
 import { SONATA_TOKEN_HEADER } from '../../src/native/router-token.js';
@@ -1802,8 +1802,33 @@ describe('usesUnicodePropertyEscape', () => {
   });
 });
 
+describe('rewriteNulEscapes', () => {
+  // Muse Spark 1.3 Contributor refuses `\0` as "not a regex" and accepts
+  // `\x00` (probed 2026-10-15): the same character, in every dialect.
+  it('writes a bare \\0 as \\x00', () => {
+    expect(rewriteNulEscapes('^[^\\0]*$')).toBe('^[^\\x00]*$');
+    expect(rewriteNulEscapes('a\\0b\\0')).toBe('a\\x00b\\x00');
+  });
+  it('leaves an escaped backslash, an octal form and \\x00 alone', () => {
+    expect(rewriteNulEscapes('^\\\\0$')).toBe('^\\\\0$');
+    expect(rewriteNulEscapes('^\\01$')).toBe('^\\01$');
+    expect(rewriteNulEscapes('^[^\\x00]*$')).toBe('^[^\\x00]*$');
+  });
+});
+
 describe('sanitizeToolSchemas', () => {
   const parse = (b: Buffer) => JSON.parse(b.toString());
+
+  it('rewrites a NUL escape in place, keeping the constraint', () => {
+    const body = Buffer.from(JSON.stringify({
+      model: 'm',
+      tools: [{ name: 'T', input_schema: { type: 'object', properties: {
+        path: { type: 'string', minLength: 1, maxLength: 1024, pattern: '^[^\\0]*$' },
+      } } }],
+    }));
+    expect(parse(sanitizeToolSchemas(body)).tools[0].input_schema.properties.path)
+      .toEqual({ type: 'string', minLength: 1, maxLength: 1024, pattern: '^[^\\x00]*$' });
+  });
 
   it('drops only the patterns Python re cannot parse, wherever they sit in the schema', () => {
     const out = parse(sanitizeToolSchemas(toolsBody('gpt-5.6-terra')));

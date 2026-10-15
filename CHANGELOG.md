@@ -8,6 +8,16 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+## [Unreleased]
+
+### Fixed
+
+- **Muse Spark 1.3 Contributor no longer refuses every Claude Code request.**
+  Its server rejects a tool schema whose pattern uses the `\0` (NUL) escape,
+  and Claude Code sends every tool on every request, so it failed them all.
+  The router now writes that escape as `\x00` — the same character — before
+  sending.
+
 ## [0.16.5] - 2026-10-15
 
 ### Added
