@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseConfig } from '../../src/config.js';
+import { envVarForGateway } from '../../src/native/gateway-env.js';
 import type { NativeConfig } from '../../src/config.js';
 import { resolveKeys, writeSonataKey } from '../../src/native/credentials.js';
 import { addTrustBinding, readTrustBindings, seedUpgradeTrust, trustedHostsPath } from '../../src/native/host-bindings.js';
@@ -11,17 +12,29 @@ const tmp = (): string => mkdtempSync(join(tmpdir(), 'proto-names-'));
 const gwToml = (name: string): string => `[native.gateways."${name}"]\nbase_url = "https://gateway.example/v1"\n`;
 
 describe('gateway names that sonata cannot key by', () => {
-  it.each(['constructor', '__proto__', 'toString', 'hasOwnProperty', 'seeded', 'a/b', 'bad name', ''])(
+  it.each(['constructor', '__proto__', 'toString', 'hasOwnProperty', 'seeded', ''])(
     'refuses %j',
     (name) => {
       expect(() => parseConfig(gwToml(name))).toThrow(/native gateway name .* is not allowed/);
     },
   );
 
-  it('accepts the names the shipped configs use, mixed case and underscores included', () => {
-    for (const name of ['acme', 'github-copilot', 'acme_prod', 'Foo', 'acme-2', 'gw.a']) {
+  it('refuses a name with a control character', () => {
+    expect(() => parseConfig(gwToml('a\tb'))).toThrow(/is not allowed/);
+  });
+
+  it.each(['acme', 'github-copilot', 'acme_prod', 'Foo', 'acme-2', 'gw.a', 'bad name', 'a/b'])(
+    'accepts %j',
+    (name) => {
       expect(parseConfig(gwToml(name)).native?.gateways[name]?.baseUrl).toBe('https://gateway.example/v1');
-    }
+    },
+  );
+
+  it('maps a name with a space to a plain key variable, and refuses two names that fold to one', () => {
+    expect(envVarForGateway('bad name')).toBe('SONATA_KEY_BAD_NAME');
+    expect(envVarForGateway('a.b')).toBe('SONATA_KEY_A_B');
+    expect(envVarForGateway('github-copilot')).toBe('SONATA_KEY_GITHUB_COPILOT');
+    expect(() => parseConfig(`${gwToml('bad name')}\n${gwToml('bad_name')}`)).toThrow(/would share the key variable SONATA_KEY_BAD_NAME/);
   });
 });
 

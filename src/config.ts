@@ -497,15 +497,18 @@ function parsePricingProvider(name: string, raw: unknown): string[] | undefined 
 const RESERVED_GATEWAY_NAMES = new Set(['seeded']);
 
 /**
- * Refuses a `[native.gateways]` name that sonata cannot key by: an
- * Object.prototype property, the reserved names, or anything outside letters,
- * digits, `.`, `_` and `-` (the charset every shipped name already uses).
+ * Refuses a `[native.gateways]` name that cannot be a gateway: an empty name,
+ * one with a control character, an Object.prototype property, or the reserved
+ * `seeded`. Any other name is accepted, spaces and dots included: the lookups
+ * that key by name are own-property reads over null-prototype or hasOwn checks,
+ * so no name reaches an inherited value, and the environment variable a name
+ * maps to is a plain one (`envVarForGateway`).
  */
 export function assertGatewayName(name: string): void {
-  if (name in Object.prototype || RESERVED_GATEWAY_NAMES.has(name) || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) {
+  if (name === '' || /[\x00-\x1f\x7f]/.test(name) || name in Object.prototype || RESERVED_GATEWAY_NAMES.has(name)) {
     throw new Error(
-      `sonata.toml: native gateway name "${name}" is not allowed — use letters, digits, ".", "_" or "-", starting ` +
-      'with a letter or digit. Names such as "constructor", "__proto__" and "seeded" are reserved.',
+      `sonata.toml: native gateway name ${JSON.stringify(name)} is not allowed — a name must not be empty or contain ` +
+      'a control character, and "constructor", "__proto__", "seeded" and the other JavaScript object property names are reserved.',
     );
   }
 }
