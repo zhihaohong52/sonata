@@ -96,7 +96,7 @@ ${pick}`;
  */
 /**
  * The caller's escalation rule for a tier agent's description: where a task
- * that fails review goes next. Absent for the top tier, which has nowhere to
+ * that fails review twice goes next. Absent for the top tier, which has nowhere to
  * go — a task failing there is stopped and reported.
  */
 function escalationNote(tier: Tier, available: readonly Tier[]): string {
@@ -104,7 +104,7 @@ function escalationNote(tier: Tier, available: readonly Tier[]): string {
   if (at === -1) return '';
   const above = available.slice(at + 1);
   if (above.length === 0) return '';
-  return ` A task that fails review here is re-run on -${above[0]} — that task only, never other tasks or reviews.`;
+  return ` A task that fails review twice here is re-run on -${above[0]} — that task only, never other tasks or reviews.`;
 }
 
 function modelChoice(available: readonly Tier[]): string {

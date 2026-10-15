@@ -226,7 +226,7 @@ describe('guidanceBlock with auto-routing', () => {
 
   it('keeps the one-tier-up escalation, scoped to the task, when auto-routing is off', () => {
     const block = guidanceBlock();
-    expect(block.replace(/\s+/g, ' ')).toContain('a task that fails review is re-run one tier up (that task only — never other tasks or reviews)');
+    expect(block.replace(/\s+/g, ' ')).toContain('a task that fails review twice is re-run one tier up (that task only — never other tasks or reviews)');
     expect(block).not.toContain('The one exception');
   });
 });

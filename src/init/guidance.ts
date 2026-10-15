@@ -100,9 +100,9 @@ export function guidanceBlock(opts: { autoRoute?: boolean } = {}): string {
       // With auto-routing on, the exception above is the only escalation.
       'needs rather than a rung higher.',
     ] : [
-      'needs rather than a rung higher: a task that fails review is re-run one tier',
-      'up (that task only — never other tasks or reviews), so starting low is cheap',
-      'to correct.',
+      'needs rather than a rung higher: a task that fails review twice is re-run one',
+      'tier up (that task only — never other tasks or reviews), so starting low is',
+      'cheap to correct.',
     ]),
     '',
     'Dispatch them with **no `model` argument**. Each agent pins its routed model',

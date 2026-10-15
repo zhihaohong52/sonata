@@ -222,7 +222,8 @@ describe('tierAgentMarkdown', () => {
     const description = (tier: 'simple' | 'normal' | 'complex', available?: readonly ('simple' | 'normal' | 'complex')[]) =>
       tierAgentMarkdown({ role: 'code', tier, ...(available === undefined ? {} : { availableTiers: available }) })
         .split('\n').find((line) => line.startsWith('description: '))!;
-    expect(description('simple')).toContain('A task that fails review here is re-run on -normal — that task only, never other tasks or reviews.');
+    // Twice, as the loop skill escalates: one failed review is fixed in place.
+    expect(description('simple')).toContain('A task that fails review twice here is re-run on -normal — that task only, never other tasks or reviews.');
     expect(description('normal')).toContain('re-run on -complex');
     expect(description('complex')).not.toContain('fails review');
     // Without a middle rung, simple escalates straight to complex.
