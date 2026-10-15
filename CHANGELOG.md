@@ -17,6 +17,14 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   and Claude Code sends every tool on every request, so it failed them all.
   The router now writes that escape as `\x00` — the same character — before
   sending.
+- **Models that cap tool-schema depth serve Claude Code.** Muse Spark 1.3
+  Contributor (and any OpenAI-style validator, which documents the same
+  limit) refuses a tool schema nested more than 10 levels deep, counting
+  `$ref`s inlined — and a single deep MCP tool fails every request, since
+  every tool is sent each time. The router now cuts only those tools to 10
+  levels, keeping each cut parameter's type and description; every other
+  tool goes out unchanged. A model that still refuses a tool schema is now
+  skipped for the next candidate instead of ending the request.
 
 ## [0.16.5] - 2026-10-15
 

@@ -882,8 +882,22 @@ const UNSERVABLE_400_SIGNATURES = ['MissingSessionID'] as const;
  * completions and serves on `/responses`, while `minimax-m3` on the same
  * gateway serves chat completions. 37 requests had ended on it as a terminal
  * 400. The fix is `api = "responses"` on the model; this is the backstop.
+ *
+ * `JSON schema exceeds the maximum nesting depth` and `Invalid JSON schema`
+ * are a model's own tool-schema validator refusing what Claude Code sends:
+ * every request carries every tool, so one schema it rejects fails all of
+ * them. Measured 2026-10-15 on Muse Spark 1.3 Contributor (OpenCode Go):
+ * "JSON schema exceeds the maximum nesting depth of 10 levels" killed four
+ * agents in a row, and "Invalid JSON schema: … is not a regex" before the
+ * `\0` rewrite (`rewriteNulEscapes`). Other models on the same gateway take
+ * the identical tools. Both are anchored on Muse's exact wording, which names
+ * the tool schema (`param: "parameters"`), not the conversation.
  */
-const MODEL_UNSERVABLE_400_SIGNATURES = ['Model does not support this protocol'] as const;
+const MODEL_UNSERVABLE_400_SIGNATURES = [
+  'Model does not support this protocol',
+  'JSON schema exceeds the maximum nesting depth',
+  'Invalid JSON schema',
+] as const;
 
 /** Module-level so a cooling-down key stays cool across requests. Test seam: `clearCooldowns()`. */
 const cooldowns = new Map<string, number>();
@@ -1662,7 +1676,129 @@ export function demoteSystemTurns(body: Buffer): Buffer {
  * see it — both litellm forwarding paths take this, so they cannot drift.
  */
 function litellmBody(body: Buffer): Buffer {
-  return demoteSystemTurns(sanitizeToolSchemas(flattenSystemBlocks(body)));
+  return demoteSystemTurns(limitToolSchemaDepth(sanitizeToolSchemas(flattenSystemBlocks(body))));
+}
+
+/**
+ * The most levels of nesting a tool's parameter schema may have, counted the
+ * way an OpenAI-style validator counts them: `$ref`s inlined, one level per
+ * schema reached through `properties`, `items` and the rest.
+ *
+ * Muse Spark 1.3 Contributor (OpenCode Go) answers a deeper one with 400
+ * "JSON schema exceeds the maximum nesting depth of 10 levels", and every
+ * request carries every tool, so one deep MCP tool fails them all. Probed
+ * 2026-10-15: 11 nested objects accepted, 12 refused; a `$ref` counts as the
+ * definition inlined at that point (a ref reaching 11 accepted, 12 refused).
+ * OpenAI documents the same 10-level limit for strict schemas. Measured on a
+ * real session: one MCP server's tool reached 11, unresolved.
+ */
+export const MAX_TOOL_SCHEMA_NESTING = 10;
+
+/** Keywords whose value is one subschema. */
+const SUBSCHEMA_KEYS = ['items', 'additionalProperties', 'not', 'if', 'then', 'else', 'contains', 'propertyNames', 'unevaluatedItems', 'unevaluatedProperties'];
+/** Keywords whose value is a list of subschemas. */
+const SUBSCHEMA_LIST_KEYS = ['anyOf', 'oneOf', 'allOf', 'prefixItems'];
+/** Keywords whose value maps names to subschemas. */
+const SUBSCHEMA_MAP_KEYS = ['properties', 'patternProperties', 'dependentSchemas'];
+/** Where local definitions live; they are inlined at each use, then dropped. */
+const DEFINITION_KEYS = ['$defs', 'definitions'];
+
+type Schema = Record<string, unknown>;
+
+function isSchema(value: unknown): value is Schema {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** The local definition a `#/$defs/x` or `#/definitions/x` ref names, or undefined. */
+function resolveLocalRef(root: Schema, ref: string): Schema | undefined {
+  const match = /^#\/(\$defs|definitions)\/(.+)$/.exec(ref);
+  if (match === null) return undefined;
+  const name = match[2]!.replace(/~1/g, '/').replace(/~0/g, '~');
+  const table = root[match[1]!];
+  const hit = isSchema(table) ? table[name] : undefined;
+  return isSchema(hit) ? hit : undefined;
+}
+
+/**
+ * How deep `schema` nests, as a validator inlining refs counts it: 0 for a
+ * schema with no subschemas. Stops counting past `limit`, so a recursive
+ * definition cannot loop.
+ */
+function schemaNesting(schema: Schema, root: Schema, limit: number, seen = 0): number {
+  if (seen > limit) return seen;
+  if (typeof schema.$ref === 'string') {
+    const target = resolveLocalRef(root, schema.$ref);
+    return target === undefined ? 0 : schemaNesting(target, root, limit, seen);
+  }
+  let deepest = 0;
+  const visit = (child: unknown): void => {
+    if (isSchema(child)) deepest = Math.max(deepest, 1 + schemaNesting(child, root, limit, seen + 1));
+  };
+  for (const key of SUBSCHEMA_KEYS) visit(schema[key]);
+  for (const key of SUBSCHEMA_LIST_KEYS) if (Array.isArray(schema[key])) (schema[key] as unknown[]).forEach(visit);
+  for (const key of SUBSCHEMA_MAP_KEYS) if (isSchema(schema[key])) Object.values(schema[key] as Schema).forEach(visit);
+  return deepest;
+}
+
+/**
+ * `schema` with its local refs inlined and every branch cut at `budget` more
+ * levels. A cut leaves the schema's own `type` and `description`, so the
+ * model still sees a described parameter of the right kind; only validation
+ * below the cut is lost, and the tool's own server still validates its input.
+ */
+function limitedSchema(schema: Schema, root: Schema, budget: number): Schema {
+  let node = schema;
+  for (let hops = 0; typeof node.$ref === 'string' && hops < 64; hops += 1) {
+    const target = resolveLocalRef(root, node.$ref);
+    if (target === undefined) break;
+    const { $ref: _ref, ...siblings } = node;
+    node = { ...target, ...siblings };
+  }
+  if (budget <= 0) {
+    const leaf: Schema = {};
+    if (node.type !== undefined) leaf.type = node.type;
+    if (typeof node.description === 'string') leaf.description = node.description;
+    return leaf;
+  }
+  const out: Schema = {};
+  for (const [key, value] of Object.entries(node)) {
+    if (DEFINITION_KEYS.includes(key) || key === '$ref') continue;
+    if (SUBSCHEMA_KEYS.includes(key) && isSchema(value)) out[key] = limitedSchema(value, root, budget - 1);
+    else if (SUBSCHEMA_LIST_KEYS.includes(key) && Array.isArray(value)) {
+      out[key] = value.map((item) => (isSchema(item) ? limitedSchema(item, root, budget - 1) : item));
+    } else if (SUBSCHEMA_MAP_KEYS.includes(key) && isSchema(value)) {
+      out[key] = Object.fromEntries(Object.entries(value).map(([name, child]) =>
+        [name, isSchema(child) ? limitedSchema(child, root, budget - 1) : child]));
+    } else out[key] = value;
+  }
+  return out;
+}
+
+/**
+ * Cuts every tool's `input_schema` to `MAX_TOOL_SCHEMA_NESTING` levels — only
+ * the tools that exceed it, so every other tool, and every request with none,
+ * goes out byte-identical. LiteLLM path only, like `sanitizeToolSchemas`: an
+ * Anthropic request stays untouched.
+ */
+export function limitToolSchemaDepth(body: Buffer, max = MAX_TOOL_SCHEMA_NESTING): Buffer {
+  let payload: Record<string, unknown>;
+  try {
+    payload = JSON.parse(body.toString()) as Record<string, unknown>;
+  } catch {
+    return body;
+  }
+  const tools = payload.tools;
+  if (!Array.isArray(tools) || tools.length === 0) return body;
+  let changed = false;
+  const next = tools.map((tool) => {
+    if (!isSchema(tool) || !isSchema(tool.input_schema)) return tool;
+    const schema = tool.input_schema;
+    if (schemaNesting(schema, schema, max) <= max) return tool;
+    changed = true;
+    return { ...tool, input_schema: limitedSchema(schema, schema, max) };
+  });
+  if (!changed) return body;
+  return Buffer.from(JSON.stringify({ ...payload, tools: next }));
 }
 
 /**

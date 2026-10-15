@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from 'vitest';
-import { routeRequest, sessionCredential, flattenSystemBlocks, sanitizeToolSchemas, usesUnicodePropertyEscape, rewriteNulEscapes, demoteSystemTurns, requestedModel, withModel, clearCooldowns, TIER_CAPABILITY_400_THRESHOLD, TIER_COOLDOWN_MS, conversationKey, stripForeignThinking, repairNamelessToolCalls, withEffort, STICKY_TTL_MS, STICKY_MAX_CONVERSATIONS, stickyConversationCount, createRouterServer, respond, responseBodyForTest, isMessagelessError, litellmModelName, DEFAULT_TENANT } from '../../src/native/router.js';
+import { routeRequest, sessionCredential, flattenSystemBlocks, sanitizeToolSchemas, usesUnicodePropertyEscape, rewriteNulEscapes, limitToolSchemaDepth, MAX_TOOL_SCHEMA_NESTING, demoteSystemTurns, requestedModel, withModel, clearCooldowns, TIER_CAPABILITY_400_THRESHOLD, TIER_COOLDOWN_MS, conversationKey, stripForeignThinking, repairNamelessToolCalls, withEffort, STICKY_TTL_MS, STICKY_MAX_CONVERSATIONS, stickyConversationCount, createRouterServer, respond, responseBodyForTest, isMessagelessError, litellmModelName, DEFAULT_TENANT } from '../../src/native/router.js';
 import type { RouterTenant } from '../../src/native/router.js';
 import { TenantError, SONATA_PROJECT_HEADER } from '../../src/native/tenants.js';
 import { SONATA_TOKEN_HEADER } from '../../src/native/router-token.js';
@@ -1816,6 +1816,56 @@ describe('rewriteNulEscapes', () => {
   });
 });
 
+describe('limitToolSchemaDepth', () => {
+  // Muse Spark 1.3 Contributor refuses a schema nested deeper than 10 levels,
+  // counting $refs inlined (probed 2026-10-15: 11 nested objects accepted, 12
+  // refused). One deep MCP tool failed every request.
+  const parse = (b: Buffer) => JSON.parse(b.toString());
+  const nested = (levels: number): Record<string, unknown> => {
+    let s: Record<string, unknown> = { type: 'string', description: 'leaf' };
+    for (let i = 0; i < levels; i += 1) s = { type: 'object', description: `level ${levels - i}`, properties: { p: s } };
+    return s;
+  };
+  const depthOf = (s: unknown): number => {
+    if (s === null || typeof s !== 'object') return 0;
+    const props = (s as { properties?: Record<string, unknown> }).properties;
+    return props === undefined ? 0 : 1 + Math.max(...Object.values(props).map(depthOf));
+  };
+  const body = (...schemas: Record<string, unknown>[]) => Buffer.from(JSON.stringify({
+    model: 'm', messages: [], tools: schemas.map((input_schema, i) => ({ name: `t${i}`, input_schema })),
+  }));
+
+  it('cuts a schema past the limit, keeping the type and description where it cuts', () => {
+    const out = parse(limitToolSchemaDepth(body(nested(12))));
+    const schema = out.tools[0].input_schema;
+    expect(depthOf(schema)).toBe(MAX_TOOL_SCHEMA_NESTING);
+    let node = schema;
+    for (let i = 0; i < MAX_TOOL_SCHEMA_NESTING; i += 1) node = node.properties.p;
+    expect(node).toEqual({ type: 'object', description: 'level 11' });
+  });
+
+  it('counts a $ref as its definition inlined, and drops the definitions it inlines', () => {
+    const schema = { type: 'object', properties: { x: { $ref: '#/$defs/D' } }, $defs: { D: nested(11) } };
+    const out = parse(limitToolSchemaDepth(body(schema))).tools[0].input_schema;
+    expect(out.$defs).toBeUndefined();
+    expect(depthOf(out)).toBe(MAX_TOOL_SCHEMA_NESTING);
+  });
+
+  it('leaves every tool within the limit, and the whole body, byte-identical', () => {
+    const fits = body(nested(MAX_TOOL_SCHEMA_NESTING), { type: 'object', properties: { x: { $ref: '#/$defs/D' } }, $defs: { D: nested(9) } });
+    expect(limitToolSchemaDepth(fits).equals(fits)).toBe(true);
+    const mixed = parse(limitToolSchemaDepth(body(nested(3), nested(13))));
+    expect(mixed.tools[0].input_schema).toEqual(nested(3));
+  });
+
+  it('terminates on a recursive definition', () => {
+    const schema = { type: 'object', properties: { node: { $ref: '#/$defs/N' } },
+      $defs: { N: { type: 'object', properties: { child: { $ref: '#/$defs/N' } } } } };
+    const out = parse(limitToolSchemaDepth(body(schema))).tools[0].input_schema;
+    expect(depthOf(out)).toBe(MAX_TOOL_SCHEMA_NESTING);
+  });
+});
+
 describe('sanitizeToolSchemas', () => {
   const parse = (b: Buffer) => JSON.parse(b.toString());
 
@@ -3086,6 +3136,41 @@ describe('routeRequest — a model on the wrong protocol', () => {
     expect(seen).toEqual(['default/luna', 'default/minimax', 'default/minimax']);
   });
 });
+describe('routeRequest — a model refusing a tool schema', () => {
+  // Muse Spark 1.3 Contributor refused the tools Claude Code sends, as
+  // LiteLLM relayed it on 2026-10-15; other models on the gateway take them.
+  const refusal = (message: string) => JSON.stringify({ error: { message:
+    `litellm.BadRequestError: OpenAIException - {"model":"muse-spark-1.3-contributor","error":{"code":null,"message":"${message}","param":"parameters","type":"invalid_request_error"}}. Received Model Group=t/muse`,
+    type: null, param: null, code: '400' } });
+  const routes = { role: 'code', tier: 'normal', routes: [
+    { key: 'muse', native: { gateway: 'opencode-go', id: 'muse-spark-1.3-contributor' } },
+    { key: 'luna', native: { gateway: 'opencode-go', id: 'gpt-6-luna' } },
+  ] };
+  const turn = (content: string) => ({
+    method: 'POST', url: '/v1/messages', headers: { 'content-type': 'application/json' },
+    body: Buffer.from(JSON.stringify({ model: 'sonata-code-normal', messages: [{ role: 'user', content }] })),
+  });
+  beforeEach(() => clearCooldowns());
+
+  for (const message of ['JSON schema exceeds the maximum nesting depth of 10 levels', 'Invalid JSON schema: \\"x\\" is not a \\"regex\\"']) {
+    it(`falls through at once and cools only that model on "${message.slice(0, 40)}"`, async () => {
+      const seen: string[] = [];
+      const deps = {
+        fetch: (async (_url: string, init: RequestInit) => {
+          const model = (JSON.parse(init.body as string) as { model: string }).model;
+          seen.push(model);
+          return model === 'default/muse' ? new Response(refusal(message), { status: 400 }) : new Response('{}', { status: 200 });
+        }) as unknown as typeof fetch,
+        litellmBase: 'http://litellm', litellmKey: 'k',
+        resolveTier: () => routes,
+      };
+      expect((await routeRequest(turn('first'), deps)).status).toBe(200);
+      expect((await routeRequest(turn('second'), deps)).status).toBe(200);
+      expect(seen).toEqual(['default/muse', 'default/luna', 'default/luna']);
+    });
+  }
+});
+
 
 describe('routeRequest — a bare model key on a direct gateway', () => {
   beforeEach(() => clearCooldowns());
