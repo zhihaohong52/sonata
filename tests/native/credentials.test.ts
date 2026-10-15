@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   keyReport,
+  removeSonataKey,
   resolveDecisionKey,
   resolveKeyDetail,
   resolveKeyFromSource,
@@ -75,6 +76,55 @@ describe('credential resolution', () => {
       { gateway: 'acme', source: 'sonata', key: 'acme-key' },
       { gateway: 'other', source: 'sonata', key: 'other-key' },
     ]);
+  });
+
+  it('writes atomically: no temp file survives beside keys.json', () => {
+    const home = tmp();
+    writeSonataKey(home, 'acme', 'acme-key');
+    const dir = join(home, '.config', 'sonata');
+    const leftovers = readdirSync(dir).filter((f) => f !== 'keys.json');
+    expect(leftovers).toEqual([]);
+  });
+
+  it('refuses to write over a keys.json that is not valid JSON, keeping every key', () => {
+    const home = tmp();
+    writeSonataKey(home, 'acme', 'acme-key');
+    writeFileSync(sonataKeyStorePath(home), '{torn');
+
+    expect(() => writeSonataKey(home, 'other', 'other-key')).toThrow(/keys\.json.*not valid JSON/);
+    // The torn file is untouched, and the stored key still resolves.
+    expect(readFileSync(sonataKeyStorePath(home), 'utf8')).toBe('{torn');
+    writeFileSync(sonataKeyStorePath(home), JSON.stringify({ acme: 'acme-key' }));
+    expect(resolveKeys(['acme'], home)).toMatchObject([{ gateway: 'acme', key: 'acme-key' }]);
+  });
+
+  it('refuses to write over a keys.json that is valid JSON but not an object', () => {
+    const home = tmp();
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(sonataKeyStorePath(home), '["acme"]\n');
+    expect(() => writeSonataKey(home, 'other', 'other-key')).toThrow(/keys\.json.*JSON object/);
+    expect(readFileSync(sonataKeyStorePath(home), 'utf8')).toBe('["acme"]\n');
+  });
+
+  it('refuses to remove a key when keys.json cannot be parsed, rather than unlink it', () => {
+    const home = tmp();
+    writeSonataKey(home, 'acme', 'acme-key');
+    writeFileSync(sonataKeyStorePath(home), '{torn');
+
+    expect(() => removeSonataKey(home, 'acme')).toThrow(/keys\.json.*not valid JSON/);
+    expect(existsSync(sonataKeyStorePath(home))).toBe(true);
+  });
+
+  it('refuses to write when keys.json is unreadable', () => {
+    const home = tmp();
+    writeSonataKey(home, 'acme', 'acme-key');
+    chmodSync(sonataKeyStorePath(home), 0o000);
+    try {
+      expect(() => writeSonataKey(home, 'other', 'other-key')).toThrow(/keys\.json/);
+    } finally {
+      chmodSync(sonataKeyStorePath(home), 0o600);
+    }
+    expect(resolveKeys(['acme'], home)).toMatchObject([{ gateway: 'acme', key: 'acme-key' }]);
   });
 });
 
