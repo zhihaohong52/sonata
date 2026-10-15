@@ -11,6 +11,7 @@ import { GLOBAL_CONFIG_RELATIVE, loadConfig, nativeRouteFor, oauthCredentialIden
 import { appendRow, LEDGER_RETENTION_DAYS, pruneLedger, type LedgerRow } from '../ledger.js';
 import { pruneSessions } from '../sessions.js';
 import { resolveDecisionKey, resolveKeyDetail, resolveKeys, sonataKeyStorePath } from '../native/credentials.js';
+import { trustedHostsPath, unboundKeyHosts } from '../native/host-bindings.js';
 import {
   boundUnreadable, boundUnreadableDb, fileStoreRead, jsonStoreRead, newUnreadableMemory, opencodeDbRead,
   UNREADABLE_SKIP_RULE, type StoreRead, type UnreadableMemory,
@@ -881,6 +882,15 @@ interface ResolveChildEnvOptions {
   now?: () => number;
   /** Where a store skipped for being steadily unreadable is reported, once. */
   warn?: (line: string) => void;
+  /**
+   * Per-tenant gateways the merged union was built from: the host check is per
+   * (gateway, host) pair, and the merged gateway alone cannot see that two
+   * tenants point one name at different hosts. Withheld keys are reported in
+   * `failures`, never thrown.
+   */
+  tenantGateways?: { gateways: NativeConfig['gateways'] }[];
+  /** The machine config's own gateways: its hosts are trusted for their names. */
+  machineGateways?: NativeConfig['gateways'];
 }
 
 /**
@@ -1070,11 +1080,39 @@ function resolveChildEnvFromSnapshot(
   };
 
   // A session gateway has no key to find: its credential is the session's own.
+  // OAuth gateways likewise hold no sendable key: nothing here is withheld
+  // from them, whatever host they name.
+  //
+  // A stored key is looked up by gateway NAME, but the `base_url` it would be
+  // sent to comes from the tenants' configs — including a cloned repo's
+  // project config pointing the name at an attacker's host. So a key is sent
+  // only to a host bound to its gateway name (well-known, user-confirmed, or
+  // the machine config's own). A gateway any tenant points at an unbound host
+  // is left out and recorded as a credential failure, which the router answers
+  // as a named 502 and forwards nothing for.
+  const tenantGateways = opts.tenantGateways ?? [{ gateways: native.gateways }];
+  const unboundHosts = unboundKeyHosts(tenantGateways, opts.machineGateways ?? {}, home);
+  for (const [name, message] of unboundHosts) {
+    const gateway = native.gateways[name];
+    if (gateway === undefined) continue;
+    failures.push({ gateway: name, message });
+    memory.lastGood.delete(`${lineageKey(name, gateway)}|key`);
+    memory.lastGood.delete(lineageKey(name, gateway));
+    for (const stale of [...memory.lastGoodSource.keys()]) {
+      if (stale === `${lineageKey(name, gateway)}|key` || stale === lineageKey(name, gateway)) {
+        memory.lastGoodSource.delete(stale);
+      }
+    }
+    memory.seeds.delete(`${lineageKey(name, gateway)}|key`);
+    memory.seeds.delete(lineageKey(name, gateway));
+  }
+  const unbound = new Set(unboundHosts.keys());
   const automaticallyResolved = Object.entries(native.gateways)
     .filter(([, gateway]) => gateway.auth !== 'session'
       && (gateway.auth !== 'api-key' || gateway.credentialSource === undefined));
   const found = new Map(resolveKeys(automaticallyResolved.map(([name]) => name), home).map((hit) => [hit.gateway, hit]));
   for (const [name, gateway] of automaticallyResolved) {
+    if (unbound.has(name)) continue;
     const hit = found.get(name);
     // No failure when nothing is found: a default-sourced gateway may need
     // no key at all, which is how it has always been served.
@@ -1089,6 +1127,7 @@ function resolveChildEnvFromSnapshot(
   for (const [name, gateway] of Object.entries(native.gateways)) {
     const source = gateway.credentialSource;
     if (gateway.auth !== 'api-key' || (source !== 'sonata' && source !== 'opencode')) continue;
+    if (unbound.has(name)) continue;
     const hit = resolveKeyDetail(name, home, source);
     const entries = settle(
       name, lineageKey(name, gateway),
@@ -1885,6 +1924,7 @@ export async function cmdServe(
     registry.fingerprint(),
     `codex:${statSignal(codexAuthPath(opts.home))}`,
     `keys:${statSignal(sonataKeyStorePath(opts.home))}`,
+    `trust:${statSignal(trustedHostsPath(opts.home))}`,
     `opencode:${statSignal(opencodeAuthPath(opts.home))}`,
     `opencode.db:${opencodeDbSignal()}`,
   ].join('\n');
@@ -2059,6 +2099,10 @@ export async function cmdServe(
         chatgptTokenDir: chatgptSeeded?.dir ?? chatgptDirFor(1),
         now: clock,
         warn: warnSkipped,
+        // The merge sees every tenant; with that the merged gateway alone
+        // cannot see two tenants pointing one name at different hosts.
+        tenantGateways: registry.loadable().map(({ config }) => ({ gateways: config.native?.gateways ?? {} })),
+        machineGateways: machineConfig()?.native?.gateways ?? {},
       });
       seeds = built.seeds;
       const held = chatgptSeeded;
