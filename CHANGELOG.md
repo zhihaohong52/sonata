@@ -44,7 +44,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   thinks and writes text reaches the client when it ends (at most 5 minutes
   held, then it streams). A main session and bare `--model` requests are
   never held. Only a `<tool_call>` tag followed by a call body (`<function=…>` or
-  `{`) counts: the tag mentioned in prose or quoted in code is ordinary text.
+  `{`) counts: the tag merely mentioned in prose is ordinary text, and a call
+  quoted in a code fence or backticks is never recovered into a real one.
   Text already sent before a call still reaches the client, as before; when
   no other model serves, the withdrawn turn is served after all. A withdrawn
   turn was still billed, so it gets a ledger row of its own, marked

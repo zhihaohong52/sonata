@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { coerceArguments, parseToolCallMarkup, rewriteTextToolCallJson, rewriteTextToolCallStream, toolSchemas, type TextToolCallCounts } from '../../src/native/text-tool-calls.js';
+import { coerceArguments, insideCode, parseToolCallMarkup, rewriteTextToolCallJson, rewriteTextToolCallStream, toolSchemas, type TextToolCallCounts } from '../../src/native/text-tool-calls.js';
 
 const REQUEST = Buffer.from(JSON.stringify({
   model: 'm', messages: [],
@@ -246,16 +246,36 @@ describe('rewriteTextToolCallStream', () => {
     }
   });
 
-  it('leaves a call quoted in inline code or a fence as text, and counts nothing', async () => {
+  it('never recovers call-shaped markup quoted in code, but still counts it unrecovered', async () => {
     for (const quoted of [
       `Models write \`${CALL}\` as text.`,
       `Example:\n\`\`\`\n${CALL}\n\`\`\`\n`,
+      `Example:\n~~~\n${CALL}\n~~~\n`,
       `Unclosed in code: \`<tool_call><function=Bash>\``,
     ]) {
       const { events, counts } = await run(textStream([quoted]));
       expect(text(events)).toBe(quoted);
-      expect(counts).toEqual({ recovered: 0, unparsed: 0 });
+      expect(events.some((e) => e.content_block?.type === 'tool_use')).toBe(false);
+      expect(counts).toEqual({ recovered: 0, unparsed: 1 });
     }
+  });
+
+  it('counts a real call after an unclosed fence: the fence cannot hide it', async () => {
+    const { events, counts } = await run(textStream(['Here:\n```bash\n', CALL]));
+    expect(text(events)).toBe('Here:\n```bash\n' + CALL);
+    expect(counts).toEqual({ recovered: 0, unparsed: 1 });
+  });
+
+  it('treats a ``` that does not start a line as no fence', async () => {
+    const { counts } = await run(textStream(['Wrap code in ``` fences. ', CALL]));
+    expect(counts).toEqual({ recovered: 1, unparsed: 0 });
+  });
+
+  it('closes a fence only with the same character', async () => {
+    expect(insideCode('~~~\nx\n```\n')).toBe(true);
+    expect(insideCode('~~~\nx\n~~~\n')).toBe(false);
+    expect(insideCode('  ```ts\nx\n')).toBe(true);
+    expect(insideCode('    ```\nx\n')).toBe(false);
   });
 
   it('still recovers a call after a closed fence', async () => {
