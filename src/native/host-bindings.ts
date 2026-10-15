@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import type { NativeConfig } from '../config.js';
 import { WELL_KNOWN_PROVIDER_URLS } from '../detect.js';
 import { writeFileAtomic } from './credentials.js';
+import { withSessionLockSync } from '../filelock.js';
 import { readOnce } from './read-snapshot.js';
 
 /**
@@ -52,6 +53,39 @@ export function readTrustBindings(home: string): TrustBindings {
       hosts.filter((h): h is string => typeof h === 'string').map((h) => h.toLowerCase()).filter((h) => h !== ''),
     )];
     if (clean.length > 0) out[gateway] = clean;
+  }
+  return out;
+}
+
+/**
+ * The trust file for a writer. Strict, unlike the request path's reader: a
+ * corrupt file is refused, naming the path, rather than read as empty and then
+ * overwritten — which would silently drop every confirmed binding. Absent is
+ * no bindings yet.
+ */
+function readTrustBindingsForWrite(home: string): TrustBindings {
+  const path = trustedHostsPath(home);
+  let text: string;
+  try {
+    // Read fresh, never from a read snapshot: a writer must see the file as it is.
+    text = readFileSync(path, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return {};
+    throw new Error(`cannot update the host trust file ${path}: ${(error as Error).message}`);
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw new Error(`${path} is not valid JSON (refusing to rewrite it — fix or remove it, then retry)`);
+  }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${path} does not hold a JSON object (refusing to rewrite it — fix or remove it, then retry)`);
+  }
+  const out: TrustBindings = {};
+  for (const [gateway, hosts] of Object.entries(value as Record<string, unknown>)) {
+    if (!Array.isArray(hosts)) continue;
+    out[gateway] = [...new Set(hosts.filter((h): h is string => typeof h === 'string').map((h) => h.toLowerCase()))];
   }
   return out;
 }
@@ -209,27 +243,35 @@ export function refreshHostReasons(input: {
   return out;
 }
 
-/** Record a user-confirmed (gateway, host) binding. Idempotent. */
+/**
+ * Record a user-confirmed (gateway, host) binding. Idempotent. The read and
+ * the write happen under the file's lock, so two `auth add`/`trust`/`init`
+ * runs cannot each drop the other's binding.
+ */
 export function addTrustBinding(home: string, gateway: string, host: string): void {
-  const bindings = readTrustBindings(home);
-  const hosts = bindings[gateway] ?? [];
-  if (!hosts.includes(host)) {
-    bindings[gateway] = [...hosts, host];
-    writeTrustBindings(home, bindings);
-  }
+  withSessionLockSync(trustedHostsPath(home), () => {
+    const bindings = readTrustBindingsForWrite(home);
+    const hosts = bindings[gateway] ?? [];
+    if (!hosts.includes(host)) {
+      bindings[gateway] = [...hosts, host];
+      writeTrustBindings(home, bindings);
+    }
+  });
 }
 
 /** Remove one binding. Refuses when there is nothing to remove. */
 export function removeTrustBinding(home: string, gateway: string, host: string): void {
-  const bindings = readTrustBindings(home);
-  const hosts = bindings[gateway];
-  if (hosts === undefined || !hosts.includes(host)) {
-    throw new Error(`sonata auth untrust: no trusted host "${host}" for gateway "${gateway}"`);
-  }
-  const rest = hosts.filter((h) => h !== host);
-  if (rest.length === 0) delete bindings[gateway];
-  else bindings[gateway] = rest;
-  writeTrustBindings(home, bindings);
+  withSessionLockSync(trustedHostsPath(home), () => {
+    const bindings = readTrustBindingsForWrite(home);
+    const hosts = bindings[gateway];
+    if (hosts === undefined || !hosts.includes(host)) {
+      throw new Error(`sonata auth untrust: no trusted host "${host}" for gateway "${gateway}"`);
+    }
+    const rest = hosts.filter((h) => h !== host);
+    if (rest.length === 0) delete bindings[gateway];
+    else bindings[gateway] = rest;
+    writeTrustBindings(home, bindings);
+  });
 }
 
 /** Read the trust file without the snapshot cache, for tests. */

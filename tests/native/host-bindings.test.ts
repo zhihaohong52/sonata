@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -241,4 +241,39 @@ describe('refreshHostReasons', () => {
   it('treats the machine config’s own URL under the same name as bound', () => {
     expect(refreshHostReasons(input({ machineGateways: { acme: { baseUrl: 'https://attacker.example/v1' } } }))).toEqual({});
   });
+});
+
+describe('trust-file writers', () => {
+  it('refuse a corrupt trust file, naming it, and leave its bytes alone', () => {
+    const home = tmp();
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(trustedHostsPath(home), '{torn');
+    expect(() => addTrustBinding(home, 'acme', 'proxy.example')).toThrow(/trusted-hosts\.json is not valid JSON/);
+    expect(() => removeTrustBinding(home, 'acme', 'proxy.example')).toThrow(/not valid JSON/);
+    expect(readFileSync(trustedHostsPath(home), 'utf8')).toBe('{torn');
+  });
+
+  it('refuse a trust file that holds no object', () => {
+    const home = tmp();
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(trustedHostsPath(home), '["not", "an", "object"]');
+    expect(() => addTrustBinding(home, 'acme', 'proxy.example')).toThrow(/does not hold a JSON object/);
+  });
+
+  it('keeps every binding through a write, with its marker-free shape intact', () => {
+    const home = tmp();
+    addTrustBinding(home, 'acme', 'a.example');
+    addTrustBinding(home, 'other', 'b.example');
+    addTrustBinding(home, 'acme', 'c.example');
+    expect(readTrustBindings(home)).toEqual({ acme: ['a.example', 'c.example'], other: ['b.example'] });
+  });
+
+  it('waits on the lock, and refuses rather than writing over a holder that never lets go', () => {
+    const home = tmp();
+    const lock = `${trustedHostsPath(home)}.lock`;
+    mkdirSync(lock, { recursive: true });
+    writeFileSync(join(lock, 'owner'), 'someone-else');
+    expect(() => addTrustBinding(home, 'acme', 'proxy.example')).toThrow(/timed out waiting for lock/);
+    expect(existsSync(trustedHostsPath(home))).toBe(false);
+  }, 10_000);
 });

@@ -1,6 +1,7 @@
 import { chmodSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
+import { withSessionLockSync } from '../filelock.js';
 import { readOpencodeCredentials } from './opencode-store.js';
 import { readOnce } from './read-snapshot.js';
 
@@ -202,34 +203,42 @@ export function keyReport(gateways: string[], home: string): KeyReport[] {
   return gateways.map((gateway) => ({ gateway, source: sources.get(gateway) ?? null }));
 }
 
+/**
+ * The read-modify-write of keys.json, under its lock so two writers (an
+ * `auth add` and an `init`, say) cannot each drop the other's key.
+ */
 export function writeSonataKey(home: string, gateway: string, key: string): void {
   const path = sonataKeyStorePath(home);
-  const { value, problem } = readJsonStrict(path);
-  if (problem !== undefined && problem.kind !== 'missing') {
-    throw new Error(`cannot store the key for "${gateway}": ${problem.reason}`);
-  }
-  writeFileAtomic(path, `${JSON.stringify({ ...sonataKeyStrings(value ?? {}), [gateway]: key }, null, 2)}\n`);
+  withSessionLockSync(path, () => {
+    const { value, problem } = readJsonStrict(path);
+    if (problem !== undefined && problem.kind !== 'missing') {
+      throw new Error(`cannot store the key for "${gateway}": ${problem.reason}`);
+    }
+    writeFileAtomic(path, `${JSON.stringify({ ...sonataKeyStrings(value ?? {}), [gateway]: key }, null, 2)}\n`);
+  });
 }
 
 export function removeSonataKey(home: string, gateway: string): void {
   const path = sonataKeyStorePath(home);
-  const { value, problem } = readJsonStrict(path);
-  if (problem !== undefined && problem.kind !== 'missing') {
-    throw new Error(`cannot remove the key for "${gateway}": ${problem.reason}`);
-  }
-  const keys = sonataKeyStrings(value ?? {});
-  delete keys[gateway];
-
-  if (Object.keys(keys).length === 0) {
-    try {
-      unlinkSync(path);
-    } catch {
-      // A missing store has the same result as an empty one.
+  withSessionLockSync(path, () => {
+    const { value, problem } = readJsonStrict(path);
+    if (problem !== undefined && problem.kind !== 'missing') {
+      throw new Error(`cannot remove the key for "${gateway}": ${problem.reason}`);
     }
-    return;
-  }
+    const keys = sonataKeyStrings(value ?? {});
+    delete keys[gateway];
 
-  writeFileAtomic(path, `${JSON.stringify(keys, null, 2)}\n`);
+    if (Object.keys(keys).length === 0) {
+      try {
+        unlinkSync(path);
+      } catch {
+        // A missing store has the same result as an empty one.
+      }
+      return;
+    }
+
+    writeFileAtomic(path, `${JSON.stringify(keys, null, 2)}\n`);
+  });
 }
 
 /**
