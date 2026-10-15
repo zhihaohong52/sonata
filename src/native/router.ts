@@ -1880,19 +1880,27 @@ function refsWithin(node: Schema): string[] {
 }
 
 /**
- * How deep `schema` nests, as a validator inlining refs counts it: 0 for a
- * schema with no subschemas. Stops counting past `limit`, so a recursive
- * definition cannot loop.
+ * How deep `schema` nests, as a validator inlining refs counts it — 0 for a
+ * schema with no subschemas — capped at `cap`. A node's depth does not depend
+ * on the path to it, so `memo` holds it once per object: a definition shared
+ * by many refs is walked once, not once per use, which keeps a branching
+ * OpenAPI-style schema from going exponential on every request. A cycle
+ * reads as `cap` instead of looping (callers rule cycles out first anyway).
  */
-function schemaNesting(schema: Schema, root: Schema, limit: number, seen = 0): number {
-  if (seen > limit) return seen;
+function schemaNesting(schema: Schema, root: Schema, cap: number, memo: Map<Schema, number>): number {
+  const known = memo.get(schema);
+  if (known !== undefined) return known;
+  memo.set(schema, cap);
   // A `$ref` counts as its target inlined; sibling keywords (allowed beside it
   // since draft 2019-09) nest at the same level, so the deeper of the two wins.
   const target = typeof schema.$ref === 'string' ? resolveLocalRef(root, schema.$ref) : undefined;
-  let deepest = target === undefined ? 0 : schemaNesting(target, root, limit, seen);
+  let deepest = target === undefined ? 0 : schemaNesting(target, root, cap, memo);
   for (const child of childSchemas(schema, false)) {
-    deepest = Math.max(deepest, 1 + schemaNesting(child, root, limit, seen + 1));
+    if (deepest >= cap) break;
+    deepest = Math.max(deepest, 1 + schemaNesting(child, root, cap, memo));
   }
+  deepest = Math.min(deepest, cap);
+  memo.set(schema, deepest);
   return deepest;
 }
 
@@ -1923,6 +1931,9 @@ interface LimitContext {
   cuts: Map<string, string>;
   /** The cut copies, by name. */
   cutDefs: Schema;
+  /** `schemaNesting`'s memo, capped one past the limit, so any budget compares. */
+  nesting: Map<Schema, number>;
+  nestingCap: number;
 }
 
 /**
@@ -1941,7 +1952,7 @@ function limitedSchema(schema: Schema, budget: number, ctx: LimitContext): Schem
     const target = resolveLocalRef(ctx.root, ref);
     if (target === undefined) break;
     if (Object.keys(node).length === 1 && shareableRef(ctx.root, ref, ctx.shareable)) {
-      if (schemaNesting(target, ctx.root, budget) <= budget) {
+      if (schemaNesting(target, ctx.root, ctx.nestingCap, ctx.nesting) <= budget) {
         ctx.kept.add(ref);
         return node;
       }
@@ -1997,7 +2008,7 @@ function cutCopy(ref: string, target: Schema, budget: number, ctx: LimitContext)
  * cut copies — so an unreferenced or recursive definition is gone.
  */
 function limitedRoot(root: Schema, max: number): Schema {
-  const ctx: LimitContext = { root, kept: new Set(), shareable: new Map(), cuts: new Map(), cutDefs: {} };
+  const ctx: LimitContext = { root, kept: new Set(), shareable: new Map(), cuts: new Map(), cutDefs: {}, nesting: new Map(), nestingCap: max + 1 };
   const out = limitedSchema(root, max, ctx);
   const queue = [...ctx.kept];
   const seen = new Set<string>();
@@ -2036,7 +2047,7 @@ export function limitToolSchemaDepth(body: Buffer, max = MAX_TOOL_SCHEMA_NESTING
   const next = tools.map((tool) => {
     if (!isSchema(tool) || !isSchema(tool.input_schema)) return tool;
     const schema = tool.input_schema;
-    if (!isRecursiveSchema(schema) && schemaNesting(schema, schema, max) <= max) return tool;
+    if (!isRecursiveSchema(schema) && schemaNesting(schema, schema, max + 1, new Map()) <= max) return tool;
     changed = true;
     return { ...tool, input_schema: limitedRoot(schema, max) };
   });
@@ -2400,8 +2411,8 @@ async function routeTierRequest(
   // Why candidates on a gateway serve has dropped were skipped. Never tried,
   // so never cooled — the conflict is config, not a failing model.
   const skippedDropped: string[] = [];
-  // The most recent message-less 400, and how many attempts had been made
-  // when it arrived. If it is the LAST thing the loop saw, it is returned
+  // The most recent message-less or model-refusal 400, and how many attempts
+  // had been made when it arrived. If it is the LAST thing the loop saw, it is returned
   // rather than a 529: a request every candidate refuses may really be
   // malformed, and the caller should see the refusal itself.
   let lastMessageless: { at: number; headers: Record<string, string>; body: Buffer; route: TierRoute } | undefined;
@@ -2640,6 +2651,10 @@ async function routeTierRequest(
         cooldowns.set(cool, now() + TIER_COOLDOWN_MS);
         if (conversation !== undefined) stickyDemote(conversation, route.key);
         deps.log?.(`router: ${route.key} refused (400 "${modelUnservable}"), cooling it and trying next`);
+        // A refusal every candidate gives may be the request's own fault (a
+        // malformed MCP tool schema): if it is the last thing seen, the caller
+        // gets the body that names the tool, not a 529.
+        lastMessageless = { at: attempts.length, headers: response.headers, body: bodyBuf, route };
         continue;
       }
       if (unservable !== undefined) {

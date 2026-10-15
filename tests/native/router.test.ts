@@ -1965,6 +1965,20 @@ describe('limitToolSchemaDepth', () => {
     expect(JSON.stringify(out)).not.toContain('$ref');
   });
 
+  it('walks a widely shared definition once, not once per use', () => {
+    // Ten layers, each 20 properties referring to the next: 20^10 paths if
+    // every ref were inlined afresh. Within the limit, so it goes out as is.
+    const defs: Record<string, unknown> = { L9: { type: 'string' } };
+    for (let layer = 8; layer >= 0; layer -= 1) {
+      defs[`L${layer}`] = { type: 'object', properties: Object.fromEntries(
+        Array.from({ length: 20 }, (_, i) => [`p${i}`, { $ref: `#/$defs/L${layer + 1}` }])) };
+    }
+    const fits = body({ type: 'object', properties: { root: { $ref: '#/$defs/L0' } }, $defs: defs });
+    const started = Date.now();
+    expect(limitToolSchemaDepth(fits).equals(fits)).toBe(true);
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
   it('is idempotent', () => {
     const schema = { type: 'object', properties: { node: { $ref: '#/$defs/N' }, d: { $ref: '#/$defs/D' } },
       $defs: { N: { type: 'object', properties: { child: { $ref: '#/$defs/N' } } }, D: nested(12) } };
@@ -3282,6 +3296,18 @@ describe('routeRequest — a model refusing a tool schema', () => {
       expect(seen).toEqual(['default/muse', 'default/luna', 'default/luna']);
     });
   }
+
+  it('returns the refusal itself, naming the tool, when every candidate refuses the schema', async () => {
+    const body = refusal("Invalid schema for function 'mcp__x__broken': x is not a 'regex'");
+    const deps = {
+      fetch: (async () => new Response(body, { status: 400 })) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => routes,
+    };
+    const res = await routeRequest(turn('first'), deps);
+    expect(res.status).toBe(400);
+    expect(res.body.toString()).toContain('mcp__x__broken');
+  });
 });
 
 
