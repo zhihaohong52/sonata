@@ -2827,25 +2827,8 @@ litellm = ${port}
     expect(configs.at(-1)).toContain('a-model');
   });
 
-  it('withholds a key when one tenant points the name at an unbound host, even though another tenant binds it', async () => {
-    // The merge keeps one base_url per name, so checking only the merged
-    // gateway missed the second tenant: its URL was the one the key actually
-    // reached. Every tenant is checked, so one unbound tenant withholds the
-    // name from both.
-    writeMachineConfig(`
-[models."mflash"]
-gateway = "acme"
-id = "m-flash"
-[tiers.code]
-simple = ["mflash"]
-complex = ["mflash"]
-[native.gateways."acme"]
-base_url = "https://gateway.example/v1"
-[native.ports]
-router = 0
-litellm = ${litellmPort}
-`);
-    writeSonataKey(home, 'acme', 'acme-key');
+  /** A project config naming `acme` at a host nobody has bound. `extra` is one line for the gateway table. */
+  const unboundProject = (extra: string): string => {
     const evil = mkdtempSync(join(tmpdir(), 'serve-tenant-evil-'));
     writeFileSync(join(evil, 'sonata.toml'), `
 [models."e-flash"]
@@ -2856,38 +2839,118 @@ simple = ["e-flash"]
 complex = ["e-flash"]
 [native.gateways."acme"]
 base_url = "https://attacker.example/v1"
+${extra}
 [native.ports]
 router = 0
 litellm = ${litellmPort}
 `);
-    const forwarded: string[] = [];
+    return evil;
+  };
+
+  it('serves a bound tenant directly while the unbound one sharing its gateway name is refused', async () => {
+    // Both tenants name `acme`, one at a host nobody bound. Only the unbound
+    // tenant's direct requests are refused: the bound tenant keeps its key on
+    // the same name, and the key never reaches the unbound host.
+    writeMachineConfig(`
+[models."m-flash"]
+gateway = "acme"
+id = "m-flash"
+[tiers.code]
+simple = ["m-flash"]
+complex = ["m-flash"]
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+provider = "anthropic"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+    writeSonataKey(home, 'acme', 'acme-key');
+    const evil = unboundProject('provider = "anthropic"');
+    const seen: string[] = [];
+    const realFetch = globalThis.fetch;
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      vi.stubGlobal('fetch', vi.fn(async (url: string) => {
-        forwarded.push(String(url));
+      vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
+        seen.push(`${url} ${(init.headers as Record<string, string>).authorization ?? ''}`);
         return new Response('{}', { status: 200 });
-      }));
+      });
       const handle = await cmdServe({
         cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
         spawnLitellm: () => ({ pid: 1, kill: () => {} }),
       });
       handles.push(handle);
-      vi.unstubAllGlobals();
-      const send = (headers: Record<string, string> = {}) => fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+      const send = (headers: Record<string, string> = {}) => realFetch(`http://localhost:${handle.routerPort}/v1/messages`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', ...headers },
         body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
       });
-      const res = await send(projectHeaders(evil));
-      expect(res.status).toBe(502);
-      const message = (await res.json() as { error: { message: string } }).error.message;
-      expect(message).toContain('attacker.example');
-      expect(message).toContain('sonata auth trust acme attacker.example');
-      // Nothing reached either host, whatever the tenant hint.
-      await send();
-      expect(forwarded.filter((u) => u.includes('attacker.example'))).toEqual([]);
-      expect(forwarded.filter((u) => u.includes('gateway.example'))).toEqual([]);
+      const refused = await send(projectHeaders(evil));
+      expect(refused.status).toBe(502);
+      expect((await refused.json() as { error: { message: string } }).error.message).toContain('attacker.example');
+      expect(seen.filter((entry) => entry.includes('attacker.example'))).toEqual([]);
+
+      const served = await send();
+      expect(served.status).toBe(200);
+      expect(seen).toEqual(['https://gateway.example/v1/messages Bearer acme-key']);
     } finally {
+      vi.unstubAllGlobals();
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('keeps the bound tenant on litellm while the unbound one sharing its gateway name is dropped', async () => {
+    // The same split on the LiteLLM transport: the unbound tenant's models on
+    // `acme` are left out of LiteLLM's config, so LiteLLM cannot hand the
+    // shared key to its host; the bound tenant's model stays in.
+    writeMachineConfig(`
+[models."m-flash"]
+gateway = "acme"
+id = "m-flash"
+[tiers.code]
+simple = ["m-flash"]
+complex = ["m-flash"]
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+    writeSonataKey(home, 'acme', 'acme-key');
+    const evil = unboundProject('');
+    const temp = tempDirFor();
+    const forwarded: string[] = [];
+    const realFetch = globalThis.fetch;
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      vi.stubGlobal('fetch', async (url: string) => {
+        forwarded.push(String(url));
+        return new Response('{}', { status: 200 });
+      });
+      const handle = await cmdServe({
+        cwd, home, tempDir: temp, waitForLitellm: async () => {},
+        spawnLitellm: () => ({ pid: 1, kill: () => {} }),
+      });
+      handles.push(handle);
+      const litellmConfig = readFileSync(join(temp, 'config.json'), 'utf8');
+      expect(litellmConfig).toContain('gateway.example');
+      expect(litellmConfig).not.toContain('attacker.example');
+
+      const send = (headers: Record<string, string> = {}) => realFetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+      });
+      const refused = await send(projectHeaders(evil));
+      expect(refused.status).toBe(502);
+      expect((await refused.json() as { error: { message: string } }).error.message).toContain('attacker.example');
+      expect(forwarded.filter((url) => url.includes('attacker.example'))).toEqual([]);
+
+      const served = await send();
+      expect(served.status).toBe(200);
+      expect(forwarded.some((url) => url.includes(String(litellmPort)))).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
       errorSpy.mockRestore();
     }
   });
