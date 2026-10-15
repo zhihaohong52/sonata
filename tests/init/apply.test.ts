@@ -39,6 +39,18 @@ describe('apply', () => {
     expect(loadConfig(cwd, home).tiers?.code.simple).toEqual(['acme-fast']);
   });
 
+  it('refuses a planned config that does not parse, and writes nothing', async () => {
+    // The second half of the plan guard: `plan` proves its own TOML, but
+    // apply also takes hand-built plans — and a plan built by an older plan
+    // is just a string by the time it arrives. Nothing is written, not even
+    // the keys that otherwise go first: a half-applied init stores a
+    // credential for a config that was never written.
+    const bad = { ...planFor(), configToml: 'avoid_gateways = ["ghost"]\n' };
+    await expect(apply(bad, { cwd, home, packageRoot: resolve('.') }, { out: () => {}, prune: false }))
+      .rejects.toThrow(/does not parse/);
+    expect(existsSync(join(cwd, 'sonata.toml'))).toBe(false);
+  });
+
   it('installs the loop skill', async () => {
     const p = planFor();
     await apply(p, { cwd, home, packageRoot: resolve('.') }, { out: () => {}, prune: false });

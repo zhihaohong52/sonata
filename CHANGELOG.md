@@ -12,6 +12,24 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ### Fixed
 
+- **`sonata init` no longer writes a config that will not load.** Re-running
+  init after deselecting every model of an avoided gateway wrote the saved
+  `avoid_gateways` entry back verbatim, and `parseConfig` refuses an unknown
+  gateway name — so the written file failed to parse. `avoid_gateways` is now
+  filtered to gateways the file writes, the same filter `gateway_order`
+  already carried. `plan` additionally parses the TOML it is about to write
+  and refuses — showing and writing nothing — when the writer emits something
+  unloadable, and `apply` re-checks before the first byte hits the disk.
+- **`sonata init` no longer silently replaces a config it cannot read.** A
+  file that exists but fails to parse — including one stamped with a newer
+  `schema_version`, which `applyMigrations` refuses on purpose — used to be
+  reported on one line while init rewrote it from defaults, deleting
+  `[budget]`, prices and tiers. Init now refuses only when the file at the
+  scope being written is unreadable — after the scope is known, so a broken
+  project config never blocks a global init and vice versa — names that
+  file and the parse error, says to fix the file or move it aside to start
+  over, and writes nothing.
+
 - **Muse Spark 1.3 Contributor no longer refuses every Claude Code request.**
   Its server rejects a tool schema whose pattern uses the `\0` (NUL) escape,
   and Claude Code sends every tool on every request, so it failed them all.
