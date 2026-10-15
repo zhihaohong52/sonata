@@ -498,6 +498,21 @@ describe('router — text-form tool calls', () => {
     });
   }
 
+  it('neither withdraws nor cools a turn that only mentions the tag', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const mention = 'It writes `<tool_call>` markup, and <tool_call> alone is not a call.';
+    const { seen, d } = twoCandidates(rows, () => sse(stream(mention)));
+    const out = await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
+    // The rewriter re-chunks text at each `<`, as it always has; the text itself is untouched.
+    const deltas = out.split('\n\n').filter((e) => e.includes('text_delta'))
+      .map((e) => JSON.parse(e.slice(e.indexOf('data:') + 5)).delta.text).join('');
+    expect(deltas).toBe(mention);
+    await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
+    expect(seen).toEqual(['default/flash', 'default/flash']);
+    expect(rows.every((r) => r.withdrawn === undefined && r.textToolCalls === undefined)).toBe(true);
+  });
+
   it('prices a withdrawn turn and counts it toward the budget, but not as a served request', async () => {
     clearCooldowns();
     const home = mkdtempSync(join(tmpdir(), 'sonata-withdrawn-'));

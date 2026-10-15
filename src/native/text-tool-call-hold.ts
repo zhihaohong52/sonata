@@ -1,4 +1,4 @@
-import { TOOL_CALL_OPEN } from './text-tool-calls.js';
+import { classifyOpening, insideCode, TOOL_CALL_OPEN } from './text-tool-calls.js';
 
 /**
  * Holds the start of a streamed turn back from the client until it is clear
@@ -95,8 +95,16 @@ export function createMarkerProbe() {
   };
 
   const check = (): void => {
-    if (text.includes(TOOL_CALL_OPEN)) { state = 'marker'; return; }
-    if (nonWhitespace(text) >= PROBE_NON_WHITESPACE && !endsInMarkerPrefix(text)) state = 'released';
+    // A tag quoted in code, or mentioned in prose, is no call; one whose body
+    // has not arrived yet keeps the turn held.
+    let undecided = false;
+    for (let at = text.indexOf(TOOL_CALL_OPEN); at !== -1; at = text.indexOf(TOOL_CALL_OPEN, at + 1)) {
+      if (insideCode(text.slice(0, at))) continue;
+      const opening = classifyOpening(text.slice(at + TOOL_CALL_OPEN.length));
+      if (opening === 'call') { state = 'marker'; return; }
+      if (opening === 'undecided') undecided = true;
+    }
+    if (!undecided && nonWhitespace(text) >= PROBE_NON_WHITESPACE && !endsInMarkerPrefix(text)) state = 'released';
   };
 
   return {

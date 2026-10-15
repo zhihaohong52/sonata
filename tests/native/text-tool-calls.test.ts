@@ -227,6 +227,42 @@ describe('rewriteTextToolCallStream', () => {
     expect(counts).toEqual({ recovered: 0, unparsed: 1 });
   });
 
+  it('counts a JSON-form call it cannot recover as unparsed', async () => {
+    const json = '<tool_call>\n{"name": "Bash", "arguments": {"command": "ls"}}\n</tool_call>';
+    const { events, counts } = await run(textStream([json]));
+    expect(text(events)).toBe(json);
+    expect(counts).toEqual({ recovered: 0, unparsed: 1 });
+  });
+
+  it('leaves a tag mentioned in prose as text, unclosed or not, and counts nothing', async () => {
+    for (const prose of [
+      'The router parses <tool_call> markup back into calls.',
+      'Wrap it in <tool_call> and </tool_call> tags.',
+    ]) {
+      // Split mid-tag too: the decision waits for the text after it.
+      const { events, counts } = await run(textStream([prose.slice(0, 20), prose.slice(20)]));
+      expect(text(events)).toBe(prose);
+      expect(counts).toEqual({ recovered: 0, unparsed: 0 });
+    }
+  });
+
+  it('leaves a call quoted in inline code or a fence as text, and counts nothing', async () => {
+    for (const quoted of [
+      `Models write \`${CALL}\` as text.`,
+      `Example:\n\`\`\`\n${CALL}\n\`\`\`\n`,
+      `Unclosed in code: \`<tool_call><function=Bash>\``,
+    ]) {
+      const { events, counts } = await run(textStream([quoted]));
+      expect(text(events)).toBe(quoted);
+      expect(counts).toEqual({ recovered: 0, unparsed: 0 });
+    }
+  });
+
+  it('still recovers a call after a closed fence', async () => {
+    const { counts } = await run(textStream(['```\nx\n```\n', CALL]));
+    expect(counts).toEqual({ recovered: 1, unparsed: 0 });
+  });
+
   it('recovers two calls in one turn as two tool_use blocks', async () => {
     const { events, counts } = await run(textStream([CALL, '\n', CALL]));
     expect(counts).toEqual({ recovered: 2, unparsed: 0 });

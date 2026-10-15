@@ -19,6 +19,34 @@ import { randomBytes } from 'node:crypto';
 export const TOOL_CALL_OPEN = '<tool_call>';
 export const TOOL_CALL_CLOSE = '</tool_call>';
 
+/**
+ * Whether the text after a `<tool_call>` opening is a call body: the
+ * Qwen-Coder `<function=…>` form the parser recovers, or the JSON form
+ * (`{"name": …}`) some backends emit, after optional whitespace. Anything else
+ * is the tag being *mentioned* — prose about tool calls, which this repo's own
+ * agents write — and is ordinary text: never withdrawn, never a strike.
+ * `undecided` until enough has arrived to tell.
+ */
+export function classifyOpening(after: string): 'call' | 'not' | 'undecided' {
+  const rest = after.trimStart();
+  if (rest === '') return 'undecided';
+  if (rest.startsWith('{') || rest.startsWith(FUNCTION_OPEN)) return 'call';
+  return FUNCTION_OPEN.startsWith(rest) ? 'undecided' : 'not';
+}
+
+const FUNCTION_OPEN = '<function';
+
+/**
+ * Whether the end of `before` is inside markdown code — an open ``` fence, or
+ * an odd number of inline backticks on the current line. A tool-call tag
+ * there is quoted, not called.
+ */
+export function insideCode(before: string): boolean {
+  if ((before.match(/```/g) ?? []).length % 2 === 1) return true;
+  const line = before.slice(before.lastIndexOf('\n') + 1).replace(/```/g, '');
+  return (line.match(/`/g) ?? []).length % 2 === 1;
+}
+
 /** Tool name → its `input_schema`, from the request the response answers. */
 export type ToolSchemas = Map<string, Record<string, unknown>>;
 
@@ -106,33 +134,47 @@ type Piece = { kind: 'text'; text: string } | { kind: 'call'; call: ParsedCall }
 function createScanner(tools: ToolSchemas, counts: TextToolCallCounts) {
   let pending = '';
   let inCall = false;
+  // Every character settled so far, for telling a quoted tag from a call.
+  let seen = '';
+  const settle = (pieces: Piece[], text: string): void => {
+    pieces.push({ kind: 'text', text });
+    seen += text;
+  };
   return {
     push(text: string): Piece[] {
       pending += text;
       const pieces: Piece[] = [];
       for (;;) {
         if (inCall) {
+          // A mentioned tag, not a call: the tag is text, and scanning goes on after it.
+          if (classifyOpening(pending.slice(TOOL_CALL_OPEN.length)) === 'not') {
+            inCall = false;
+            settle(pieces, TOOL_CALL_OPEN);
+            pending = pending.slice(TOOL_CALL_OPEN.length);
+            continue;
+          }
           const close = pending.indexOf(TOOL_CALL_CLOSE);
           if (close === -1) return pieces;
           const markup = pending.slice(0, close + TOOL_CALL_CLOSE.length);
           pending = pending.slice(markup.length);
           inCall = false;
           const call = parseToolCallMarkup(markup, tools);
-          if (call === undefined) { counts.unparsed += 1; pieces.push({ kind: 'text', text: markup }); } else { counts.recovered += 1; pieces.push({ kind: 'call', call }); }
+          if (call === undefined) { counts.unparsed += 1; settle(pieces, markup); } else { counts.recovered += 1; pieces.push({ kind: 'call', call }); seen += markup; }
           continue;
         }
         const lt = pending.indexOf('<');
-        if (lt === -1) { if (pending) pieces.push({ kind: 'text', text: pending }); pending = ''; return pieces; }
-        if (lt > 0) { pieces.push({ kind: 'text', text: pending.slice(0, lt) }); pending = pending.slice(lt); }
-        if (pending.startsWith(TOOL_CALL_OPEN)) { inCall = true; continue; }
+        if (lt === -1) { if (pending) settle(pieces, pending); pending = ''; return pieces; }
+        if (lt > 0) { settle(pieces, pending.slice(0, lt)); pending = pending.slice(lt); }
+        if (pending.startsWith(TOOL_CALL_OPEN) && !insideCode(seen)) { inCall = true; continue; }
         if (TOOL_CALL_OPEN.startsWith(pending)) return pieces; // a prefix: wait for more
-        pieces.push({ kind: 'text', text: '<' });
+        settle(pieces, '<');
         pending = pending.slice(1);
       }
     },
     end(): Piece[] {
       if (pending === '') return [];
-      if (inCall) counts.unparsed += 1;
+      // Unclosed: a call only if its body had begun like one.
+      if (inCall && classifyOpening(pending.slice(TOOL_CALL_OPEN.length)) === 'call') counts.unparsed += 1;
       const rest = pending;
       pending = '';
       inCall = false;

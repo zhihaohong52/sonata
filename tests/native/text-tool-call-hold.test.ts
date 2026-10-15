@@ -24,8 +24,27 @@ describe('createMarkerProbe', () => {
   });
 
   it('sees the marker at the start of text, or after a short preamble', () => {
-    expect(probeOf(start(0, 'text'), text(0, '<tool_call>'))).toBe('marker');
-    expect(probeOf(start(0, 'text'), text(0, 'Let me check:\n\n<tool'), text(0, '_call>'))).toBe('marker');
+    expect(probeOf(start(0, 'text'), text(0, '<tool_call><function=Bash>'))).toBe('marker');
+    expect(probeOf(start(0, 'text'), text(0, '<tool_call>\n{"name": "Bash"'))).toBe('marker');
+    expect(probeOf(start(0, 'text'), text(0, 'Let me check:\n\n<tool'), text(0, '_call>\n<func'), text(0, 'tion=Bash>'))).toBe('marker');
+  });
+
+  it('keeps holding a tag whose body has not arrived yet', () => {
+    expect(probeOf(start(0, 'text'), text(0, '<tool_call>'))).toBe('pending');
+    // A body that turns out not to be one stops holding the turn.
+    expect(probeOf(start(0, 'text'), text(0, `${'x'.repeat(PROBE_NON_WHITESPACE)}<tool_call>\n<fun `))).toBe('released');
+    expect(probeOf(start(0, 'text'), text(0, `${'x'.repeat(PROBE_NON_WHITESPACE)}<tool_call>  `))).toBe('pending');
+  });
+
+  it('does not take a tag mentioned in prose or quoted in code for a call', () => {
+    const prose = 'The router turns <tool_call> markup written as text back into real tool calls when it parses.';
+    expect(probeOf(start(0, 'text'), text(0, prose))).toBe('released');
+    const inline = 'Models write `<tool_call><function=Bash>` and the router recovers it from the text stream ok.';
+    expect(probeOf(start(0, 'text'), text(0, inline))).toBe('released');
+    const fenced = 'Example:\n```\n<tool_call><function=Bash><parameter=command>ls</parameter></function></tool_call>\n```\nand that is the form the parser knows about here.';
+    expect(probeOf(start(0, 'text'), text(0, fenced))).toBe('released');
+    // After the fence closes, a real call is a call again.
+    expect(probeOf(start(0, 'text'), text(0, '```\nx\n```\n<tool_call><function=Bash>'))).toBe('marker');
   });
 
   it('releases text once enough of it is known to hold no marker', () => {
@@ -38,12 +57,12 @@ describe('createMarkerProbe', () => {
   it('keeps holding when the window ends inside a possible marker', () => {
     const lead = 'x'.repeat(PROBE_NON_WHITESPACE);
     expect(probeOf(start(0, 'text'), text(0, `${lead}<tool_`))).toBe('pending');
-    expect(probeOf(start(0, 'text'), text(0, `${lead}<tool_`), text(0, 'call>'))).toBe('marker');
+    expect(probeOf(start(0, 'text'), text(0, `${lead}<tool_`), text(0, 'call><function=Bash>'))).toBe('marker');
   });
 
   it('releases a short text block at its end, but looks past a blank one', () => {
     expect(probeOf(start(0, 'text'), text(0, 'Done.'), ev('content_block_stop', { index: 0 }))).toBe('released');
-    expect(probeOf(start(0, 'text'), text(0, '\n'), ev('content_block_stop', { index: 0 }), start(1, 'text'), text(1, '<tool_call>'))).toBe('marker');
+    expect(probeOf(start(0, 'text'), text(0, '\n'), ev('content_block_stop', { index: 0 }), start(1, 'text'), text(1, '<tool_call><function=Bash>'))).toBe('marker');
   });
 
   it('releases when the turn ends with nothing decided', () => {
@@ -51,7 +70,7 @@ describe('createMarkerProbe', () => {
   });
 
   it('decides the same however the bytes are split', () => {
-    const all = [ev('message_start', { message: {} }), start(0, 'text'), text(0, 'ok <tool_call>')].join('').replace(/\n/g, '\r\n');
+    const all = [ev('message_start', { message: {} }), start(0, 'text'), text(0, 'ok <tool_call><function=Bash>')].join('').replace(/\n/g, '\r\n');
     for (let cut = 1; cut < all.length; cut++) {
       const probe = createMarkerProbe();
       probe.push(bytes(all.slice(0, cut)));
