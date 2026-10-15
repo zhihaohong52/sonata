@@ -63,6 +63,7 @@ export function ratesFor(price: PriceConfig | undefined, at: Date): Rates | unde
 const PER_MILLION = 1_000_000;
 
 export function costOf(tokens: UsageTokens, rates: Rates): number {
+  // An absent cache rate bills at `input`: toward overcounting, never toward free.
   return (
     (tokens.input * (rates.input ?? 0)
       + tokens.cacheRead * (rates.cachedInput ?? rates.input ?? 0)
