@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { NativeConfig } from '../../src/config.js';
@@ -7,7 +7,7 @@ import { writeSonataKey } from '../../src/native/credentials.js';
 import { sessionsPath } from '../../src/sessions.js';
 import { seedTrustOnUpgrade } from '../../src/native/trust-seed.js';
 import {
-  addTrustBinding, readTrustBindings, seedUpgradeTrust, trustedHostsPath,
+  addTrustBinding, readTrustBindings, seedMarkerPath, seedUpgradeTrust, trustedHostsPath,
 } from '../../src/native/host-bindings.js';
 
 const tmp = (): string => mkdtempSync(join(tmpdir(), 'sonata-seed-'));
@@ -23,7 +23,7 @@ describe('seedUpgradeTrust', () => {
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain('/work/sonata.toml');
     expect(readTrustBindings(home)).toEqual({ acme: ['proxy.example'] });
-    expect(JSON.parse(readFileSync(trustedHostsPath(home), 'utf8'))).toMatchObject({ seeded: '0.16.5' });
+    expect(readFileSync(seedMarkerPath(home), 'utf8').trim()).toBe('0.16.5');
   });
 
   it('seeds an existing loopback http gateway, port-aware, and never a non-loopback http one', () => {
@@ -75,7 +75,7 @@ describe('seedUpgradeTrust', () => {
     writeSonataKey(home, 'acme', 'sk-acme');
     seedUpgradeTrust(home, '0.16.5', [{ configPath: '/a/sonata.toml', gateways: { acme: gw('https://first.example/v1') } }]);
     addTrustBinding(home, 'acme', 'manual.example');
-    expect(JSON.parse(readFileSync(trustedHostsPath(home), 'utf8'))).toMatchObject({ seeded: '0.16.5' });
+    expect(readFileSync(seedMarkerPath(home), 'utf8').trim()).toBe('0.16.5');
     expect(seedUpgradeTrust(home, '0.16.6', [{ configPath: '/b/sonata.toml', gateways: { acme: gw('https://later.example/v1') } }])).toEqual([]);
   });
 
@@ -176,7 +176,7 @@ describe('seedTrustOnUpgrade — what predates the install', () => {
   it('writes the marker with no keys stored, so the seed runs exactly once', () => {
     const home = tmp();
     expect(seedTrustOnUpgrade(home, INSTALL)).toEqual([]);
-    expect(JSON.parse(readFileSync(trustedHostsPath(home), 'utf8'))).toHaveProperty('seeded');
+    expect(existsSync(seedMarkerPath(home))).toBe(true);
   });
 
   it('seeds nothing on a fresh install, and a later install never seeds what it finds', () => {
@@ -188,5 +188,35 @@ describe('seedTrustOnUpgrade — what predates the install', () => {
     recordSessions(home, { s1: { cwd: dir, started: BEFORE } });
     expect(seedTrustOnUpgrade(home, INSTALL)).toEqual([]);
     expect(readTrustBindings(home)).toEqual({});
+  });
+});
+
+describe('the seed marker is its own file', () => {
+  it('does not re-seed after the trust file is deleted', () => {
+    const home = tmp();
+    writeSonataKey(home, 'acme', 'sk-acme');
+    seedUpgradeTrust(home, '0.16.5', [{ configPath: '/a/sonata.toml', gateways: { acme: gw('https://first.example/v1') } }]);
+    rmSync(trustedHostsPath(home));
+    expect(seedUpgradeTrust(home, '0.16.6', [{ configPath: '/b/sonata.toml', gateways: { acme: gw('https://later.example/v1') } }])).toEqual([]);
+    expect(readTrustBindings(home)).toEqual({});
+  });
+
+  it('migrates a legacy in-file marker, without seeding', () => {
+    const home = tmp();
+    writeSonataKey(home, 'acme', 'sk-acme');
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(trustedHostsPath(home), JSON.stringify({ seeded: '0.16.4' }));
+    expect(seedUpgradeTrust(home, '0.16.5', [{ configPath: '/a/sonata.toml', gateways: { acme: gw('https://first.example/v1') } }])).toEqual([]);
+    expect(existsSync(seedMarkerPath(home))).toBe(true);
+    expect(readTrustBindings(home)).toEqual({});
+  });
+
+  it('never seeds over bindings already on disk, even with no marker', () => {
+    const home = tmp();
+    writeSonataKey(home, 'acme', 'sk-acme');
+    addTrustBinding(home, 'other', 'manual.example');
+    expect(seedUpgradeTrust(home, '0.16.5', [{ configPath: '/a/sonata.toml', gateways: { acme: gw('https://first.example/v1') } }])).toEqual([]);
+    expect(readTrustBindings(home)).toEqual({ other: ['manual.example'] });
+    expect(existsSync(seedMarkerPath(home))).toBe(true);
   });
 });

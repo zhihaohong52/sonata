@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 import type { NativeConfig } from '../config.js';
 import { WELL_KNOWN_PROVIDER_URLS } from '../detect.js';
@@ -127,10 +128,21 @@ function readTrustFileForWrite(home: string): TrustFile {
   return file;
 }
 
+/**
+ * Writes the bindings only. The seed's record is not in this file any more (see
+ * `seedMarkerPath`), so a write of the trust file never changes whether the seed
+ * has run, and deleting the trust file never re-arms it.
+ */
 function writeTrustFile(home: string, file: TrustFile): void {
-  const out: Record<string, string | string[]> = { ...file.bindings };
-  if (file.seeded !== undefined) out[TRUST_SEED_MARKER] = file.seeded;
-  writeFileAtomic(trustedHostsPath(home), `${JSON.stringify(out, null, 2)}\n`);
+  writeFileAtomic(trustedHostsPath(home), `${JSON.stringify(file.bindings, null, 2)}\n`);
+}
+
+/**
+ * The seed's record: a file of its own, beside the trust file. Keeping it
+ * apart means deleting or replacing trusted-hosts.json does not re-run the seed.
+ */
+export function seedMarkerPath(home: string): string {
+  return join(home, '.config', 'sonata', 'trust-seeded');
 }
 
 function refuseReservedGateway(gateway: string): void {
@@ -372,8 +384,19 @@ export function seedUpgradeTrust(
   configs: readonly { configPath: string; gateways: NativeConfig['gateways'] }[],
 ): string[] {
   return withSessionLockSync(trustedHostsPath(home), () => {
+    if (existsSync(seedMarkerPath(home))) return [];
     const file = readTrustFileForWrite(home);
-    if (file.seeded !== undefined) return [];
+    // Already predated by an earlier build: it wrote the legacy in-file marker, or
+    // it holds bindings that only a seeded or user-made trust decision could have
+    // written. Then the seed is treated as having run, and only the marker is
+    // written. This fails closed: a seed never runs over trust decisions already on
+    // disk. Keys are not consulted: this build stores keys only after the seed
+    // runs, so a key store is not evidence either way, and a key store that
+    // predates this build is exactly the upgrade the seed is for.
+    if (file.seeded !== undefined || Object.keys(file.bindings).length > 0) {
+      writeFileAtomic(seedMarkerPath(home), `${version}\n`);
+      return [];
+    }
     const candidates: Array<{ gateway: string; host: string; configPath: string }> = [];
     for (const { configPath, gateways } of configs) {
       for (const [gateway, settings] of Object.entries(gateways)) {
@@ -391,8 +414,8 @@ export function seedUpgradeTrust(
       file.bindings[gateway] = [...hosts, host];
       lines.push(`trusted ${host} for gateway "${gateway}" (from ${configPath}) — run \`sonata auth untrust ${gateway} ${host}\` to remove it`);
     }
-    file.seeded = version;
     writeTrustFile(home, file);
+    writeFileAtomic(seedMarkerPath(home), `${version}\n`);
     return lines;
   });
 }

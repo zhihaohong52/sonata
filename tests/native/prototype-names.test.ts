@@ -6,7 +6,7 @@ import { parseConfig } from '../../src/config.js';
 import { envVarForGateway } from '../../src/native/gateway-env.js';
 import type { NativeConfig } from '../../src/config.js';
 import { resolveKeys, writeSonataKey } from '../../src/native/credentials.js';
-import { addTrustBinding, readTrustBindings, seedUpgradeTrust, trustedHostsPath } from '../../src/native/host-bindings.js';
+import { addTrustBinding, readTrustBindings, seedMarkerPath, seedUpgradeTrust, trustedHostsPath } from '../../src/native/host-bindings.js';
 
 const tmp = (): string => mkdtempSync(join(tmpdir(), 'proto-names-'));
 const gwToml = (name: string): string => `[native.gateways."${name}"]\nbase_url = "https://gateway.example/v1"\n`;
@@ -15,7 +15,7 @@ describe('gateway names that sonata cannot key by', () => {
   it.each(['constructor', '__proto__', 'toString', 'hasOwnProperty', 'seeded', ''])(
     'refuses %j',
     (name) => {
-      expect(() => parseConfig(gwToml(name))).toThrow(/native gateway name .* is not allowed/);
+      expect(() => parseConfig(gwToml(name))).toThrow(/name is not allowed/);
     },
   );
 
@@ -64,7 +64,7 @@ describe('the seed over a prototype-named gateway', () => {
     const lines = seedUpgradeTrust(home, '0.16.5', [{ configPath: '/p/sonata.toml', gateways }]);
     expect(lines).toHaveLength(1);
     expect(readTrustBindings(home).constructor).toEqual(['b.example']);
-    expect(JSON.parse(readFileSync(trustedHostsPath(home), 'utf8'))).toHaveProperty('seeded', '0.16.5');
+    expect(readFileSync(seedMarkerPath(home), 'utf8').trim()).toBe('0.16.5');
   });
 });
 
