@@ -178,6 +178,37 @@ export function unboundKeyHosts(
   return out;
 }
 
+/**
+ * For each gateway whose stored key a model refresh would send to its
+ * `base_url`, the reason it may not be sent — keyed by gateway, present only
+ * when the host is unbound. A URL the user typed in this run is bound: the
+ * refresh asks the URL they chose. Serve's message, so the wizard and the
+ * router say the same thing.
+ */
+export function refreshHostReasons(input: {
+  /** The URL each gateway's refresh would ask, by gateway. */
+  gatewayUrls: Record<string, string>;
+  /** The stored key each gateway would be asked with. */
+  keys: Record<string, string>;
+  /** Gateways whose URL the user typed in this wizard run. */
+  typed: ReadonlySet<string>;
+  trusted: TrustBindings;
+  machineGateways: Record<string, { baseUrl: string }>;
+  /** The config file the URLs came from, named in the reason. */
+  configFile: string;
+}): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [gateway, url] of Object.entries(input.gatewayUrls)) {
+    if (input.keys[gateway] === undefined || input.typed.has(gateway)) continue;
+    const binding = gatewayHostBound(gateway, url, {
+      trusted: input.trusted[gateway] ?? [],
+      machineGateways: input.machineGateways,
+    });
+    if (!binding.bound) out[gateway] = unboundMessage(gateway, binding.host, input.configFile);
+  }
+  return out;
+}
+
 /** Record a user-confirmed (gateway, host) binding. Idempotent. */
 export function addTrustBinding(home: string, gateway: string, host: string): void {
   const bindings = readTrustBindings(home);

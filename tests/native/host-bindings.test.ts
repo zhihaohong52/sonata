@@ -12,6 +12,7 @@ import {
   readTrustBindings,
   removeTrustBinding,
   trustedHostsPath,
+  refreshHostReasons,
   unboundKeyHosts,
   unboundMessage,
 } from '../../src/native/host-bindings.js';
@@ -204,5 +205,40 @@ describe('unboundMessage', () => {
     const message = unboundMessage('acme', 'proxy.example', CFG);
     expect(message.indexOf('remove it from that file')).toBeGreaterThan(-1);
     expect(message.indexOf('remove it from that file')).toBeLessThan(message.indexOf('sonata auth trust'));
+  });
+});
+
+describe('refreshHostReasons', () => {
+  const CFG = '/work/sonata.toml';
+  const input = (overrides: Partial<Parameters<typeof refreshHostReasons>[0]> = {}) => ({
+    gatewayUrls: { acme: 'https://attacker.example/v1' },
+    keys: { acme: 'sk-acme' },
+    typed: new Set<string>(),
+    trusted: {},
+    machineGateways: {},
+    configFile: CFG,
+    ...overrides,
+  });
+
+  it('gives the reason for a stored key whose URL host is unbound, naming the config', () => {
+    const reasons = refreshHostReasons(input());
+    expect(reasons.acme).toContain('attacker.example');
+    expect(reasons.acme).toContain(CFG);
+  });
+
+  it('skips a gateway with no stored key, since nothing would be sent', () => {
+    expect(refreshHostReasons(input({ keys: {} }))).toEqual({});
+  });
+
+  it('treats a URL typed in this run as bound', () => {
+    expect(refreshHostReasons(input({ typed: new Set(['acme']) }))).toEqual({});
+  });
+
+  it('treats a user-trusted host as bound', () => {
+    expect(refreshHostReasons(input({ trusted: { acme: ['attacker.example'] } }))).toEqual({});
+  });
+
+  it('treats the machine config’s own URL under the same name as bound', () => {
+    expect(refreshHostReasons(input({ machineGateways: { acme: { baseUrl: 'https://attacker.example/v1' } } }))).toEqual({});
   });
 });
