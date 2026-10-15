@@ -1092,6 +1092,26 @@ async function routeOffKeepingRegistries(
   await updateSettings(file, (current) => planRouteOff(current, opts.packageRoot));
 }
 
+/**
+ * Whether any session is still inside its settle window — i.e. registered but
+ * with its env-removal settle not yet run.
+ *
+ * The subagent stop path calls this before removing the env: a session that
+ * started routed has not yet settled (its settle fires a full window after
+ * the LAST start), so taking the env away on a subagent stop would un-route
+ * a session that may not have read it yet. Kept deliberately coarse — any
+ * registered session counts, because registration here always means "settled
+ * or still settling", and an unsettled env costs the next session's Remote
+ * Control (visible, recoverable) while clearing one a live session has not
+ * read yet costs that session's routing (silent).
+ */
+export function sessionsSettling(
+  opts: { cwd: string; home: string },
+  scope: 'project' | 'global',
+): boolean {
+  return readSessions(routeSessionsFile(opts.cwd, scope, opts.home)).length > 0;
+}
+
 export interface SubagentPhaseResult {
   /** Foreign-model subagents still running after this phase. */
   subagents: number;
@@ -1152,6 +1172,13 @@ export async function cmdRouteSubagent(
   // registry does: deciding "none left" and acting on it as two acquisitions
   // leaves a gap where a concurrent start can register and route, only for
   // this stale decision to un-route it.
+  //
+  // Lock order, innermost last: the subagent registry (this call's lock), the
+  // session registry (read, never locked, inside), then the settings file's
+  // own lock (inside `updateSettings`). Taking the session lock here would
+  // invert the global session → subagent → settings order — the settle path
+  // takes the session lock and must never block behind this one — so the
+  // settle-window check below is a plain read, not a guarded one.
   return await withSessionLock(registry, async () => {
     const current = readSessions(registry);
     if (phase === 'stop') {
@@ -1161,6 +1188,12 @@ export async function cmdRouteSubagent(
       // Not `cmdRoute('off')`: that also clears the *session* registry, which
       // is a different lifetime entirely. A finishing subagent erasing session
       // liveness would make the next SessionEnd believe it was the last one.
+      //
+      // And not unconditionally either: a session still inside its settle
+      // window has written the env but may not have read it yet, and the last
+      // SubagentStop firing first would strip it. Leave the env in place;
+      // that session's own settle removes it when the window closes.
+      if (sessionsSettling(opts, scope)) return { subagents: 0, routing: 'on' };
       await routeOffKeepingRegistries(opts, scope);
       return { subagents: 0, routing: 'off' };
     }

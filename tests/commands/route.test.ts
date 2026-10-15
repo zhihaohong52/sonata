@@ -1300,6 +1300,46 @@ describe('cmdRouteSubagent — router identity', () => {
     const o = { cwd, home, packageRoot: PACKAGE_ROOT };
     await expect(cmdRouteSubagent('stop', 'ghost', o)).resolves.toEqual({ subagents: 0, routing: 'off' });
   });
+
+  // The last SubagentStop must not strip the routing env out from under a
+  // session still inside its settle window: that session wrote the env but
+  // may not have read it yet, and would then run silently unrouted. The
+  // subagent stop holds only the subagent lock, so it cannot run the settle's
+  // newest-registration check — it leaves the env for the settle to remove.
+  it('a last subagent stop leaves the env for a session still inside its settle window', async () => {
+    writeMachineConfig(NATIVE_TOML);
+    const o = { cwd, home, packageRoot: PACKAGE_ROOT, scope: 'global' as const };
+    const sessionOpts = { ...o, serveArgv: ['node', 'cli.js', 'serve'] };
+    const sessionDeps = { probe: async () => true, startDaemon: async () => ({}) };
+    await cmdRouteSession('start', 's1', sessionOpts, sessionDeps);
+    await cmdRouteSubagent('start', 'a1', o, OFFLINE);
+
+    const stopped = await cmdRouteSubagent('stop', 'a1', o, OFFLINE);
+    // Not routed off: s1's settle owns the env until its window closes.
+    expect(stopped).toEqual({ subagents: 0, routing: 'on' });
+    expect((await cmdRoute('status', o))?.scopes.global.on).toBe(true);
+
+    // The settle still clears it once the window closes.
+    await cmdRouteSettle('s1', sessionOpts, { delay: async () => {} });
+    expect((await cmdRoute('status', o))?.scopes.global.on).toBe(false);
+    expect(readSessions(routeSessionsFile(cwd, 'global', home))).toEqual(['s1']);
+  });
+
+  it('a last subagent stop clears the env once every session has settled', async () => {
+    writeMachineConfig(NATIVE_TOML);
+    const o = { cwd, home, packageRoot: PACKAGE_ROOT, scope: 'global' as const };
+    const sessionOpts = { ...o, serveArgv: ['node', 'cli.js', 'serve'] };
+    const sessionDeps = { probe: async () => true, startDaemon: async () => ({}) };
+    await cmdRouteSession('start', 's1', sessionOpts, sessionDeps);
+    await cmdRouteSettle('s1', sessionOpts, { delay: async () => {} });
+    await cmdRouteSubagent('start', 'a1', o, OFFLINE);
+
+    // s1 settled (env cleared) and then ended: no live session remains.
+    await cmdRouteSession('end', 's1', sessionOpts, sessionDeps);
+    const stopped = await cmdRouteSubagent('stop', 'a1', o, OFFLINE);
+    expect(stopped).toEqual({ subagents: 0, routing: 'off' });
+    expect((await cmdRoute('status', o))?.scopes.global.on).toBe(false);
+  });
 });
 
 describe('route on — the project hint travels with its authorisation', () => {
