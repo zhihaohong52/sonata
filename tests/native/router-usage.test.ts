@@ -533,6 +533,8 @@ describe('router — text-form tool calls', () => {
   for (const [what, later] of [
     ['a 503', () => new Response('{"error":"down"}', { status: 503 })],
     ['a message-less 400', () => new Response('', { status: 400 })],
+    ['a 400 with a message', () => new Response('{"type":"error","error":{"type":"invalid_request_error","message":"max_tokens too large"}}', { status: 400 })],
+    ['a 422', () => new Response('{"error":{"message":"unprocessable"}}', { status: 422 })],
   ] as const) {
     it(`serves the withdrawn turn when the next candidate answers ${what}`, async () => {
       clearCooldowns();

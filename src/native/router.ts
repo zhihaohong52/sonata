@@ -2952,6 +2952,12 @@ async function routeTierCandidates(
         `router: ${alias} ${variant} answered ${response.status} (terminal): ` +
         JSON.stringify(bodyBuf.subarray(0, 200).toString()),
       );
+      // A turn was withdrawn earlier in this request: the client is better
+      // off with it than with this refusal, so it is served after all.
+      if (lastUnrecoverable !== undefined) {
+        attempts.push({ key: route.key, status: response.status });
+        break;
+      }
       return withUsageRecording({
         status: response.status,
         headers: response.headers,
