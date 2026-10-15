@@ -33,8 +33,10 @@ your files and your credentials.
   If you did not choose a URL, remove it from that config rather than trusting
   it. Bindings live in a 0600 file beside the key store; hostnames (with a
   non-default port) compare exactly, never suffix-matched, and https only,
-  except a loopback http host (`localhost`, `127.0.0.0/8`, `::1`), which only
-  an explicit `sonata auth trust` binds.
+  except a loopback http host (`localhost`, `127.0.0.0/8`, `::1`). The machine
+  config's own loopback URL is trusted by definition; in a project config a
+  loopback URL needs an explicit `sonata auth trust`. Non-loopback plain http is
+  never bindable.
   The first run after an upgrade binds, once, the hosts of the configs already
   in use that have a key; `sonata auth untrust <gateway> <host>` removes any of
   them, and `sonata auth trust-list` shows them.

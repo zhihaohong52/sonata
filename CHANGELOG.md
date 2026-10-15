@@ -23,9 +23,11 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   chose. Anything else gets no key: `sonata serve` withholds it and answers a
   named 502 with the exact trust command, and `sonata doctor` fails the
   gateway the same way. Hostnames compare exactly (never suffix-matched),
-  https only, except a loopback http host (`localhost`, `127.0.0.0/8`, `::1`),
-  which only an explicit `sonata auth trust` binds: no config binds it by
-  itself. Session and OAuth gateways hold no sendable key and are unaffected.
+  https only, except a loopback http host (`localhost`, `127.0.0.0/8`, `::1`).
+  That is bound by the machine config's own URL (trusted by definition), by the
+  upgrade seed, or by an explicit `sonata auth trust`; in a project config it
+  needs the explicit trust. Non-loopback plain http is never bindable. Session
+  and OAuth gateways hold no sendable key and are unaffected.
 - **`keys.json` is no longer read as empty on a parse error.** Writers refused
   nothing and rewrote the file from what parsed, so one torn write deleted
   every other key (`writeSonataKey`) or unlinked the file (`removeSonataKey`).
@@ -55,7 +57,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 - **`[auto_route]` sends a stored decision key only to a bound host.** A
   project's `base_url` received the decision key with no host check. TypeSafe
   and OpenRouter are bound by name; a custom host with a stored key needs
-  `sonata auth trust auto-route <host>`, or a URL typed in `sonata init`. A
+  `sonata auth trust auto-route <host>`, or a URL typed in `sonata init`; the
+  machine config's own `[auto_route]` URL is trusted like its gateways. A
   keyless local decision server needs no trust. For a keyed unbound host the
   decision is skipped, the task text is not sent, the tier falls back, and the
   reason is logged and recorded. Decision fetches refuse redirects.
@@ -77,8 +80,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   port is the same as none.
 - **Upgrade: existing configs are trusted once.** On the first run after
   upgrading, `sonata serve` and `sonata doctor` bind, once, the host of every
-  https api-key gateway that has a stored or opencode-sourced key, in the
-  machine config and in each project sonata already knows about. Each binding is
+  https (or loopback http) api-key gateway that has a stored or opencode-sourced
+  key, in the machine config and in each project sonata already knows about. Each binding is
   reported by `sonata serve` and `sonata doctor` when it is written, and
   `sonata auth untrust <gateway> <host>` removes one. A marker in
   `trusted-hosts.json` makes this run once: a config first seen afterwards is
