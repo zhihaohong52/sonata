@@ -8,8 +8,6 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
-## [Unreleased]
-
 ### Fixed
 
 - **`sonata init` no longer writes a config that will not load.** Re-running
