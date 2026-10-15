@@ -2006,6 +2006,92 @@ context_window = 128000
     expect(result.logPath).toContain(join('.config', 'sonata', 'logs'));
     expect(result.logPath).toMatch(/serve-.*\.log$/);
   });
+
+  // Two sessions starting together with the router down: both spawn, one wins
+  // the bind, the other exits with EADDRINUSE. The loser used to poll only
+  // for its own instance id, waited out the whole deadline, and left its
+  // session unrouted. Once its own child is known to have exited, it joins
+  // whatever healthy multi-tenant router is answering instead.
+  it('a loser whose child has exited joins the winner instead of waiting out the deadline', async () => {
+    let clock = 0;
+    let sleeps = 0;
+    const listeners: Record<string, (() => void)[]> = {};
+    const fakeChild = {
+      pid: 4242,
+      unref: () => {},
+      on: (event: string, cb: () => void) => { (listeners[event] ??= []).push(cb); },
+    };
+    const result = await startServeDaemon(home, ['node', 'cli.js', 'serve'], {
+      spawn: (() => fakeChild) as unknown as typeof spawnType,
+      probe: async () => false,
+      probeAny: async () => true,
+      sleep: async () => { clock += 500; sleeps += 1; },
+      now: () => clock,
+      timeoutMs: 60_000,
+      fallbackAfterMs: 60_000,
+    }, home);
+    expect(listeners.exit?.length).toBe(1);
+    // The child's exit is what opens the fallback: before it fires, the poll
+    // keeps waiting even though a healthy router is already answering.
+    expect(sleeps).toBeGreaterThan(0);
+    listeners.exit!.forEach((cb) => cb());
+    expect(result.port).toBe(4100);
+  });
+
+  it('falls back to any healthy router after a grace period even when the child lingers', async () => {
+    let clock = 0;
+    const result = await startServeDaemon(home, ['node', 'cli.js', 'serve'], {
+      spawn: fakeSpawn(),
+      probe: async () => false,
+      probeAny: async () => true,
+      sleep: async () => { clock += 500; },
+      now: () => clock,
+      timeoutMs: 60_000,
+      fallbackAfterMs: 1_000,
+    }, home);
+    // 500ms sleeps: the grace period (1000ms) passes after two sleeps, and
+    // the third probeAny — past the fallback — returns.
+    expect(clock).toBe(1_000);
+    expect(result.port).toBe(4100);
+  });
+
+  it('never joins a pre-multi-tenant router or a non-sonata listener', async () => {
+    let clock = 0;
+    const exitedChild = {
+      pid: 4242,
+      unref: () => {},
+      exitCode: 1,
+    };
+    // probeAny false throughout: the production default only matches a
+    // ready AND multi-tenant sonata router, so neither occupant qualifies.
+    await expect(startServeDaemon(home, ['node', 'cli.js', 'serve'], {
+      spawn: (() => exitedChild) as unknown as typeof spawnType,
+      probe: async () => false,
+      probeAny: async () => false,
+      sleep: async () => { clock += 500; },
+      now: () => clock,
+      timeoutMs: 2000,
+    }, home)).rejects.toThrow(/did not answer on port 4100.*serve-/s);
+  });
+
+  it('still prefers its own instance id while it is alive and unanswered', async () => {
+    // The stale-router guard this fallback must not reopen: while the spawned
+    // child is alive, a pre-existing router answering the port is not joined
+    // until the grace period passes — `sonata restart`'s false-success case.
+    let clock = 0;
+    let anyCalls = 0;
+    const result = await startServeDaemon(home, ['node', 'cli.js', 'serve'], {
+      spawn: fakeSpawn(),
+      probe: async (_port, _id) => clock >= 1_500,
+      probeAny: async () => { anyCalls += 1; return true; },
+      sleep: async () => { clock += 500; },
+      now: () => clock,
+      timeoutMs: 60_000,
+      fallbackAfterMs: 60_000,
+    }, home);
+    expect(result.port).toBe(4100);
+    expect(anyCalls).toBe(0);
+  });
 });
 
 const notSonataFetch: typeof fetch = (async () => new Response('', { status: 500 })) as unknown as typeof fetch;

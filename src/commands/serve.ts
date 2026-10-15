@@ -2513,6 +2513,11 @@ export async function cmdServe(
           // recorded here; the lazy start is the first spawn after it, so it
           // clears it exactly as an eager start does.
           await clearOrphan('lazy');
+          // A stop (or a concurrent `clearOrphan` failure path) may have begun
+          // while that await was in flight. Spawning now would strand a child
+          // nobody owns — the same window the eager path closes by clearing
+          // orphans only after it owns the router port.
+          if (stopping) return;
           const spawned = spawnLitellmChild();
           child = spawned;
           // The readiness await owns this child. Its exit can race the failed
@@ -2520,14 +2525,22 @@ export async function cmdServe(
           abandonedChildren.add(spawned);
           try {
             await (opts.waitForLitellm ?? defaultWaitForLitellm)(ports.litellm, masterKey);
+            if (stopping) throw new Error('serve is stopping');
             if (exitedChildren.has(spawned)) throw new Error('litellm exited before becoming ready');
           } catch (error) {
             // A spawned process is not a usable child until its health probe
             // passes. It remains abandoned while being terminated, so only
             // the next request owns the retry.
+            //
+            // Termination is SIGTERM, a bounded wait, then SIGKILL — the same
+            // escalation the eager-failure path and `stop()` use. A child
+            // stuck in a device-code login ignores SIGTERM for the whole of
+            // its poll; SIGTERM alone orphaned it here on every failed lazy
+            // start, while `child = undefined` above had already forgotten
+            // the only pid that could stop it.
             if (child === spawned) {
-              child = undefined;
-              if (!exitedChildren.has(spawned)) spawned.kill();
+              await terminateLitellm(spawned, opts.litellmExitTimeoutMs ?? LITELLM_EXIT_TIMEOUT_MS, sleep);
+              if (child === spawned) child = undefined;
             }
             exitedChildren.delete(spawned);
             throw error;
@@ -2912,9 +2925,23 @@ export interface DaemonDeps {
   spawn?: typeof spawn;
   /** Resolves true once the router answers on `port` with the given instance id. */
   probe?: (port: number, instanceId: string) => Promise<boolean>;
+  /**
+   * Resolves true once ANY healthy multi-tenant sonata router answers on
+   * `port` — not just the child this call spawned. The fallback two sessions
+   * starting together need: both spawn, one wins the bind, and the loser's
+   * only way out of its full-deadline wait is to join the winner. A
+   * non-sonata listener, or a pre-multi-tenant router, still never matches.
+   */
+  probeAny?: (port: number) => Promise<boolean>;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
   timeoutMs?: number;
+  /**
+   * How long to insist on this call's own instance id before accepting any
+   * healthy router. A child that has already exited skips the wait: it cannot
+   * be the one serving, so anything healthy on the port is the winner.
+   */
+  fallbackAfterMs?: number;
 }
 
 export interface DaemonResult {
@@ -2943,9 +2970,13 @@ export async function startServeDaemon(
 ): Promise<DaemonResult> {
   const spawnFn = deps.spawn ?? spawn;
   const probe = deps.probe ?? (async (port: number, id: string) => (await sonataRouterReady(port, fetch, id)));
+  const probeAny = deps.probeAny ?? (async (port: number) => (
+    (await sonataRouterReady(port, fetch)) === true && (await sonataRouterMultiTenant(port, fetch)) === true
+  ));
   const now = deps.now ?? Date.now;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const timeoutMs = deps.timeoutMs ?? 60_000;
+  const fallbackAfterMs = deps.fallbackAfterMs ?? 5_000;
 
   const port = routerPorts(home).router;
 
@@ -2987,8 +3018,28 @@ export async function startServeDaemon(
   child.unref();
 
   const deadline = now() + timeoutMs;
+  const fallbackAt = now() + fallbackAfterMs;
+  // Whether the spawned child is known to have exited — set when the spawn
+  // result exposes an exit channel, and observed by the fallback below. A
+  // child that lost the port race (EADDRINUSE) exits promptly; once it has,
+  // only the winner can be answering, so the instance-id filter is dropped
+  // and the wait ends on the first healthy router instead of the deadline.
+  let childExited = false;
+  if (typeof (child as { on?: unknown }).on === 'function') {
+    (child as unknown as { on(event: string, cb: () => void): void }).on('exit', () => { childExited = true; });
+  } else if (typeof (child as { exitCode?: unknown }).exitCode === 'number') {
+    childExited = true;
+  }
   for (;;) {
     if (await probe(port, instanceId)) return { pid: child.pid ?? 0, port, logPath };
+    // Same identity gate as the instance-id probe, minus the id: a sonata
+    // router that is ready AND multi-tenant. `isSonataRouter` alone is not
+    // enough — a pre-multi-tenant router answers it, and joining that would
+    // route this session under a single-config daemon. A non-sonata listener
+    // answers neither, so it never matches either.
+    if ((childExited || now() >= fallbackAt) && await probeAny(port)) {
+      return { pid: child.pid ?? 0, port, logPath };
+    }
     if (now() > deadline) {
       throw new Error(
         `sonata serve: the daemon did not answer on port ${port} within ${Math.round(timeoutMs / 1000)}s. ` +
