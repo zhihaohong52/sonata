@@ -205,7 +205,8 @@ export function explicitTierNote(report: Pick<UsageReport, 'explicitTierUnderAut
 
 /** How many of `rows` belong to `tenant` and named an explicit tier rather than `sonata-<role>-auto`. */
 export function countExplicitTiers(rows: readonly LedgerRow[], tenant: string): number {
-  return rows.filter((row) => row.tenant === tenant && row.route !== 'auto' && EXPLICIT_TIER.test(row.alias)).length;
+  // A withdrawn turn is a second row for one request; counting it would count the request twice.
+  return rows.filter((row) => row.tenant === tenant && row.withdrawn !== true && row.route !== 'auto' && EXPLICIT_TIER.test(row.alias)).length;
 }
 
 /**

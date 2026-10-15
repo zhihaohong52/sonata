@@ -550,6 +550,8 @@ describe('cmdUsage — explicit tiers while auto-routing is on', () => {
     appendRow(home, row({ ts: recent(), tenant, alias: 'sonata-code-auto', route: 'auto' }));
     appendRow(home, row({ ts: recent(), tenant, alias: 'claude-opus-4-1' }));
     appendRow(home, row({ ts: recent(), tenant: 'another-project', alias: 'sonata-code-complex', route: 'manual' }));
+    // A withdrawn turn's row belongs to a request already counted.
+    appendRow(home, row({ ts: recent(), tenant, alias: 'sonata-code-complex', route: 'manual', withdrawn: true }));
     const report = await cmdUsage({ home, since: '1d', by: 'model', cwd, json: true });
     expect(report.explicitTierUnderAuto).toBe(2);
   });
