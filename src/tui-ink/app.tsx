@@ -69,7 +69,7 @@ export interface WizardData {
    * user's host trust, the machine config's gateways (their own URLs are
    * bound), and the config file each scope's URLs come from.
    */
-  refreshBindings?: {
+  refreshBindings: {
     trusted: Record<string, string[]>;
     machineGateways: Record<string, { baseUrl: string }>;
     configFileByScope: Partial<Record<'project' | 'global', string>>;
@@ -365,6 +365,8 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       }));
       const keys = { ...data.storedKeys, ...state.byokKeys };
       const scope = state.configScope ?? 'project';
+      // Required on WizardData: without it no host can be checked, so the refresh
+      // must not be built at all. There is no path that asks an unchecked host.
       const bindings = data.refreshBindings;
       return <ModelsStep
         key="models"
@@ -375,7 +377,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
         keys={keys}
         // A refresh sends each stored key to its URL's host, so a host nobody
         // bound is not asked; the harness list stands, and the reason is shown.
-        hostReasons={bindings === undefined ? {} : refreshHostReasons({
+        hostReasons={refreshHostReasons({
           gatewayUrls: gatewayBaseUrls,
           keys,
           typed: new Set(Object.keys(addedBaseUrls)),

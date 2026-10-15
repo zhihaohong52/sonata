@@ -50,6 +50,7 @@ function firstRunData(): WizardData {
     roles: ['code'],
     byokProviders: [],
     storedKeys: {},
+    refreshBindings: { trusted: {}, machineGateways: {}, configFileByScope: {} },
     fetchModels: async () => ({ outcome: 'ok', models: [] }),
   };
 }
@@ -316,6 +317,7 @@ describe('a tier screen for a config whose gateway this session never offered', 
       roles: ['code'],
       byokProviders: [],
       storedKeys: {},
+      refreshBindings: { trusted: {}, machineGateways: {}, configFileByScope: {} },
       fetchModels: async () => ({ outcome: 'ok', models: [] }),
       declaredGatewayNames: { project: ['acme'] },
       initialStateByScope: {
@@ -368,6 +370,7 @@ describe('a tier screen for a config whose gateway this session never offered', 
       roles: ['code'],
       byokProviders: [],
       storedKeys: {},
+      refreshBindings: { trusted: {}, machineGateways: {}, configFileByScope: {} },
       fetchModels: async () => ({ outcome: 'ok', models: [] }),
       declaredGatewayNames: { project: ['acme'] },
       harnessOnlyUpstreams: { project: { saved: 'codex-model' } },
@@ -469,6 +472,7 @@ describe('a tier screen for a harness-only config entry', () => {
       roles: ['code'],
       byokProviders: [],
       storedKeys: {},
+      refreshBindings: { trusted: {}, machineGateways: {}, configFileByScope: {} },
       fetchModels: async () => ({ outcome: 'ok', models: [] }),
       declaredGatewayNames: { project: ['acme'] },
       harnessOnlyUpstreams: { project: { alias: 'gpt-5.6-luna' } },
@@ -526,6 +530,7 @@ describe('a tier screen for a gateway whose slug is a versionless alias', () => 
       roles: ['code'],
       byokProviders: [],
       storedKeys: {},
+      refreshBindings: { trusted: {}, machineGateways: {}, configFileByScope: {} },
       gatewayAuth: { deepseek: 'api-key' },
       fetchModels: async () => ({ outcome: 'ok', models: [] }),
       initialStateByScope: {
@@ -636,6 +641,7 @@ describe('a Claude session provider added this run', () => {
       byokProviders: [{ name: 'claude', url: 'https://api.anthropic.com/v1' }],
       gatewayAuth: { claude: 'session' },
       storedKeys: {},
+      refreshBindings: { trusted: {}, machineGateways: {}, configFileByScope: {} },
       modelsDevCache: {
         fetchedAt: '2026-10-01T00:00:00Z',
         providers: { anthropic: { 'claude-opus-5-5': { input: 1 }, 'claude-sonnet-5': { input: 1 } } },
@@ -671,6 +677,7 @@ describe('a Claude session provider added this run', () => {
       byokProviders: [{ name: 'claude', url: 'https://api.anthropic.com/v1' }],
       gatewayAuth: { claude: 'session' },
       storedKeys: {},
+      refreshBindings: { trusted: {}, machineGateways: {}, configFileByScope: {} },
       modelsDevCache: {
         fetchedAt: '2026-10-01T00:00:00Z',
         providers: { anthropic: { 'claude-opus-5-5': { input: 1 }, 'claude-sonnet-5': { input: 1 } } },
