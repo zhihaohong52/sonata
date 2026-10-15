@@ -19,6 +19,17 @@ your files and your credentials.
 - **An `auth = "session"` gateway forwards your Claude Code session
   credential.** It is passed unmodified, and only ever to `api.anthropic.com` —
   a key is only ever sent to the host it belongs to.
+- **A stored key is only ever sent to a host bound to its gateway name.**
+  Keys are looked up by gateway name, but the `base_url` they would be sent
+  to comes from a config — including a cloned repo's project config pointing
+  the name at an attacker's host. A host is bound when it is the provider's
+  own endpoint, you confirmed it with `sonata auth trust <gateway> <host>`,
+  or it is the machine config's own URL for that name (`sonata auth add` and
+  `sonata init` record the binding for the URL you chose). Anything else gets
+  no key: `sonata serve` withholds it and answers a named 502 with the exact
+  trust command, and `sonata doctor` fails the gateway the same way. Bindings
+  live in a 0600 file beside the key store; hostnames compare exactly
+  (never suffix-matched), https only.
 - **Auto-routing sends a limited task excerpt to whatever `base_url` names.** When `[auto_route]` is set, the first message of each `-auto` subagent task is sent to that URL — TypeSafe at `api.typesafe.ai` by default, OpenRouter at `openrouter.ai/api`, or a `jev-compatible-server` you run yourself — after `<system-reminder>` blocks are removed and the text is capped at 8,000 characters. Nothing else is sent: no system prompt, tool results or later turns. The key follows the host, and a key is only ever sent to the host it belongs to: the `openrouter` key goes to `openrouter.ai` and nowhere else. The feature is off unless `[auto_route]` is written.
 
 - **Prompt injection is a real risk.** A foreign model reading a hostile

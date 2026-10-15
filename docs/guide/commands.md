@@ -21,6 +21,7 @@ mistyped command suggests the nearest real one.
 | Command | Purpose |
 |---|---|
 | `sonata auth list\|add <gateway>\|remove <gateway>\|login <gateway>` | Manage native-path gateway keys, kept in sonata's own key store. `add` reads the key from the terminal or stdin, never argv; `login` runs the OAuth flow for `codex` and `github-copilot` |
+| `sonata auth trust <gateway> <host>\|untrust <gateway> <host>\|trust-list` | Bind a stored key to the hosts it may be sent to. A key is only ever sent to a host bound to its gateway name: the provider's own endpoint, a host you confirmed with `trust`, or the machine config's own URL for that name. `sonata auth add` and `sonata init` record the binding for the URL you chose; anything else needs an explicit `trust`. `sonata doctor` fails a gateway pointing somewhere unbound, naming the exact command |
 | `sonata catalog [update]` | Show the cached catalogs' age, or refresh them: the Artificial Analysis model rankings (needs a stored `artificialanalysis` key), models.dev pricing, and the auto-route decision-model scores. `sonata init` refreshes on its own when a discovered model is missing; `sonata doctor` warns when a cache goes stale |
 | `sonata litellm install\|status` | Install or report sonata's own pinned LiteLLM. `status` answering `not-required` is healthy — no gateway in this config routes through it |
 

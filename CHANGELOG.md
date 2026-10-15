@@ -10,6 +10,34 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Security
+
+- **A stored key is now sent only to a host bound to its gateway name.**
+  Keys are looked up by gateway name, but the `base_url` they are sent to
+  comes from a config — including a cloned repo's project config pointing the
+  name at an attacker's host — so the name alone no longer decides where a key
+  goes. A host is bound when it is the provider's own endpoint, you confirmed
+  it with the new `sonata auth trust <gateway> <host>` (`untrust` removes it,
+  `trust-list` lists), or it is the machine config's own URL for that name;
+  `sonata auth add` and `sonata init` record the binding for the URL you
+  chose. Anything else gets no key: `sonata serve` withholds it and answers a
+  named 502 with the exact trust command, and `sonata doctor` fails the
+  gateway the same way. Hostnames compare exactly (never suffix-matched),
+  https only. Session and OAuth gateways hold no sendable key and are
+  unaffected.
+- **`keys.json` is no longer read as empty on a parse error.** Writers refused
+  nothing and rewrote the file from what parsed, so one torn write deleted
+  every other key (`writeSonataKey`) or unlinked the file (`removeSonataKey`).
+  Writers now refuse with a clear error naming the file when it exists but
+  cannot be read or parsed, and all writes are atomic (temp file plus rename,
+  0600).
+- **`sonata auth login` can no longer report success without logging in.**
+  The login ran LiteLLM's authenticator against the live token directory,
+  which returns a stored — possibly revoked — token as locally unexpired. It
+  now runs into a fresh temp directory swapped in only on success, so a
+  failed login leaves the working credential untouched. Permission fix-up
+  (0700/0600) runs on failure paths too.
+
 ### Fixed
 
 - **Muse Spark 1.3 Contributor no longer refuses every Claude Code request.**
