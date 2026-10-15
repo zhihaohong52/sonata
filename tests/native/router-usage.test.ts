@@ -443,6 +443,19 @@ describe('router — text-form tool calls', () => {
     expect(seen).toEqual(['default/pro']);
   });
 
+  it('times a withdrawn turn to its own end, not the request\'s', async () => {
+    clearCooldowns();
+    let clock = 1_000;
+    const rows: LedgerRow[] = [];
+    const { d } = twoCandidates(rows, (key) => {
+      if (key === 'pro') clock += 5_000;
+      return sse(stream(key === 'flash' ? UNPARSED : 'from pro'));
+    }, { now: () => clock });
+    await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
+    expect(rows.find((r) => r.withdrawn === true)!.ms).toBe(0);
+    expect(rows.find((r) => r.withdrawn !== true)!.ms).toBe(5_000);
+  });
+
   it('withdraws a non-streamed reply with an unrecoverable call', async () => {
     clearCooldowns();
     const rows: LedgerRow[] = [];

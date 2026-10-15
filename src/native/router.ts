@@ -480,6 +480,8 @@ interface RecordContext {
   withdrawn?: true;
   /** The row is incomplete whatever its body shows: the client left while it was held. */
   incomplete?: true;
+  /** When the turn ended, for a row written later than that (a withdrawn turn's). */
+  endedAt?: number;
 }
 
 function headerNumber(headers: Record<string, string>, name: string): number | undefined {
@@ -500,7 +502,7 @@ function withUsageRecording(response: RouterResponse, ctx: RecordContext, deps: 
     const retries = headerNumber(response.headers, 'x-litellm-attempted-retries');
     const emit = (tokens: UsageTokens, complete: boolean): void => {
       try {
-        const endedAt = now();
+        const endedAt = ctx.endedAt ?? now();
         deps.recordUsage?.({
           // Priced at request start, not completion (spec §3): a stream that
           // crosses a price-window boundary must keep the rate it started
@@ -3026,6 +3028,8 @@ async function routeTierCandidates(
             // Its fall-through is on the served row's attempts; repeating it here would count it twice.
             attempts: [],
             textToolCalls: { ...textToolCalls },
+            // Its row is written once routing ends; its duration is its own.
+            endedAt: now(),
           },
         };
         withdrawn.push(turn);
