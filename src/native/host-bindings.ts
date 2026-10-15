@@ -224,7 +224,7 @@ export function unboundMessage(gateway: string, host: string, configPath: string
  * for (`keysPresent`).
  */
 export function unboundKeyHosts(
-  gateways: NativeConfig['gateways'],
+  tenantGateways: NativeConfig['gateways'],
   machineGateways: NativeConfig['gateways'],
   keysPresent: Set<string>,
   home: string,
@@ -232,7 +232,7 @@ export function unboundKeyHosts(
 ): Map<string, string> {
   const trust = readTrustBindings(home);
   const out = new Map<string, string>();
-  for (const [name, gateway] of Object.entries(gateways)) {
+  for (const [name, gateway] of Object.entries(tenantGateways)) {
     if ((gateway.auth ?? 'api-key') !== 'api-key') continue;
     // No stored key under this name or any name sharing it: nothing would
     // flow, so no failure — the gateway resolves keyless exactly as before.

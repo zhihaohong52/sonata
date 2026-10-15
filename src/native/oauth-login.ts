@@ -208,7 +208,36 @@ export async function loginGateway(opts: {
         return finish({ ok: false, problem: 'could not install the new login; the previous credential was kept' });
       }
       if (backedUp) rmSync(backup, { force: true, recursive: true });
+      sweepStaleLoginBackups(dirname(dir));
       finish({ ok: true });
     });
   });
+}
+
+/** How old a leftover login backup must be before a later login removes it. */
+const STALE_LOGIN_BACKUP_MS = 10 * 60_000;
+
+/**
+ * Removes the backups a crashed login left beside its destination. A login
+ * renames the previous credential to `<staging>-old` and deletes it once the
+ * new one is installed; one that survives is a credential nothing reads. Only
+ * backups older than ten minutes go, so a login still in its swap window is
+ * never swept — its backup is its rollback.
+ */
+export function sweepStaleLoginBackups(parent: string, now: number = Date.now()): void {
+  let names: string[];
+  try {
+    names = readdirSync(parent);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (!/^\.login-.+-old$/.test(name)) continue;
+    const path = join(parent, name);
+    try {
+      if (now - statSync(path).mtimeMs >= STALE_LOGIN_BACKUP_MS) rmSync(path, { force: true, recursive: true });
+    } catch {
+      // Gone already, or not ours to read: nothing to sweep.
+    }
+  }
 }
