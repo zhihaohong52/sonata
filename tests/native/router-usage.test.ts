@@ -197,6 +197,29 @@ describe('router usage recording', () => {
     expect(rows[0]).toMatchObject({ alias: 'flash', key: 'flash', gateway: 'acme', role: undefined, tier: undefined });
   });
 
+  it('records tokens from a non-streamed JSON 200 on a direct gateway', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const json = JSON.stringify({ usage: { input_tokens: 3, output_tokens: 4 } });
+    const d: RouterDeps = {
+      ...deps(rows, () => body200(json, 'application/json')),
+      resolveTier: () => ({
+        role: 'code', tier: 'simple',
+        routes: [{
+          key: 'direct-1',
+          native: { gateway: 'g', id: 'model-1', transport: 'direct' as const, baseUrl: 'https://gw.example/v1' },
+        }],
+      }),
+      gatewayKeys: () => ({ g: 'GATEWAY-KEY' }),
+    };
+    const res = await routeRequest(req('sonata-code-simple'), d);
+    expect(await drain(res.body)).toBe(json);
+    expect(rows).toHaveLength(1);
+    // The bug this pins: previously 0 tokens and complete: false, escaping
+    // pricing and [budget].
+    expect(rows[0]).toMatchObject({ upstream: 'direct', complete: true, tokens: { input: 3, output: 4 } });
+  });
+
   it('records the anthropic path too', async () => {
     clearCooldowns();
     const rows: LedgerRow[] = [];
@@ -204,6 +227,17 @@ describe('router usage recording', () => {
     const res = await routeRequest(req('claude-sonnet-5'), d);
     await drain(res.body);
     expect(rows[0]).toMatchObject({ upstream: 'anthropic', alias: 'claude-sonnet-5' });
+  });
+
+  it('records tokens from a non-streamed JSON 200 on the anthropic pass-through', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const json = JSON.stringify({ usage: { input_tokens: 5, output_tokens: 6 } });
+    const d = { ...deps(rows, () => body200(json, 'application/json')), anthropicBase: 'https://anthropic.invalid' };
+    const res = await routeRequest(req('claude-sonnet-5'), d);
+    expect(await drain(res.body)).toBe(json);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ upstream: 'anthropic', alias: 'claude-sonnet-5', complete: true, tokens: { input: 5, output: 6 } });
   });
 
   it('records `ts` at request start, not at stream completion', async () => {
