@@ -1188,7 +1188,7 @@ describe('router — text-form tool calls', () => {
     expect(rows[0].textToolCalls).toEqual({ recovered: 1, unparsed: 0 });
   });
 
-  it('answers client-gone and records nothing when the client leaves mid-JSON', async () => {
+  it('answers client-gone and records a served, incomplete row when the client leaves mid-JSON', async () => {
     clearCooldowns();
     const rows: LedgerRow[] = [];
     const ac = new AbortController();
@@ -1211,7 +1211,10 @@ describe('router — text-form tool calls', () => {
     const res = await routeRequest({ ...withTools('sonata-code-simple'), signal: ac.signal }, d);
     expect((res as { clientGone?: boolean }).clientGone).toBe(true);
     expect(res.status).toBe(499);
-    expect(rows).toHaveLength(0);
+    // The upstream answered: the row a held stream cut off the same way gets.
+    // What had arrived went with the aborted read, so no usage is claimed.
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ key: 'flash', status: 200, complete: false, tokens: { input: 0, output: 0 } });
   });
 
   it('leaves a direct-transport candidate byte-identical', async () => {

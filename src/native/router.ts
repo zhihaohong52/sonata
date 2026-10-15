@@ -1572,9 +1572,13 @@ async function recoverTextToolCalls(
       ? { whole: response.body }
       : await readWholeOrPassThrough(response.body, deps.textToolCallReadLimits ?? TEXT_TOOL_CALL_READ_LIMITS);
   } catch (error) {
-    // The client left while the body was still arriving: the same answer
-    // every other forwarding path gives, and like those, no ledger row.
-    if (clientLeft(req)) return clientGone();
+    // The client left while the body was still arriving. The upstream had
+    // answered, so a tier candidate gets the row a held stream cut off the
+    // same way gets: served and incomplete. What had arrived is lost with the
+    // aborted read, so the row carries no usage (`held` is empty).
+    if (clientLeft(req)) {
+      return Object.assign(clientGone(), { held: { status: response.status, headers: response.headers, body: Buffer.alloc(0) } });
+    }
     throw error;
   }
   // A body the bounded read gave up on is served as it arrived, with nothing
