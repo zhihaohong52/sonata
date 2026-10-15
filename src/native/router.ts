@@ -3501,31 +3501,34 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
     const textToolCalls: TextToolCallCounts = { recovered: 0, unparsed: 0 };
     // No cooldown here: a bare key has no next candidate to fall through to.
     const served = await recoverTextToolCalls(response, req, deps, textToolCalls, undefined, { alias: alias ?? requested ?? '?', candidate: alias ?? requested ?? 'unknown', outbound: body });
-    if (isClientGone(served)) return served;
-    return withUsageRecording(
-      served,
-      {
-        startedAt,
-        session,
-        project: tenant.project,
+    const ctx: RecordContext = {
+      startedAt,
+      session,
+      project: tenant.project,
       tenant: tenant.id,
       tenantConfig: tenant.config,
-        alias: alias ?? '',
-        // For a direct `--model <key>` request, `alias` IS the config key.
-        // Recording it (and its gateway) is what lets `resolvePrice` price this
-        // request class at all; without it a direct-model row is `source:
-        // 'none'` even when full price config exists for that exact model.
-        // `key` is only set when `alias` is defined, matching how optional
-        // `RecordContext` fields are handled elsewhere — never an own property
-        // with value `undefined`.
-        ...(alias !== undefined ? { key: alias, gateway: deps.resolveGateway?.(alias, tenant) } : {}),
-        effort: bareEffort,
-        upstream: 'litellm',
-        attempts: [],
-        textToolCalls,
-      },
-      deps,
-    );
+      alias: alias ?? '',
+      // For a direct `--model <key>` request, `alias` IS the config key.
+      // Recording it (and its gateway) is what lets `resolvePrice` price this
+      // request class at all; without it a direct-model row is `source:
+      // 'none'` even when full price config exists for that exact model.
+      // `key` is only set when `alias` is defined, matching how optional
+      // `RecordContext` fields are handled elsewhere — never an own property
+      // with value `undefined`.
+      ...(alias !== undefined ? { key: alias, gateway: deps.resolveGateway?.(alias, tenant) } : {}),
+      effort: bareEffort,
+      upstream: 'litellm',
+      attempts: [],
+    };
+    if (isClientGone(served)) {
+      // The client left mid-read of a JSON reply the upstream had answered:
+      // recorded once, served and incomplete, as on the tier path. No text-call
+      // counts — the body was never read whole, so none were found.
+      const held = (served as { held?: HeldBody }).held;
+      if (held !== undefined) await recordHeld(held, { ...ctx, incomplete: true }, deps);
+      return served;
+    }
+    return withUsageRecording(served, { ...ctx, textToolCalls }, deps);
   }
 
   try {

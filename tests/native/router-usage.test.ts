@@ -1249,6 +1249,25 @@ describe('router — text-form tool calls', () => {
     expect(rows[0]).toMatchObject({ key: 'flash', status: 200, complete: false, tokens: { input: 0, output: 0 } });
   });
 
+  it('records a bare --model JSON reply whose client left mid-read, once, as incomplete', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const ac = new AbortController();
+    const d: RouterDeps = {
+      ...deps(rows, () => new Response(new ReadableStream<Uint8Array>({
+        start(controller) { controller.enqueue(new TextEncoder().encode('{"id":"m","type":"message","content":[')); },
+        pull(controller) { ac.abort(); controller.error(new Error('upstream stream failed')); },
+      }), { status: 200, headers: { 'content-type': 'application/json' } })),
+      resolveNative: (key) => key === 'flash' ? { gateway: 'acme', id: 'x', transport: 'litellm' as const } : undefined,
+      resolveGateway: () => 'acme',
+    };
+    const res = await routeRequest({ ...withTools('flash@high'), signal: ac.signal }, d);
+    expect(res.status).toBe(499);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ key: 'flash', gateway: 'acme', effort: 'high', status: 200, complete: false, tokens: { input: 0, output: 0 } });
+    expect('textToolCalls' in rows[0]).toBe(false);
+  });
+
   it('leaves a direct-transport candidate byte-identical', async () => {
     clearCooldowns();
     const rows: LedgerRow[] = [];
