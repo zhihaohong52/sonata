@@ -1074,7 +1074,10 @@ export async function cmdDoctor(
         choiceText = `pinned model ${auto.model}`;
       } else {
         // One free model-list call at most; doctor never makes a decision call.
-        const listed = keyRequired && credential.key === undefined
+        // Not at a host that may not receive the stored key: that host is the
+        // failing check above, and a listing there would send the key anyway.
+        const hostTrusted = binding === undefined || binding.bound;
+        const listed = !hostTrusted || (keyRequired && credential.key === undefined)
           ? undefined
           : await new ModelListCache(fetchFn).list(auto.baseUrl, credential.key);
         const choice = chooseDecisionModel({ baseUrl: auto.baseUrl, listed, catalog: loadDecisionCatalog(home) });

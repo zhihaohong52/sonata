@@ -1086,6 +1086,43 @@ complex = ["m-flash"]
     expect(check?.detail).toContain('sonata auth trust auto-route decide.example');
   });
 
+  it('never lists models at an unbound decision host with its stored key', async () => {
+    // The listing is a request carrying the key, so it must not reach a host
+    // the key may not go to. The failure is still reported.
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-auto-list-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-auto-list-home-'));
+    writeSonataKey(home, 'auto-route', 'sk-decide');
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[auto_route]
+classifier = "jev"
+base_url = "https://decide.example"
+
+[models."m-flash"]
+gateway = "acme"
+id = "m-flash"
+
+[native.gateways.acme]
+base_url = "https://gateway.example/v1"
+
+[tiers.code]
+simple = ["m-flash"]
+complex = ["m-flash"]
+`);
+    const requested: string[] = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url: string | URL | Request) => {
+      requested.push(String(url));
+      throw new Error('down');
+    };
+    try {
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+      expect(requested.filter((url) => url.includes('decide.example'))).toEqual([]);
+      expect(checks.find((c) => c.name === 'auto route' && c.ok === false)?.detail).toContain('decide.example');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('passes a keyless auto-route URL on an unbound host: no key would be sent there', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'doc-auto-keyless-cwd-'));
     const home = mkdtempSync(join(tmpdir(), 'doc-auto-keyless-home-'));
