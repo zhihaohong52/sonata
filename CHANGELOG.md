@@ -8,6 +8,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+## [0.16.5] - 2026-10-15
+
 ### Added
 
 - **Contributor models are ranked.** A `-contributor` model (Muse Spark 1.3
