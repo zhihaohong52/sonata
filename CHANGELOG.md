@@ -24,9 +24,11 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   file that exists but fails to parse — including one stamped with a newer
   `schema_version`, which `applyMigrations` refuses on purpose — used to be
   reported on one line while init rewrote it from defaults, deleting
-  `[budget]`, prices and tiers. Init now stops before the wizard (the `--yes`
-  lane throws), names the file and the parse error, says to fix the file or
-  move it aside to start over, and writes nothing.
+  `[budget]`, prices and tiers. Init now refuses only when the file at the
+  scope being written is unreadable — after the scope is known, so a broken
+  project config never blocks a global init and vice versa — names that
+  file and the parse error, says to fix the file or move it aside to start
+  over, and writes nothing.
 
 - **Muse Spark 1.3 Contributor no longer refuses every Claude Code request.**
   Its server rejects a tool schema whose pattern uses the `\0` (NUL) escape,
