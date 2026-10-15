@@ -25,7 +25,7 @@ import { homedir } from 'node:os';
 import { readBuildInfo, stampedVersion } from './build-info.js';
 import { fileURLToPath } from 'node:url';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
-import { cmdAuthAdd, cmdAuthList, cmdAuthLogin, cmdAuthRemove } from './commands/auth.js';
+import { cmdAuthAdd, cmdAuthList, cmdAuthLogin, cmdAuthRemove, cmdAuthTrust, cmdAuthTrustList, cmdAuthUntrust } from './commands/auth.js';
 import { cmdServe, cmdRestart, startServeDaemon, isSonataRouter, sonataRouterReady, sonataRouterHasUi } from './commands/serve.js';
 import { routerPorts } from './commands/ports.js';
 import { cmdCode } from './commands/code.js';
@@ -802,15 +802,32 @@ export async function main(argv: string[]): Promise<number> {
 
   if (command === 'auth') {
     const { positionals } = parseArgs({ args: rest, allowPositionals: true, options: {} });
-    const [action, gateway] = positionals;
-    let configured: Record<string, { auth: string }> = {};
+    const [action, gateway, extra] = positionals;
+    let configured: Record<string, { auth: string; baseUrl?: string }> = {};
     try {
-      configured = loadConfig(process.cwd(), homedir()).native?.gateways ?? {};
+      const native = loadConfig(process.cwd(), homedir()).native?.gateways ?? {};
+      configured = Object.fromEntries(
+        Object.entries(native).map(([name, gw]) => [name, { auth: gw.auth, baseUrl: (gw as { baseUrl?: string }).baseUrl }]),
+      );
     } catch { /* no config yet — add/remove/login do not need one */ }
     const gateways = Object.keys(configured);
 
     if (action === 'list') {
       console.log(cmdAuthList({ home: homedir(), gateways }).text);
+      return 0;
+    }
+    if (action === 'trust') {
+      if (!gateway || !extra) throw new Error('sonata auth trust requires a gateway and a host: sonata auth trust <gateway> <host>');
+      console.log(cmdAuthTrust({ home: homedir(), gateway, host: extra }).text);
+      return 0;
+    }
+    if (action === 'untrust') {
+      if (!gateway || !extra) throw new Error('sonata auth untrust requires a gateway and a host: sonata auth untrust <gateway> <host>');
+      console.log(cmdAuthUntrust({ home: homedir(), gateway, host: extra }).text);
+      return 0;
+    }
+    if (action === 'trust-list') {
+      console.log(cmdAuthTrustList({ home: homedir(), gateways }).text);
       return 0;
     }
     if (action === 'login') {
@@ -833,7 +850,7 @@ export async function main(argv: string[]): Promise<number> {
       }
       const key = await readAuthKey();
       if (!key) throw new Error('sonata auth add requires a non-empty key');
-      cmdAuthAdd({ home: homedir(), gateway, key });
+      cmdAuthAdd({ home: homedir(), gateway, key, baseUrl: configured[gateway]?.baseUrl });
       // artificialanalysis is the one gateway sonata itself calls directly
       // (never through LiteLLM), so it is the one case a plain, uncached
       // request can confirm immediately — otherwise a bad key surfaces only
@@ -846,7 +863,7 @@ export async function main(argv: string[]): Promise<number> {
       }
       return 0;
     }
-    throw new Error('sonata auth requires list, add <gateway>, remove <gateway> or login <gateway>');
+    throw new Error('sonata auth requires list, add <gateway>, remove <gateway>, login <gateway>, trust <gateway> <host>, untrust <gateway> <host> or trust-list');
   }
 
   if (command === 'serve') {
