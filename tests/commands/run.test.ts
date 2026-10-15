@@ -76,6 +76,21 @@ describe('readPermissionMode', () => {
     expect(readPermissionMode(cwd, 's3')).toBe('plan');
   });
 
+  it('falls back to default for a corrupt session file, the guarded path', () => {
+    // A file that is not JSON names no mode at all — unlike an unknown mode
+    // string, there is nothing to refuse on. `default` is itself the guarded
+    // path (opencode/pi refuse it for write roles), so falling back is safe.
+    mkdirSync(join(cwd, '.sonata'), { recursive: true });
+    writeFileSync(join(cwd, '.sonata', 'session-s5.json'), 'not json{{{');
+    expect(readPermissionMode(cwd, 's5')).toBe('default');
+  });
+
+  it('falls back to default for an empty session file', () => {
+    mkdirSync(join(cwd, '.sonata'), { recursive: true });
+    writeFileSync(join(cwd, '.sonata', 'session-s6.json'), '');
+    expect(readPermissionMode(cwd, 's6')).toBe('default');
+  });
+
   it('refuses a genuinely unknown mode rather than guessing', () => {
     mkdirSync(join(cwd, '.sonata'), { recursive: true });
     writeFileSync(join(cwd, '.sonata', 'session-s4.json'),
