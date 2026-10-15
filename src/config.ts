@@ -10,6 +10,7 @@ import { loadModelsDev } from './modelsdev.js';
 import { configUpstreamFor } from './pricing.js';
 import { envVarForGateway } from './native/gateway-env.js';
 import { assertGatewayName } from './native/gateway-name.js';
+import { ownEntry } from './native/own-entry.js';
 import { canonicalBaseUrl, canonicalBaseUrlOrUndefined } from './native/base-url.js';
 
 export { assertGatewayName, canonicalBaseUrl, canonicalBaseUrlOrUndefined };
@@ -908,7 +909,7 @@ export function parseConfig(text: string): SonataConfig {
           `sonata.toml: native model "${name}" needs string "gateway", string "id" and number "context_window"`,
         );
       }
-      if (!gateways[d.gateway]) {
+      if (ownEntry(gateways, d.gateway) === undefined) {
         throw new Error(
           `sonata.toml: native model "${name}" references unknown gateway "${d.gateway}". ` +
           `Define [native.gateways."${d.gateway}"] first.`,
@@ -957,7 +958,7 @@ export function parseConfig(text: string): SonataConfig {
   // gateway here reaches litellmModelEntry via the native projection below
   // and crashes on `gateways[gateway].auth` being undefined.
   for (const [name, model] of Object.entries(unifiedModels)) {
-    if (model.gateway !== undefined && !native?.gateways[model.gateway]) {
+    if (model.gateway !== undefined && ownEntry(native?.gateways ?? {}, model.gateway) === undefined) {
       throw new Error(
         `sonata.toml: model "${name}" references unknown gateway "${model.gateway}". ` +
         `Define [native.gateways."${model.gateway}"] first.`,

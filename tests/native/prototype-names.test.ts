@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseConfig } from '../../src/config.js';
 import { envVarForGateway } from '../../src/native/gateway-env.js';
+import { providerForBaseUrl } from '../../src/native/providers.js';
+import { sharedPlanFor } from '../../src/plans.js';
 import type { NativeConfig } from '../../src/config.js';
 import { resolveKeys, writeSonataKey } from '../../src/native/credentials.js';
 import { addTrustBinding, readTrustBindings, seedMarkerPath, seedUpgradeTrust, trustedHostsPath } from '../../src/native/host-bindings.js';
@@ -86,5 +88,31 @@ describe('the tolerant reader on an absent or corrupt file', () => {
   it('answers a null-prototype map, so a prototype name reads as no binding', () => {
     expect(Object.getPrototypeOf(readTrustBindings(tmp()))).toBeNull();
     expect(readTrustBindings(tmp()).constructor).toBeUndefined();
+  });
+});
+
+describe('name-keyed lookups read own entries only', () => {
+  it('refuses a model that names a gateway which does not exist, even one named after an inherited property', () => {
+    const toml = `
+[models."m-flash"]
+gateway = "constructor"
+id = "m-flash"
+[tiers.code]
+simple = ["m-flash"]
+complex = ["m-flash"]
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+`;
+    expect(() => parseConfig(toml)).toThrow(/constructor/);
+  });
+
+  it('answers a host named after an Object.prototype property with no shared plan', () => {
+    expect(sharedPlanFor('https://constructor/v1')).toBeUndefined();
+    expect(sharedPlanFor('https://toString/v1')).toBeUndefined();
+  });
+
+  it('answers a gateway named after an Object.prototype property with the default provider', () => {
+    expect(providerForBaseUrl('constructor')).toBe('openai');
+    expect(providerForBaseUrl('toString')).toBe('openai');
   });
 });

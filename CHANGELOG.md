@@ -136,8 +136,10 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 - **A gateway name cannot be an Object.prototype property, and `seeded` is
   refused.** A name such as `constructor` read an inherited value from the plain
   maps keyed by name, which could make the seed throw and abort `auth add` and
-  `init`. Names are letters, digits, `.`, `_` and `-`, and every lookup reads an
-  own property.
+  `init`. A gateway name that is empty, has a control character, or is an
+  Object.prototype name is refused. The name lookups in the config parser, the
+  provider and LiteLLM tables, plan detection, the key stores and the trust file
+  read own properties only.
 - **Doctor never lists decision models at an unbound host with its stored key.**
 - **A decision and the send that follows it use one config.** The unbound-host check
   for a tenant is computed from the config the request carries, for both the LiteLLM
