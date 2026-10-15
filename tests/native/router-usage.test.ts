@@ -550,9 +550,9 @@ describe('router — text-form tool calls', () => {
     const { d } = twoCandidates(rows, (key) => sse(key === 'flash' ? noUsage : stream('from pro')));
     await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
     const withdrawn = rows.find((r) => r.withdrawn === true)!;
+    // What the router controls. Whether such a row is priced is `priceRow`'s call.
     expect(withdrawn.complete).toBe(false);
     expect(withdrawn.tokens).toEqual({ input: 0, output: 0, cacheRead: 0, cacheCreation: 0 });
-    expect(withdrawn.price).toEqual({ source: 'none' });
   });
 
   it('passes a recovered call through the hold unchanged', async () => {

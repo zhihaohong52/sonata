@@ -2513,7 +2513,9 @@ interface WithdrawnTurn {
 /**
  * Writes a withdrawn turn's ledger row, its usage read from the held body by
  * the same collector a served row uses. A stream that never reported usage
- * yields an incomplete row with zero tokens.
+ * yields an incomplete row with zero tokens. The router prices nothing: serve
+ * prices every row in `priceRow` (src/commands/serve.ts), and that is where
+ * such a row must stay unpriced rather than become $0.
  */
 async function recordWithdrawnTurn(turn: WithdrawnTurn, deps: RouterDeps): Promise<void> {
   // The auto-route decision rides on the served row only, or it is counted twice.
