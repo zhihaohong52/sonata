@@ -22,7 +22,7 @@ complex = ["kimi-k3", "flash"]
 tail_window_seconds     = 20     # how long `sonata tail` blocks per call
 stall_timeout_seconds   = 120    # silence before a run is reported STALLED
 run_timeout_seconds     = 1800   # hard cap; the run is killed at this point
-dispatch_window_seconds = 1500   # how long `sonata wait` blocks before giving up
+dispatch_window_seconds = 540    # how long `sonata wait` blocks before giving up
 ```
 
 A `[models."<key>"]` entry can carry `gateway`/`id` (native), `harness`/`harness_id`

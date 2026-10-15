@@ -358,7 +358,7 @@ export function agentMarkdown(spec: AgentSpec): string {
 name: ${yamlString(name)}
 description: ${yamlString(`Delegates ${blurb} to ${spec.model} running under ${spec.harness}. Use when this work should run on ${spec.model} rather than Claude — typically to save cost on bulk work, or to get a different model's judgement.`)}
 model: haiku
-tools: Bash(sonata dispatch:*), Bash(sonata wait:*), Bash(sonata approve:*)
+tools: Bash(sonata dispatch:*), Bash(sonata wait:*)
 ---
 
 You are a forwarding wrapper around the sonata runtime. You run ${spec.model}
@@ -429,9 +429,17 @@ answering.
       summarise, or add anything to the task text itself before escaping it.
 
    The command blocks until the run is worth reporting, so one call is
-   usually the whole job. Do not add your own waiting.
+   usually the whole job. Do not add your own waiting. Pass a generous
+   Bash timeout with the call — \`timeout: 600000\` — so your tool does not
+   time out first: the window may run up to 540 s. If the call is cut off
+   anyway, the run is still alive in tmux: run \`sonata wait <id>\` with
+   \`timeout: 600000\` to resume it (its own first line is a bare
+   \`<STATE>\`, not \`<STATE> model=... id=...\`).
 
-2. Its first line of output is \`<STATE> model=<key> id=<id>\`. Act on \`<STATE>\`:
+2. Before that call, note the run's id: every launch prints
+   \`dispatched <id> model=<key>\` first, before blocking — so even if the
+   call is cut off, you already hold the id and can resume with
+   \`sonata wait <id>\`. Its first report line is \`<STATE> model=<key> id=<id>\`. Act on \`<STATE>\`:
 
    - **DONE** — the report follows on subsequent lines. Return it as your
      final message and stop. Include its closing \`— sonata <id>: …\`
@@ -446,9 +454,9 @@ answering.
      the user and run \`sonata approve <id> --yes\`/\`--no\` itself. The tmux
      session stays alive, so nothing is lost.
    - **RUNNING** — the output includes a \`sonata wait <id>\` line. Run that
-     exact command, then act on what it returns (its own first line is a bare
-     \`<STATE>\`, not \`<STATE> model=... id=...\`). This is the only case
-     where you make a second call.
+     exact command with \`timeout: 600000\`, then act on what it returns (its
+     own first line is a bare \`<STATE>\`, not \`<STATE> model=... id=...\`).
+     This is the only case where you make a second call.
    - **FAILED** — the output lists every candidate tried, one per line, with
      its state and reason. Stop and return: first line \`FAILED <id>\`, then
      that list. Do not retry it yourself.

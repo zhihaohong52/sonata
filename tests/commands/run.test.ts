@@ -65,11 +65,22 @@ describe('readPermissionMode', () => {
     expect(readPermissionMode(cwd, 's2')).toBe('acceptEdits');
   });
 
-  it('still falls back to default for a genuinely unknown mode', () => {
+  it('maps dontAsk (auto-deny) to plan, the read-only end', () => {
+    // `dontAsk` auto-denies anything not allow-listed. Read as `default` it
+    // would hand codex workspace-write — the most permissive end for the most
+    // restrictive session mode. Every adapter honours `plan` without writing,
+    // so this keeps the dispatch inside the session's permissions.
     mkdirSync(join(cwd, '.sonata'), { recursive: true });
     writeFileSync(join(cwd, '.sonata', 'session-s3.json'),
+      JSON.stringify({ permissionMode: 'dontAsk' }));
+    expect(readPermissionMode(cwd, 's3')).toBe('plan');
+  });
+
+  it('refuses a genuinely unknown mode rather than guessing', () => {
+    mkdirSync(join(cwd, '.sonata'), { recursive: true });
+    writeFileSync(join(cwd, '.sonata', 'session-s4.json'),
       JSON.stringify({ permissionMode: 'someFutureMode' }));
-    expect(readPermissionMode(cwd, 's3')).toBe('default');
+    expect(() => readPermissionMode(cwd, 's4')).toThrow(/unknown permission mode "someFutureMode"/);
   });
 });
 

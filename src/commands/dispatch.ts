@@ -50,6 +50,13 @@ export interface DispatchOptions {
   task: string;
   rolesDir: string;
   sessionId?: string;
+  /**
+   * Called with the launched run's id and model key as each candidate starts,
+   * BEFORE blocking in `wait` — so a caller whose own tool times out first
+   * already holds the id and can resume with `sonata wait <id>`. The CLI
+   * wires this to a `dispatched <id> model=<m>` line on stdout.
+   */
+  onLaunch?: (id: string, modelKey: string) => void;
 }
 
 export interface DispatchAttempt {
@@ -167,6 +174,7 @@ export async function cmdDispatch(
       };
       launched = await run(runOpts);
       lastId = launched.id;
+      opts.onLaunch?.(launched.id, modelKey);
     } catch (err) {
       attempts.push({
         modelKey, state: 'FAILED', degraded: true,

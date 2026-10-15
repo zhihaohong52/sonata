@@ -127,6 +127,18 @@ describe('reasonixAdapter.plan — default mode uses the TUI', () => {
    * — so the script types it in. It waits for the ready marker rather than
    * sleeping a fixed interval.
    */
+  it('never types the task blind when the TUI never became ready', () => {
+    // After the 60 s readiness loop falls through without the composer, the
+    // run is already over (or never started) — typing the task and Enter
+    // then lands blind into whatever the pane holds.
+    const readyLoop = p.script.indexOf('seq 1 120');
+    const sendLiteral = p.script.indexOf('tmux send-keys -t "$SESSION" -l');
+    expect(readyLoop).toBeGreaterThan(-1);
+    expect(sendLiteral).toBeGreaterThan(readyLoop);
+    expect(p.script.slice(sendLiteral - 200, sendLiteral)).toContain('grep -qF');
+    expect(p.script).toContain('if tmux capture-pane');
+  });
+
   it('seeds the composer by addressing its own tmux session', () => {
     expect(p.script).toContain(`SESSION="$(tmux display-message -p '#S')"`);
     expect(p.script).toContain('Shift+Tab ask/auto/plan');
@@ -153,7 +165,7 @@ describe('reasonixAdapter.plan — default mode uses the TUI', () => {
    * existed.
    */
   it('quits the TUI once the report lands, so the run can finish', () => {
-    expect(p.script).toContain("while [ ! -f '/repo/.sonata/runs/abc123/report.md' ]; do sleep 2; done");
+    expect(p.script).toContain("while [ ! -f '/repo/.sonata/runs/abc123/report.md' ] && [ ! -f '/repo/.sonata/runs/abc123/exit' ]; do sleep 2; done");
     expect(p.script).toContain('tmux send-keys -t "$SESSION" C-d');
   });
 

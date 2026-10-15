@@ -120,7 +120,7 @@ opencode → deepseek-v4-flash   (or codex, pi, or reasonix)
 
 Invariants to hold when changing code (reasons in `docs/internals/architecture.md`):
 
-- **Dispatch tools must be allow-listed** (`Bash(sonata dispatch:*)`, `Bash(sonata wait:*)`, `Bash(sonata approve:*)`); the auto-mode classifier is not stable on them. There is no MCP server.
+- **Dispatch and wait must be allow-listed** (`Bash(sonata dispatch:*)`, `Bash(sonata wait:*)`); the auto-mode classifier is not stable on them. `approve` must NOT be allow-listed — approvals reach a human through the permission prompt. There is no MCP server.
 - **`sonata dispatch` never parses harness output** — it reads run state only. All harness-specific knowledge lives in its adapter.
 - **Completion = exit sentinel + report file**, never terminal scraping. No report → `degraded`. A timed-out run (`run_timeout_seconds`) is `DONE`, degraded, `[timed out: …]`.
 - **Worktree fingerprint** (`src/worktree.ts`): annotates `[no worktree change: …]`, never degrades; inert outside git; skipped for read-only roles; capture lands after the sentinel.

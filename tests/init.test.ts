@@ -984,7 +984,7 @@ describe('cmdInit — allow-list upgrade', () => {
 
     const after = readSettings(settingsPath);
     expect(after.permissions?.allow).toEqual(expect.arrayContaining([
-      'Bash(sonata dispatch:*)', 'Bash(sonata wait:*)', 'Bash(sonata approve:*)',
+      'Bash(sonata dispatch:*)', 'Bash(sonata wait:*)',
     ]));
     // The stale entries are harmless to keep, but the point is the new ones exist.
     expect(after.permissions?.allow).toContain('mcp__sonata__dispatch');

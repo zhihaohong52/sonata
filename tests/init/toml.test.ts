@@ -140,7 +140,7 @@ describe('nativeTomlFor', () => {
     expect(out).toContain('tail_window_seconds = 20');
     expect(out).toContain('stall_timeout_seconds = 120');
     expect(out).toContain('run_timeout_seconds = 1800');
-    expect(out).toContain('dispatch_window_seconds = 1500');
+    expect(out).toContain('dispatch_window_seconds = 540');
   });
 
   it('preserves existing [run] settings when given', () => {

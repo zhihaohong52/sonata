@@ -30,11 +30,11 @@ describe('agentMarkdown', () => {
   it('declares a cheap tool-only wrapper', () => {
     expect(md).toContain('name: "code-deepseek-v4-flash"');
     expect(md).toContain('model: haiku');
-    expect(md).toContain('tools: Bash(sonata dispatch:*), Bash(sonata wait:*), Bash(sonata approve:*)');
+    expect(md).toContain('tools: Bash(sonata dispatch:*), Bash(sonata wait:*)');
   });
 
-  it('grants only the three sonata Bash commands', () => {
-    expect(md).toContain('tools: Bash(sonata dispatch:*), Bash(sonata wait:*), Bash(sonata approve:*)');
+  it('grants only the two sonata Bash commands', () => {
+    expect(md).toContain('tools: Bash(sonata dispatch:*), Bash(sonata wait:*)');
     expect(md).not.toContain('sonata run --role');
   });
 
@@ -125,14 +125,15 @@ describe('legacy agents — model keys in YAML frontmatter', () => {
 describe('agentMarkdown — tool grant', () => {
   const md = () => agentMarkdown({ role: 'code', model: 'm', harness: 'opencode' });
 
-  it('grants only the three sonata commands', () => {
+  it('grants only the two sonata commands', () => {
     expect(md()).toContain(
-      'tools: Bash(sonata dispatch:*), Bash(sonata wait:*), Bash(sonata approve:*)');
+      'tools: Bash(sonata dispatch:*), Bash(sonata wait:*)');
   });
 
   it('does not grant unrelated Bash commands', () => {
     expect(md()).not.toContain('Bash(ls:*)');
     expect(md()).not.toContain('Bash(sonata run:*)');
+    expect(md()).not.toContain('Bash(sonata approve:*)');
   });
 
   it('tells the wrapper to run only the sonata commands', () => {
@@ -143,8 +144,8 @@ describe('agentMarkdown — tool grant', () => {
 describe('agentMarkdown — one-call dispatch', () => {
   const md = agentMarkdown({ role: 'code', model: 'm', harness: 'opencode' });
 
-  it('grants the three commands the wrapper runs', () => {
-    expect(md).toContain('tools: Bash(sonata dispatch:*), Bash(sonata wait:*), Bash(sonata approve:*)');
+  it('grants the two commands the wrapper runs', () => {
+    expect(md).toContain('tools: Bash(sonata dispatch:*), Bash(sonata wait:*)');
   });
 
   it('never tells the wrapper to poll', () => {

@@ -28,9 +28,9 @@ export type Settings = Record<string, unknown> & {
 };
 
 /**
- * The three Bash commands a sonata wrapper is given.
+ * The two Bash commands a sonata wrapper is given.
  *
- * The tool surface moved from MCP to the blocking dispatch/wait/approve CLI.
+ * The tool surface moved from MCP to the blocking dispatch/wait CLI.
  *
  * These must be on the allow list, not left to Claude Code's `auto` mode
  * classifier. The classifier judges each call separately and its decisions are
@@ -44,12 +44,35 @@ export type Settings = Record<string, unknown> & {
  * executes and reads back, so it can no longer be permitted while the
  * read-back is blocked — but a denied `wait` still strands a paused run
  * unobserved, which is the same hazard with a smaller blast radius.
+ *
+ * `approve` is deliberately NOT here. An allow-listed `approve` lets a model
+ * answer a codex or reasonix approval card itself with no human ever seeing
+ * the prompt — in `default` mode that makes the dispatch more permissive than
+ * the session that spawned it, silently. Approvals must reach a human, so
+ * every `sonata approve` call goes through Claude Code's permission prompt.
  */
 export const SONATA_TOOLS = [
   'Bash(sonata dispatch:*)',
   'Bash(sonata wait:*)',
+];
+
+/**
+ * Allow entries sonata no longer grants, removed on the next settings rewrite.
+ *
+ * `Bash(sonata approve:*)` used to be allow-listed alongside the other two.
+ * Settings files written then still carry it, and until the writer below
+ * removes it `sonata doctor` flags it (a `tool permissions` failure naming
+ * this entry) rather than silently keeping a model-approved approval path.
+ */
+export const REMOVED_SONATA_TOOLS = [
   'Bash(sonata approve:*)',
 ];
+
+/** Sonata entries that must not stay allow-listed (see REMOVED_SONATA_TOOLS). */
+export function staleAllowEntries(settings: Settings): string[] {
+  const allow = settings.permissions?.allow ?? [];
+  return REMOVED_SONATA_TOOLS.filter((t) => allow.includes(t));
+}
 
 /** Which of the sonata tools are missing from `permissions.allow`. */
 export function missingAllowEntries(settings: Settings): string[] {
@@ -60,13 +83,17 @@ export function missingAllowEntries(settings: Settings): string[] {
 /**
  * Adds the sonata tools to `permissions.allow`, preserving order and every
  * unrelated entry. Idempotent: re-running `sonata init` cannot duplicate them.
+ * Also removes entries sonata no longer grants (see REMOVED_SONATA_TOOLS), so
+ * an old settings file carrying `Bash(sonata approve:*)` loses it on rewrite.
  */
 export function allowSonataTools(settings: Settings): { settings: Settings; changed: boolean } {
   const missing = missingAllowEntries(settings);
-  if (missing.length === 0) return { settings, changed: false };
+  const stale = staleAllowEntries(settings);
+  if (missing.length === 0 && stale.length === 0) return { settings, changed: false };
 
   const permissions = { ...(settings.permissions ?? {}) };
-  permissions.allow = [...(settings.permissions?.allow ?? []), ...missing];
+  const kept = (settings.permissions?.allow ?? []).filter((t) => !stale.includes(t));
+  permissions.allow = [...kept, ...missing];
   return { settings: { ...settings, permissions }, changed: true };
 }
 
@@ -209,7 +236,7 @@ export function revokeSonataTools(settings: Settings): { settings: Settings; cha
   const allow = settings.permissions?.allow;
   if (allow === undefined) return { settings, changed: false };
 
-  const kept = allow.filter((t) => !SONATA_TOOLS.includes(t) && !t.startsWith('mcp__sonata__'));
+  const kept = allow.filter((t) => !SONATA_TOOLS.includes(t) && !REMOVED_SONATA_TOOLS.includes(t) && !t.startsWith('mcp__sonata__'));
   if (kept.length === allow.length) return { settings, changed: false };
 
   const permissions: Record<string, unknown> = { ...(settings.permissions ?? {}) };

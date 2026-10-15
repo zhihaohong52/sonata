@@ -322,7 +322,7 @@ export function nativeTomlFor(
     `tail_window_seconds = ${existingRun?.tailWindowSeconds ?? 20}`,
     `stall_timeout_seconds = ${existingRun?.stallTimeoutSeconds ?? 120}`,
     `run_timeout_seconds = ${existingRun?.runTimeoutSeconds ?? 1800}`,
-    `dispatch_window_seconds = ${existingRun?.dispatchWindowSeconds ?? 1500}`,
+    `dispatch_window_seconds = ${existingRun?.dispatchWindowSeconds ?? 540}`,
     '',
   );
   return lines.join('\n');
