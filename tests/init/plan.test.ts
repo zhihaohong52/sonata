@@ -35,6 +35,7 @@ const env = (over: Partial<InitEnvironment> = {}): InitEnvironment => ({
   providerBaseUrls: { acme: 'https://acme.example/v1', 'flaky-gw': 'https://flaky.example/v1' },
   gatewayAuth: new Map([['acme', 'api-key' as const], ['flaky-gw', 'api-key' as const]]),
   oauthProviders: new Map(), byokProviders: [], configsByScope: {},
+  unreadableConfigs: [],
   existingHookScope: undefined, copilotUsable: false,
   ...over,
 });

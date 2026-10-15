@@ -1308,6 +1308,7 @@ describe('effort pinning — every editor can repair what loadConfig refuses', (
       providerBaseUrls: {},
       gatewayAuth: new Map(),
       oauthProviders: new Map(), byokProviders: [], configsByScope: { project: config },
+      unreadableConfigs: [],
       existingHookScope: undefined, copilotUsable: false,
     };
     // No `tiers` in state: the saved lists come from the config being repaired,
@@ -1386,6 +1387,7 @@ describe('plan() ranks a BYOK gateway\'s models through models.dev names', () =>
       providerBaseUrls: {},
       gatewayAuth: new Map(),
       oauthProviders: new Map(), byokProviders: [], configsByScope: {},
+      unreadableConfigs: [],
       existingHookScope: undefined, copilotUsable: false,
     };
     const state = {

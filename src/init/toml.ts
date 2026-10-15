@@ -160,8 +160,13 @@ export function nativeTomlFor(
   // it a field of the last [models."…"] entry and parseConfig never saw it.
   // Dropping it would also be the bug the setting exists to prevent — init
   // would re-propose the ordering the user avoided.
-  if (avoidGateways.length > 0) {
-    lines.push(`avoid_gateways = [${avoidGateways.map(tomlKey).join(', ')}]`, '');
+  // Filtered to gateways actually being written, like `gateway_order` below:
+  // a name absent from the file would fail the unknown-gateway check at parse
+  // time and refuse the whole config. Reached when a re-run deselects every
+  // model of an avoided gateway — the saved list still names it.
+  const writtenAvoid = avoidGateways.filter((g) => gateways.has(g));
+  if (writtenAvoid.length > 0) {
+    lines.push(`avoid_gateways = [${writtenAvoid.map(tomlKey).join(', ')}]`, '');
   }
   // The user's gateway ranking, same top-level rule as `avoid_gateways` above.
   // Filtered to gateways actually being written: a name absent from the file

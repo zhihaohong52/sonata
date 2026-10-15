@@ -34,6 +34,7 @@ const env = (over: Partial<InitEnvironment> = {}): InitEnvironment => ({
   oauthProviders: new Map(),
   byokProviders: [],
   configsByScope: {},
+  unreadableConfigs: [],
   existingHookScope: undefined,
   copilotUsable: false,
   ...over,

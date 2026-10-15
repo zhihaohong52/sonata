@@ -27,6 +27,7 @@ function makeEnv(overrides: Partial<InitEnvironment> = {}): InitEnvironment {
       { name: 'deepseek', url: 'https://api.deepseek.com' },
     ],
     configsByScope: {},
+    unreadableConfigs: [],
     existingHookScope: undefined,
     copilotUsable: true,
     ...overrides,

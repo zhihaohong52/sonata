@@ -281,6 +281,20 @@ export function plan(
   // `sonata init` silently un-priced the gateway.
   const configToml = nativeTomlFor(nativeRoleModels, state.credentialSources ?? {}, tiers, migratedModels, chosenNative, configForScope?.run, avoidGateways, configForScope, configForScope?.budget, gatewayOrder, autoRoute);
 
+  // The writer's own round trip: `nativeTomlFor` must emit a config
+  // `parseConfig` accepts, and asserting on the text cannot prove that — a
+  // bare key written under the wrong table header parses fine and binds
+  // somewhere else. A failure here is a bug in the writer, not in the user's
+  // answers, so it refuses before anything is shown or written.
+  let parsedPlanned: ReturnType<typeof parseConfig>;
+  try {
+    parsedPlanned = parseConfig(configToml);
+  } catch (err) {
+    throw new Error(
+      `sonata init would write a config that does not parse: ${err instanceof Error ? err.message : String(err)} — nothing written.`,
+    );
+  }
+
   // ---- notices (key check) ----
   const notices: string[] = [];
   const gateways = [...new Set(chosenNative.map((c) => c.gateway))];
@@ -355,13 +369,13 @@ export function plan(
   // It includes the -auto agents `sync` adds when [auto_route] survives the
   // config rewrite; a config that will not parse promises the tier agents only.
   let autoAgents = 0;
-  try { autoAgents = autoAgentRoles(parseConfig(configToml)).length; } catch { /* reported elsewhere */ }
+  try { autoAgents = autoAgentRoles(parsedPlanned).length; } catch { /* reported elsewhere */ }
   const totalAgents = tierAgentNames(tiers).length + autoAgents;
   // Parsed back out of the TOML about to be written: `serve` makes this same
   // call against that same file, and a summary derived from the selections
   // instead could promise something the written config does not say.
   let installLitellmNeeded = false;
-  try { installLitellmNeeded = litellmRequired(parseConfig(configToml)); } catch { /* the config
+  try { installLitellmNeeded = litellmRequired(parsedPlanned); } catch { /* the config
     is validated elsewhere; an unparseable one is not this line's error to raise */ }
   // ---- guidance ----
   // Project scope writes the repository's own CLAUDE.md, so the preference
