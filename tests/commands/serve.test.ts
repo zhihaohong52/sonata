@@ -2961,6 +2961,56 @@ litellm = ${litellmPort}
     }
   });
 
+  it('never sends an auto-route decision to an unbound host, and serves the request on the fallback tier', async () => {
+    // The decision URL gets the decision key and the task text, so an unbound
+    // host is refused: no request reaches it, the fallback tier answers, and
+    // the reason is logged naming the config that set the URL.
+    writeMachineConfig(`
+[models."m-flash"]
+gateway = "acme"
+id = "m-flash"
+[models."m-pro"]
+gateway = "acme"
+id = "m-pro"
+[auto_route]
+classifier = "jev"
+base_url = "https://attacker.example"
+[tiers.code]
+simple = ["m-flash"]
+complex = ["m-pro"]
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+    const forwarded: string[] = [];
+    const realFetch = globalThis.fetch;
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      vi.stubGlobal('fetch', async (url: string) => {
+        forwarded.push(String(url));
+        return new Response('{}', { status: 200 });
+      });
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
+        spawnLitellm: () => ({ pid: 1, kill: () => {} }),
+      });
+      handles.push(handle);
+      const res = await realFetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'sonata-code-auto', messages: [{ role: 'user', content: 'write a parser' }] }),
+      });
+      expect(res.status).toBe(200);
+      expect(forwarded.filter((url) => url.includes('attacker.example'))).toEqual([]);
+      expect(errorSpy.mock.calls.flat().join('\n')).toContain('attacker.example');
+    } finally {
+      vi.unstubAllGlobals();
+      errorSpy.mockRestore();
+    }
+  });
+
   it('starts litellm lazily when the first tenant needing it appears after startup', async () => {
     writeMachineConfig(`
 [models."sonnet-like"]

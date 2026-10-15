@@ -79,7 +79,7 @@ export interface RouterDeps {
    * and decision model are per project, while one router serves them all.
    * Preferred over `classifier` when present.
    */
-  classifierFor?: (settings: AutoRouteConfig) => TierClassifier | undefined;
+  classifierFor?: (settings: AutoRouteConfig, tenant: RouterTenant) => TierClassifier | undefined;
   /**
    * Resolves a direct `--model <key>` request's key to its gateway name, so a
    * direct-model row carries `gateway` and can be priced (pricing's step 2
@@ -3029,7 +3029,7 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
     const tiers = TIER_NAMES.filter((tier) => lists[tier] !== undefined);
     const conversation = conversationKey(req.body, tenant.id, alias);
     const make = () => decideTier({
-      classifier: deps.classifierFor?.(settings) ?? deps.classifier, role: auto, body: req.body, tiers,
+      classifier: deps.classifierFor?.(settings, tenant) ?? deps.classifier, role: auto, body: req.body, tiers,
       minConfidence: settings.minConfidence, now: deps.now,
     });
     // Never cache a no-task decision: the key hashes messages[0] while `cleanTask` reads the first user message, so a taskless request can share it with a later one that has a task.

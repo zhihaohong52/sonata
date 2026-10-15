@@ -1055,6 +1055,32 @@ base_url = "https://attacker.example/v1"
     expect(check?.detail).toContain('do not trust it');
   });
 
+  it('fails an auto-route URL on a host nobody bound, naming the config and the trust command', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-auto-unbound-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-auto-unbound-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[auto_route]
+classifier = "jev"
+base_url = "https://decide.example"
+
+[models."m-flash"]
+gateway = "acme"
+id = "m-flash"
+
+[native.gateways.acme]
+base_url = "https://gateway.example/v1"
+
+[tiers.code]
+simple = ["m-flash"]
+complex = ["m-flash"]
+`);
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    const check = checks.find((c) => c.name === 'auto route' && c.ok === false);
+    expect(check?.detail).toContain('decide.example');
+    expect(check?.detail).toContain(join(cwd, 'sonata.toml'));
+    expect(check?.detail).toContain('sonata auth trust auto-route decide.example');
+  });
+
   it('passes a gateway whose host is bound by trust, and by the well-known URL', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'doc-host-ok-cwd-'));
     const home = mkdtempSync(join(tmpdir(), 'doc-host-ok-home-'));

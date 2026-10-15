@@ -45,6 +45,7 @@ import { mainWorktreeDir } from '../git-worktree.js';
 import { keyReport, resolveDecisionKey, resolveKeyDetail } from '../native/credentials.js';
 import { gatewayHostBound, readTrustBindings, unboundMessage } from '../native/host-bindings.js';
 import { decisionKeyFor } from '../native/auto-route.js';
+import { decisionHostBinding, decisionUnboundMessage } from '../native/decision-binding.js';
 import { ModelListCache, chooseDecisionModel } from '../native/decision-models.js';
 import { loadDecisionCatalog } from '../decision-catalog.js';
 import { opencodeCredentialOrigin, opencodeDbPath, readOpencodeCredentials } from '../native/opencode-store.js';
@@ -1015,6 +1016,16 @@ export async function cmdDoctor(
     let decisionHost = '';
     try { decisionHost = new URL(auto.baseUrl).hostname; } catch { /* other */ }
     const keyRequired = decisionHost === 'openrouter.ai' || decisionHost === 'api.typesafe.ai';
+    // An unbound host is refused outright: serve sends it neither the key nor
+    // the task text, and every -auto request takes the fallback tier.
+    const binding = decisionHostBinding(auto.baseUrl, home);
+    if (!binding.bound) {
+      checks.push({
+        name: 'auto route',
+        ok: false,
+        detail: `${decisionUnboundMessage(auto.baseUrl, binding.host, resolved ?? 'this config')}\n  ! every -auto request takes the fallback tier until that host is trusted`,
+      });
+    }
     // A missing key is advisory: auto-routing falls back to the default tier.
     if (keyRequired && credential.key === undefined) {
       checks.push({

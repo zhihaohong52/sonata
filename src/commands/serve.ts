@@ -25,7 +25,10 @@ import { envVarForGateway, litellmConfigForTenants, litellmConfigYamlForTenants 
 import { litellmRequired, transportFor } from '../native/providers.js';
 import { litellmStatus, managedLitellmPath } from '../native/litellm-venv.js';
 import type { UiDeps } from '../native/ui.js';
-import { decisionClassifier, decisionKeyFor, type TierClassifier } from '../native/auto-route.js';
+import {
+  decisionClassifier, decisionKeyFor, refusedClassifier, type TierClassifier,
+} from '../native/auto-route.js';
+import { decisionHostBinding, decisionUnboundMessage } from '../native/decision-binding.js';
 import { ModelListCache, chooseDecisionModel } from '../native/decision-models.js';
 import { loadDecisionCatalog } from '../decision-catalog.js';
 import { createRouterServer, type RouterTenant } from '../native/router.js';
@@ -2775,6 +2778,8 @@ export async function cmdServe(
     // carrying 0 fails every request's Host check.
     uiDeps = { home: opts.home, port: ports.router, tenants: () => registry.summary() };
     const decisionClassifiers = new Map<string, TierClassifier>();
+    /** Decision refusals already logged, so a refused host is reported once per distinct message. */
+    const loggedDecisionRefusals = new Set<string>();
     const modelLists = new ModelListCache(fetch);
     router = createRouterServer({
       fetch,
@@ -2801,7 +2806,20 @@ export async function cmdServe(
       // One classifier per URL + pin; the model is chosen per call from the
       // URL's listed decision models and the cached JevBench scores, so a
       // `sonata catalog update` or a new model at the URL needs no restart.
-      classifierFor: (settings) => {
+      classifierFor: (settings, tenant) => {
+        // The decision URL gets the decision key and the task text, so its
+        // host must be bound first. Checked per request, not cached: a trust
+        // change takes effect at once, and an unbound host is never handed the
+        // classifier that would send the key.
+        const binding = decisionHostBinding(settings.baseUrl, opts.home);
+        if (!binding.bound) {
+          const message = decisionUnboundMessage(settings.baseUrl, binding.host, tenant.configPath ?? 'the config');
+          if (!loggedDecisionRefusals.has(message)) {
+            loggedDecisionRefusals.add(message);
+            console.error(`sonata serve: ${message}`);
+          }
+          return refusedClassifier(message);
+        }
         const id = `${settings.baseUrl}|${settings.model ?? ''}`;
         let classifier = decisionClassifiers.get(id);
         if (classifier === undefined) {

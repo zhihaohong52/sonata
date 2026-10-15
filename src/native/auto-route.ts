@@ -246,6 +246,8 @@ export function jevClassifier(opts: {
             headers: { ...(key === undefined ? {} : { authorization: `Bearer ${key}` }), 'content-type': 'application/json' },
             body: JSON.stringify({ ...(model === undefined ? {} : { model }), ...jevRequestBody(input) }),
             signal: AbortSignal.any([signal, AbortSignal.timeout(attemptMs)]),
+            // A redirect would carry the key and the task to a host nobody checked.
+            redirect: 'error',
           });
           if (!res.ok) { last = new Error(`HTTP ${res.status}`); continue; }
           let json: unknown;
@@ -297,6 +299,11 @@ export function decisionKeyFor(
   if (gateway === 'openrouter') return { key: keys.openrouter(), hint: 'sonata auth add openrouter' };
   if (gateway === 'typesafe') return { key: keys.typesafe(), hint: 'sonata auth add typesafe' };
   return { key: keys.other(), hint: 'sonata auth add auto-route' };
+}
+
+/** A classifier that refuses every question with `reason`: the decision fails open and the ledger keeps why. */
+export function refusedClassifier(reason: string): TierClassifier {
+  return { name: 'jev', classify: async () => { throw new Error(reason); } };
 }
 
 /** The classifier for one `[auto_route]` URL; `model` is resolved per call. */
