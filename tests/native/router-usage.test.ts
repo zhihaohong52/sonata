@@ -893,6 +893,37 @@ describe('router — text-form tool calls', () => {
     expect(activeTextToolCallCooldowns(clock)).toEqual([]);
   });
 
+  it('does not count a strike from a request that started before the last one', async () => {
+    clearCooldowns();
+    let clock = 1_000;
+    let releaseSlow: (() => void) | undefined;
+    let flashCalls = 0;
+    const rows: LedgerRow[] = [];
+    const { d } = twoCandidates(rows, (key) => {
+      if (key === 'pro') return sse(stream('from pro'));
+      flashCalls += 1;
+      if (flashCalls > 1) return sse(stream(UNPARSED));
+      // The first request's answer arrives long after the second's.
+      return new Response(new ReadableStream<Uint8Array>({
+        async start(controller) {
+          await new Promise<void>((resolve) => { releaseSlow = resolve; });
+          controller.enqueue(new TextEncoder().encode(stream(UNPARSED)));
+          controller.close();
+        },
+      }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    }, { now: () => clock });
+    const slow = routeRequest(withTools('sonata-code-simple'), d);
+    while (releaseSlow === undefined) await new Promise((r) => setTimeout(r, 5));
+    clock = 2_000;
+    await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
+    // Past any fixed window: only its start time says it was concurrent.
+    clock = 2_000 + TIER_COOLDOWN_MS * 5;
+    releaseSlow();
+    await drain((await slow).body);
+    expect(flashCalls).toBe(2);
+    expect(activeTextToolCallCooldowns(clock)).toEqual([]);
+  });
+
   it('never lets a short cooldown cut a long one short', async () => {
     clearCooldowns();
     let clock = 1_000_000;

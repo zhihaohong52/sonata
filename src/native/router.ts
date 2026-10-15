@@ -1054,12 +1054,13 @@ const textToolCallCooldowns = new Map<string, { tenant: string; model: string; u
  * to cool it: `TIER_COOLDOWN_MS`, or `TEXT_TOOL_CALL_COOLDOWN_MS` once it has
  * done so `TEXT_TOOL_CALL_STRIKES` times within the window.
  */
-function strikeTextToolCall(tenant: RouterTenant, model: string, cool: string, at: number): number {
+function strikeTextToolCall(tenant: RouterTenant, model: string, cool: string, at: number, requestStartedAt: number): number {
   const recent = (textToolCallStrikes.get(cool) ?? []).filter((t) => at - t < TEXT_TOOL_CALL_STRIKE_WINDOW_MS);
-  // Concurrent requests on one candidate fail together, before the first
-  // strike's cooldown could keep the second away: one failure, not two.
+  // A request that started before the last strike was already on its way to
+  // this candidate when it failed — concurrent requests fail together, before
+  // the first strike's cooldown could keep the others away: one failure.
   const last = recent.at(-1);
-  if (last !== undefined && at - last < TIER_COOLDOWN_MS) return TIER_COOLDOWN_MS;
+  if (last !== undefined && requestStartedAt <= last) return TIER_COOLDOWN_MS;
   recent.push(at);
   textToolCallStrikes.set(cool, recent);
   if (recent.length < TEXT_TOOL_CALL_STRIKES) return TIER_COOLDOWN_MS;
@@ -3010,7 +3011,7 @@ async function routeTierCandidates(
     if (!direct) {
       const recovered = await recoverTextToolCalls(response, req, deps, textToolCalls, (n) => {
         const at = now();
-        const coolMs = strikeTextToolCall(tenant, route.key, cool, at);
+        const coolMs = strikeTextToolCall(tenant, route.key, cool, at, startedAt);
         coolUntil(cool, at + coolMs);
         deps.log?.(
           `router: ${alias} ${variant} wrote ${n} tool call(s) as text that could not be recovered; ` +
