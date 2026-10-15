@@ -24,6 +24,12 @@ export interface SessionRow {
   costUsd: number;
   coveredUsd: number;
   unpricedRequests: number;
+  /**
+   * Turns withdrawn for an unrecoverable text tool call, and their priced
+   * cost: billed, so spend, but not served, so in no figure above.
+   */
+  withdrawnTurns: number;
+  withdrawnUsd: number;
   models: string[];
 }
 
@@ -41,9 +47,17 @@ export async function sessionRows(deps: UiDeps, filters: UiFilters): Promise<Ses
 
   const report = aggregate(rows, 'session', sessions, resolve);
   const servedBySession = new Map<string, Set<string>>();
+  const withdrawnBySession = new Map<string, { turns: number; usd: number }>();
   for (const row of rows) {
     const id = row.session;
     if (id === undefined) continue;
+    if (row.withdrawn === true) {
+      const w = withdrawnBySession.get(id) ?? { turns: 0, usd: 0 };
+      w.turns += 1;
+      if (row.price.source !== 'none' && row.price.source !== 'covered' && row.price.totalUsd !== undefined) w.usd += row.price.totalUsd;
+      withdrawnBySession.set(id, w);
+      continue;
+    }
     const served = row.key ?? row.alias;
     if (served === '') continue;
     const models = servedBySession.get(id) ?? new Set<string>();
@@ -70,6 +84,8 @@ export async function sessionRows(deps: UiDeps, filters: UiFilters): Promise<Ses
       costUsd: bucket.costUsd,
       coveredUsd: bucket.coveredUsd,
       unpricedRequests: bucket.unpricedRequests,
+      withdrawnTurns: withdrawnBySession.get(bucket.label)?.turns ?? 0,
+      withdrawnUsd: withdrawnBySession.get(bucket.label)?.usd ?? 0,
       models: [...(servedBySession.get(bucket.label) ?? new Set<string>())].sort(),
     }))
     .sort(

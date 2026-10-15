@@ -88,6 +88,14 @@ export function UsageScreen({ cwd, home, by: initialBy = 'model', since: initial
         tone: 'MID',
       });
     }
+    if (report.withdrawn.turns > 0) {
+      // Billed, so spend; not served, so not in the total above.
+      const w = report.withdrawn;
+      notes.push({
+        text: `withdrawn ${w.turns} turn${w.turns === 1 ? '' : 's'}, ${money(w.costUsd)}${w.unpriced > 0 ? `, ${w.unpriced} unpriced` : ''} — retried on the next model; not in the total, counted toward [budget]`,
+        tone: 'MID',
+      });
+    }
     if (report.autoRoute !== undefined) {
       const o = report.autoRoute.outcomes;
       notes.push({ text: `auto-route  ${o.accepted} accepted, ${o['low-confidence']} low-confidence, ${o.invalid} invalid, ${o.failed} failed`, tone: 'MUTED' });
