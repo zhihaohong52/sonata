@@ -61,9 +61,9 @@ export function unboundConfigUrlNotice(home: string, cwd: string, gateway: strin
   }
   const binding = gatewayTrustFor(home, gateway, baseUrl, machineGateways);
   if (binding === undefined || binding.bound) return undefined;
-  return `gateway "${gateway}": its URL is set in ${file}, and host "${binding.host}" is not bound to this gateway — ` +
-    `serve withholds the key until you run \`sonata auth trust ${gateway} ${binding.host}\`. ` +
-    'If you did not choose this URL, remove it from that file — do not trust it.';
+  return `gateway "${gateway}": if you did not choose this URL (set in ${file}, for host "${binding.host}"), ` +
+    `remove it from ${file} — do not trust it. If you did, run \`sonata auth trust ${gateway} ${binding.host}\`; ` +
+    'until then serve withholds the key from that host.';
 }
 
 export function cmdAuthRemove(opts: { home: string; gateway: string }): void {

@@ -251,9 +251,9 @@ export function gatewayHostBound(
  * a project config is the usual place a hostile one comes from.
  */
 export function unboundMessage(gateway: string, host: string, configPath: string): string {
-  return `gateway "${gateway}": its key is not served to "${host}" — the URL is set in ${configPath}, ` +
-    'and that host is not bound to this gateway. If you did not choose this URL, remove it from that file — ' +
-    `do not trust it. If you did, run \`sonata auth trust ${gateway} ${host}\` to allow it`;
+  return `gateway "${gateway}": if you did not choose this URL (set in ${configPath}, for host "${host}"), ` +
+    `remove it from ${configPath} — do not trust it. If you did, run \`sonata auth trust ${gateway} ${host}\` ` +
+    `to allow its key there; until then the key is not served to "${host}".`;
 }
 
 /**

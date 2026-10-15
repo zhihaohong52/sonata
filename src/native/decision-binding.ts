@@ -36,9 +36,10 @@ export function decisionHostBinding(baseUrl: string, home: string, machineUrl?: 
  * not set.
  */
 export function decisionUnboundMessage(baseUrl: string, host: string, configFile: string): string {
-  return `[auto_route] base_url ${baseUrl} (set in ${configFile}): its host "${host}" is not bound to the decision key, ` +
-    'so the decision is skipped and the task text is not sent — the fallback tier is used. ' +
-    `If you did not choose this URL, remove it from that file — do not trust it. If you did, run \`sonata auth trust auto-route ${host}\` to allow it`;
+  return `[auto_route] base_url ${baseUrl} (set in ${configFile}): if you did not choose this URL, remove it from ` +
+    `${configFile} — do not trust it. If you did, run \`sonata auth trust auto-route ${host}\` to allow the decision ` +
+    `key there. Until then host "${host}" is not bound: the decision is skipped, the key and the task text are not ` +
+    'sent, and the fallback tier is used.';
 }
 
 /**

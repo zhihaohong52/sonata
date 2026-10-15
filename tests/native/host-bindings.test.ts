@@ -194,18 +194,18 @@ describe('unboundKeyHosts', () => {
 describe('unboundMessage', () => {
   const CFG = '/work/project/sonata.toml';
 
-  it('names the config that sets the URL and the exact trust command', () => {
+  it('leads with the remove instruction, names the config, then gives the trust command', () => {
     expect(unboundMessage('acme', 'proxy.example', CFG)).toBe(
-      'gateway "acme": its key is not served to "proxy.example" — the URL is set in /work/project/sonata.toml, ' +
-      'and that host is not bound to this gateway. If you did not choose this URL, remove it from that file — ' +
-      'do not trust it. If you did, run `sonata auth trust acme proxy.example` to allow it',
+      'gateway "acme": if you did not choose this URL (set in /work/project/sonata.toml, for host "proxy.example"), ' +
+      'remove it from /work/project/sonata.toml — do not trust it. If you did, run `sonata auth trust acme proxy.example` ' +
+      'to allow its key there; until then the key is not served to "proxy.example".',
     );
   });
 
-  it('never steers toward trusting a URL the user did not set before saying to remove it', () => {
+  it('puts the remove instruction before the trust command', () => {
     const message = unboundMessage('acme', 'proxy.example', CFG);
-    expect(message.indexOf('remove it from that file')).toBeGreaterThan(-1);
-    expect(message.indexOf('remove it from that file')).toBeLessThan(message.indexOf('sonata auth trust'));
+    expect(message.indexOf('if you did not choose this URL')).toBe(message.indexOf('gateway "acme": ') + 'gateway "acme": '.length);
+    expect(message.indexOf('remove it from')).toBeLessThan(message.indexOf('sonata auth trust'));
   });
 });
 
