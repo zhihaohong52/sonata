@@ -299,6 +299,8 @@ Claude's own code.
 `review-auto`, …). Sonata chooses the tier for each task;
 explicit tier agents are a manual override, used only when the user asks
 for a specific tier — earlier tier failures in the session do not count.
+The one exception: a task that failed review twice may be re-dispatched
+once on the explicit `-complex` agent, for that task only.
 If an `-auto` dispatch misbehaves, retry it on `-auto` and report it to the
 user, naming the agent and what failed; never pin explicit tiers for later
 dispatches.
@@ -316,9 +318,7 @@ identical, sonata generates one agent named for the role alone.
 
 Size is not difficulty — a large mechanical change is `simple`, a three-line
 change that decides an interface is `complex`. Start at the tier the task
-needs rather than a rung higher: a task that fails review is re-run one tier
-up (that task only — never other tasks or reviews), so starting low is cheap
-to correct.
+needs rather than a rung higher.
 
 Dispatch them with **no `model` argument**. Each agent pins its routed model
 in frontmatter, and the Agent tool's own `model` parameter overrides that — so

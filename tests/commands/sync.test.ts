@@ -982,19 +982,24 @@ describe('cmdSync — refreshing the installed loop skill', () => {
 });
 
 describe('autoAgentMarkdown — tier trouble is reported, not routed around', () => {
-  // Line breaks in the prompt are layout, not wording.
-  const body = autoAgentMarkdown({ role: 'code', availableTiers: ['simple', 'normal', 'complex'], planTiers: ['simple', 'normal', 'complex'] }).replace(/\s+/g, ' ');
+  const markdown = autoAgentMarkdown({ role: 'code', availableTiers: ['simple', 'normal', 'complex'], planTiers: ['simple', 'normal', 'complex'] });
+  // The description is what the caller reads; the body is the subagent's own prompt.
+  const description = markdown.split('\n').find((line) => line.startsWith('description: '))!;
+  const body = markdown.slice(markdown.indexOf('---', 4) + 3).replace(/\s+/g, ' ');
 
-  it('reserves explicit tiers for a user who asks for one', () => {
-    expect(body).toContain('only when the user asks for a specific tier; earlier tier failures do not count');
+  it('reserves explicit tiers for a user who asks for one, with the one exception', () => {
+    expect(description).toContain('only when the user asks for a specific tier; earlier tier failures do not count');
+    expect(description).toContain('The one exception: a task that failed review twice may be re-dispatched once on the explicit -complex agent, for that task only.');
   });
 
-  it('keeps later dispatches on -auto when one misbehaves', () => {
-    expect(body).toContain('retry it here and report it to the user');
-    expect(body).toContain('do not pin explicit tiers');
+  it('tells the caller to retry on -auto and report a misbehaving dispatch', () => {
+    expect(description).toContain('If this agent misbehaves, retry it and report it to the user');
+    expect(description).toContain('rather than pinning an explicit tier');
   });
 
-  it('scopes review-failure escalation to the task that failed', () => {
-    expect(body).toContain('that task only, never other tasks or reviews');
+  it('keeps caller instructions out of the subagent\'s own prompt', () => {
+    expect(body).not.toContain('review twice');
+    expect(body).not.toContain('report it to the user');
+    expect(body).toContain('Sonata chooses the tier for this task once');
   });
 });

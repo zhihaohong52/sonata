@@ -22,11 +22,13 @@ wherever the loop below or *Decide the fix* says `-simple`, `-normal` or
 plan (step 1), `code-auto` for each task and each fix (steps 2–3),
 `review-auto` for the per-task gate (step 3) and for the final gate (step 4).
 Sonata chooses the tier per conversation; do not second-guess it by switching
-to an explicit tier. The one exception is escalation, below. An explicit tier is
-a manual override only when the user asks for one; earlier tier failures in the
-session do not count. If an `-auto` dispatch misbehaves, retry it on `-auto` and
-report it to the user, naming the agent and what failed — never pin explicit
-tiers for later dispatches.
+to an explicit tier. An explicit tier is a manual override only when the user
+asks for one; earlier tier failures in the session do not count. The one
+exception: a task that failed review twice may be re-dispatched once on the
+explicit `-complex` agent, for that task only (*Escalation*, below). If an
+`-auto` dispatch misbehaves, retry it on `-auto` and report it to the user,
+naming the agent and what failed — never pin explicit tiers for later
+dispatches.
 
 You still do the orchestrator's part: write self-contained briefs, and decide
 each fix's approach before dispatching it — a fully decided brief is what lets
