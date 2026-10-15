@@ -3029,12 +3029,10 @@ async function routeTierCandidates(
         // and incomplete, with whatever usage the held bytes carry.
         const held = (recovered as { held?: HeldBody }).held;
         if (held !== undefined) {
-          await recordHeld(held, {
-            ...candidateCtx(route),
-            attempts,
-            ...(textToolCalls.recovered > 0 || textToolCalls.unparsed > 0 ? { textToolCalls: { ...textToolCalls } } : {}),
-            incomplete: true,
-          }, deps);
+          // No `textToolCalls`: the rewriter settles its counts only when a
+          // turn ends, and this one was cut off first, so there are none to
+          // report — an absent field, rather than a zero that reads as "none".
+          await recordHeld(held, { ...candidateCtx(route), attempts, incomplete: true }, deps);
         }
         return recovered;
       }

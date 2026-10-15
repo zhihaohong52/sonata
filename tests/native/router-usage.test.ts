@@ -786,6 +786,8 @@ describe('router — text-form tool calls', () => {
     expect(rows[0]).toMatchObject({ key: 'flash', status: 200, complete: false, attempts: [] });
     expect(rows[0].withdrawn).toBeUndefined();
     expect(rows[0].tokens.input).toBe(42);
+    // Cut off before the rewriter settled its counts: none are claimed.
+    expect('textToolCalls' in rows[0]).toBe(false);
   });
 
   it('stops holding past the byte limit and streams as before', async () => {
