@@ -1404,6 +1404,18 @@ function close(server: Server): Promise<void> {
  */
 export function priceRow(config: SonataConfig, home: string, row: LedgerRow): LedgerRow {
   try {
+    // Unknown is never zero: a successful response whose usage was never
+    // observed (a JSON body past the recorder's byte cap, or served without
+    // an `application/json` content-type) carries all-zero tokens with
+    // `complete: false`. Pricing it would book $0 under a real source —
+    // counted as priced, invisible to the unpriced tally, and free under
+    // `[budget]`. Error responses keep their price (a failed request is not
+    // unobserved usage), and a row with partial tokens still prices on what
+    // was seen.
+    const t = row.tokens;
+    const unobserved = !row.complete && row.status >= 200 && row.status < 300
+      && t.input === 0 && t.output === 0 && t.cacheRead === 0 && t.cacheCreation === 0;
+    if (unobserved) return { ...row, price: { source: 'none' } };
     const price = resolvePrice(config, row.key, row.tokens, new Date(row.ts), loadModelsDev(home), row.credential === undefined ? undefined : { credential: row.credential });
     return { ...row, price };
   } catch {
