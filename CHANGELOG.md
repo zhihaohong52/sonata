@@ -107,7 +107,9 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   add` and `sonata init` bind, once, the host of every https (or loopback http)
   api-key gateway that has a stored or opencode-sourced key, in the machine config
   and in each project a session recorded before the install ran in whose
-  `sonata.toml` was last changed before the install. The install time is the change
+  `sonata.toml` was last changed before the install (the later of its mtime and
+  change time). Residual: a config brought into a project that was already in use
+  before the upgrade is seeded too, if it was in place before the install. The install time is the change
   time of the package's manifest. A project opened or cloned after the upgrade is
   never seeded, and neither is the directory a command happens to run in. Each
   binding is reported by `sonata serve` and `sonata doctor`, and

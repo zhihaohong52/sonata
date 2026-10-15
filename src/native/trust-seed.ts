@@ -62,7 +62,11 @@ function predatingProjectConfigs(home: string, installedAt: number): SeedConfig[
     if (file === null || seen.has(file)) continue;
     seen.add(file);
     try {
-      if (statSync(file).mtimeMs >= installedAt) continue;
+      // The later of the two times: a change time cannot be set back by a tool
+      // that rewrites mtime, so a config edited after the install is excluded
+      // whatever its mtime says.
+      const stat = statSync(file);
+      if (Math.max(stat.mtimeMs, stat.ctimeMs) >= installedAt) continue;
       out.push({ configPath: file, gateways: parseConfig(readFileSync(file, 'utf8')).native?.gateways ?? {} });
     } catch {
       // Unreadable or unparseable: nothing there to trust.

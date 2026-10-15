@@ -101,17 +101,18 @@ describe('the seed marker name', () => {
 });
 
 describe('seedTrustOnUpgrade — what predates the install', () => {
-  const INSTALL = Date.parse('2026-01-01T00:00:00.000Z');
-  const BEFORE = '2025-12-01T00:00:00.000Z';
-  const AFTER = '2026-02-01T00:00:00.000Z';
-  const OLD_FILE = new Date('2025-11-30T00:00:00.000Z');
+  // The install time is set relative to the clock, because a file's change time
+  // is the moment the test writes it: a config written now predates an install an
+  // hour from now, and is edited since an install an hour ago.
+  const HOUR = 60 * 60_000;
+  const INSTALL = Date.now() + HOUR;
+  const BEFORE = new Date(INSTALL - HOUR / 2).toISOString();
+  const AFTER = new Date(INSTALL + HOUR / 2).toISOString();
 
-  /** A project directory whose sonata.toml names `url`, its mtime set to `mtime` when given. */
-  const project = (url: string, mtime?: Date): string => {
+  /** A project directory whose sonata.toml names `url`. */
+  const project = (url: string): string => {
     const dir = tmp();
-    const file = join(dir, 'sonata.toml');
-    writeFileSync(file, `[native.gateways.acme]\nbase_url = "${url}"\n`);
-    if (mtime !== undefined) utimesSync(file, mtime, mtime);
+    writeFileSync(join(dir, 'sonata.toml'), `[native.gateways.acme]\nbase_url = "${url}"\n`);
     return dir;
   };
   /** sessions.json with the given session records, keyed by session id. */
@@ -124,7 +125,7 @@ describe('seedTrustOnUpgrade — what predates the install', () => {
   it('seeds a project a session recorded before the install ran in, when its config predates it', () => {
     const home = tmp();
     writeSonataKey(home, 'acme', 'sk-acme');
-    const dir = project('https://proxy.example/v1', OLD_FILE);
+    const dir = project('https://proxy.example/v1');
     recordSessions(home, { s1: { cwd: dir, started: BEFORE } });
     expect(seedTrustOnUpgrade(home, INSTALL)).toHaveLength(1);
     expect(readTrustBindings(home)).toEqual({ acme: ['proxy.example'] });
@@ -133,7 +134,7 @@ describe('seedTrustOnUpgrade — what predates the install', () => {
   it('does not seed a project first run after the install', () => {
     const home = tmp();
     writeSonataKey(home, 'acme', 'sk-acme');
-    const dir = project('https://attacker.example/v1', OLD_FILE);
+    const dir = project('https://attacker.example/v1');
     recordSessions(home, { s1: { cwd: dir, started: AFTER } });
     expect(seedTrustOnUpgrade(home, INSTALL)).toEqual([]);
     expect(readTrustBindings(home)).toEqual({});
@@ -143,15 +144,17 @@ describe('seedTrustOnUpgrade — what predates the install', () => {
     const home = tmp();
     writeSonataKey(home, 'acme', 'sk-acme');
     const dir = project('https://attacker.example/v1');
-    recordSessions(home, { s1: { cwd: dir, started: BEFORE } });
-    expect(seedTrustOnUpgrade(home, INSTALL)).toEqual([]);
+    const earlier = Date.now() - HOUR;
+    recordSessions(home, { s1: { cwd: dir, started: new Date(earlier - HOUR).toISOString() } });
+    // The config was written now, after an install an hour ago: edited since.
+    expect(seedTrustOnUpgrade(home, earlier)).toEqual([]);
     expect(readTrustBindings(home)).toEqual({});
   });
 
   it('never seeds a project with no readable session start time', () => {
     const home = tmp();
     writeSonataKey(home, 'acme', 'sk-acme');
-    const dir = project('https://proxy.example/v1', OLD_FILE);
+    const dir = project('https://proxy.example/v1');
     recordSessions(home, { s1: { cwd: dir } });
     expect(seedTrustOnUpgrade(home, INSTALL)).toEqual([]);
   });
@@ -159,7 +162,7 @@ describe('seedTrustOnUpgrade — what predates the install', () => {
   it('never seeds the directory a command runs in, when no session recorded it', () => {
     const home = tmp();
     writeSonataKey(home, 'acme', 'sk-acme');
-    project('https://attacker.example/v1', OLD_FILE);
+    project('https://attacker.example/v1');
     expect(seedTrustOnUpgrade(home, INSTALL)).toEqual([]);
     expect(readTrustBindings(home)).toEqual({});
   });
@@ -181,7 +184,7 @@ describe('seedTrustOnUpgrade — what predates the install', () => {
 
   it('seeds nothing on a fresh install, and a later install never seeds what it finds', () => {
     const home = tmp();
-    const dir = project('https://attacker.example/v1', OLD_FILE);
+    const dir = project('https://attacker.example/v1');
     expect(seedTrustOnUpgrade(home, INSTALL)).toEqual([]);
     // A session recorded after the marker is written is never seeded later.
     writeSonataKey(home, 'acme', 'sk-acme');
