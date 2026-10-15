@@ -860,6 +860,13 @@ export async function main(argv: string[]): Promise<number> {
       // like the foreground command.
       const self = fileURLToPath(import.meta.url);
       const daemon = await startServeDaemon(homedir(), [process.execPath, self, 'serve']);
+      if (daemon.joined) {
+        // Two sessions starting together: this one lost the bind race and
+        // joined the winner. The pid and log below would be the loser's —
+        // a dead EADDRINUSE child — so print neither.
+        console.log(`sonata serve joined the existing router on port ${daemon.port}`);
+        return 0;
+      }
       console.log(`sonata serve running in the background (pid ${daemon.pid}) on port ${daemon.port}`);
       console.log(`  log:  ${daemon.logPath}`);
       console.log(`  stop: kill ${daemon.pid}`);
