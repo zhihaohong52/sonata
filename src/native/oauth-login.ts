@@ -2,8 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import type { NativeGatewayAuth } from '../config.js';
 import { managedLitellmPath } from './litellm-venv.js';
@@ -100,7 +99,8 @@ export async function loginGateway(opts: {
   // revoked — token pass as a fresh login, and a failed run still rewrote or
   // deleted the working credential. A failure now leaves the old login
   // exactly as it was.
-  const staging = mkdtempSync(join(tmpdir(), `sonata-login-${opts.gateway}-`));
+  mkdirSync(dirname(dir), { recursive: true, mode: 0o700 });
+  const staging = mkdtempSync(join(dirname(dir), '.login-'));
   chmodSync(staging, 0o700);
 
   // PATH plus the one token-directory variable. No other parent value is
@@ -134,11 +134,20 @@ export async function loginGateway(opts: {
   };
 
   return await new Promise<LoginResult>((resolve) => {
+    let finished = false;
+    const finish = (result: LoginResult): void => {
+      if (finished) return;
+      finished = true;
+      fixPermissions(dir);
+      fixPermissions(staging);
+      rmSync(staging, { force: true, recursive: true });
+      resolve(result);
+    };
     let child;
     try {
       child = spawn(interpreter, ['-c', scriptFor(opts.auth)], { env, stdio: ['ignore', 'pipe', 'pipe'] });
     } catch {
-      return resolve({ ok: false, problem: `could not run litellm's interpreter ${interpreter}` });
+      return finish({ ok: false, problem: `could not run litellm's interpreter ${interpreter}` });
     }
 
     let cancelled = false;
@@ -148,7 +157,7 @@ export async function loginGateway(opts: {
     child.on('error', () => {
       fixPermissions(staging);
       rmSync(staging, { force: true, recursive: true });
-      resolve({ ok: false, problem: `could not run litellm's interpreter ${interpreter}` });
+      finish({ ok: false, problem: `could not run litellm's interpreter ${interpreter}` });
     });
 
     // Line by line, so the device code reaches the user the instant it is
@@ -162,19 +171,19 @@ export async function loginGateway(opts: {
       if (cancelled) {
         fixPermissions(staging);
         rmSync(staging, { force: true, recursive: true });
-        return resolve({ ok: false, problem: 'login cancelled' });
+        return finish({ ok: false, problem: 'login cancelled' });
       }
       if (code !== 0) {
         fixPermissions(staging);
         rmSync(staging, { force: true, recursive: true });
-        return resolve({ ok: false, problem: `litellm's authenticator exited ${code}` });
+        return finish({ ok: false, problem: `litellm's authenticator exited ${code}` });
       }
       // An exit code alone is not evidence.
       const credentialPath = join(staging, credentialFileFor(opts.auth));
       if (!existsSync(credentialPath)) {
         fixPermissions(staging);
         rmSync(staging, { force: true, recursive: true });
-        return resolve({ ok: false, problem: 'the login reported success but wrote no credential' });
+        return finish({ ok: false, problem: 'the login reported success but wrote no credential' });
       }
       // LiteLLM writes with the process umask, commonly 0644 - fix it up
       // rather than trust an interpreter we don't control to have written
@@ -183,17 +192,23 @@ export async function loginGateway(opts: {
       // `api-key.json`. Fix-up runs on failure paths too, so a cancelled or
       // failed run's temp files carry no readable secret on their way out.
       fixPermissions(staging);
-      // The swap-in: the old directory, if any, is replaced wholesale, so a
-      // half-written or partially-deleted failure cannot merge with it.
-      // `renameSync` onto an existing directory fails on POSIX, so the old one
-      // is removed first; what lands is exactly what the login wrote, with
-      // 0600/0700 already fixed up. Parents before the rename, so a missing
-      // credentials dir cannot strand the login in temp.
-      mkdirSync(join(opts.home, '.config', 'sonata', 'credentials'), { recursive: true, mode: 0o700 });
-      rmSync(dir, { force: true, recursive: true });
-      renameSync(staging, dir);
-      chmodSync(dir, 0o700);
-      resolve({ ok: true });
+      // Keep the old login until installation succeeds. Staging and backup
+      // live beside the destination so both renames stay on one filesystem.
+      const backup = `${staging}-old`;
+      let backedUp = false;
+      try {
+        if (existsSync(dir)) {
+          fixPermissions(dir);
+          renameSync(dir, backup);
+          backedUp = true;
+        }
+        renameSync(staging, dir);
+      } catch {
+        if (backedUp) renameSync(backup, dir);
+        return finish({ ok: false, problem: 'could not install the new login; the previous credential was kept' });
+      }
+      if (backedUp) rmSync(backup, { force: true, recursive: true });
+      finish({ ok: true });
     });
   });
 }

@@ -678,6 +678,7 @@ function defaultSpawnLitellm(
 interface CredentialFailure {
   gateway: string;
   message: string;
+  hostUnbound?: true;
   /**
    * Set when nothing was resolved because a store in the gateway's lookup
    * could not be read and there was no earlier resolution to keep. Answered
@@ -882,15 +883,9 @@ interface ResolveChildEnvOptions {
   now?: () => number;
   /** Where a store skipped for being steadily unreadable is reported, once. */
   warn?: (line: string) => void;
-  /**
-   * Per-tenant gateways the merged union was built from: the host check is per
-   * (gateway, host) pair, and the merged gateway alone cannot see that two
-   * tenants point one name at different hosts. Withheld keys are reported in
-   * `failures`, never thrown.
-   */
-  tenantGateways?: { gateways: NativeConfig['gateways'] }[];
-  /** The machine config's own gateways: its hosts are trusted for their names. */
+  /** The machine config's own gateways: their hosts are trusted for their names. */
   machineGateways?: NativeConfig['gateways'];
+  tenantGateways?: { gateways: NativeConfig['gateways'] }[];
 }
 
 /**
@@ -1084,18 +1079,44 @@ function resolveChildEnvFromSnapshot(
   // from them, whatever host they name.
   //
   // A stored key is looked up by gateway NAME, but the `base_url` it would be
-  // sent to comes from the tenants' configs — including a cloned repo's
-  // project config pointing the name at an attacker's host. So a key is sent
-  // only to a host bound to its gateway name (well-known, user-confirmed, or
-  // the machine config's own). A gateway any tenant points at an unbound host
-  // is left out and recorded as a credential failure, which the router answers
-  // as a named 502 and forwards nothing for.
-  const tenantGateways = opts.tenantGateways ?? [{ gateways: native.gateways }];
-  const unboundHosts = unboundKeyHosts(tenantGateways, opts.machineGateways ?? {}, home);
+  // sent to comes from the configs — including a cloned repo's project config
+  // pointing the name at an attacker's host. So a key is sent only to a host
+  // bound to its gateway name (well-known, user-confirmed, or the machine
+  // config's own). Checked against EVERY tenant's gateways, not the merged
+  // one: the merge keeps one `base_url` per name, and the tenant whose URL
+  // survived could be bound while another tenant's is not — the key still
+  // reaches the unbound one, so any unbound tenant withholds the name. A
+  // gateway with no stored key gets no failure — withholding means omitting
+  // an env entry, and with no key there is nothing to omit — so this runs
+  // after the lookups, per gateway that actually resolved one (a last-good
+  // key kept through an unreadable store counts as having one).
+  const automaticallyResolved = Object.entries(native.gateways)
+    .filter(([, gateway]) => gateway.auth !== 'session'
+      && (gateway.auth !== 'api-key' || gateway.credentialSource === undefined));
+  const found = new Map(resolveKeys(automaticallyResolved.map(([name]) => name), home).map((hit) => [hit.gateway, hit]));
+  const sourcedHits = new Map<string, { key: string; source: string }>();
+  for (const [name, gateway] of Object.entries(native.gateways)) {
+    const source = gateway.credentialSource;
+    if (gateway.auth !== 'api-key' || (source !== 'sonata' && source !== 'opencode')) continue;
+    const hit = resolveKeyDetail(name, home, source);
+    if (hit !== undefined) sourcedHits.set(name, hit);
+  }
+  const keyed = new Set<string>([...found.keys(), ...sourcedHits.keys()]);
+  // Last-good keys can survive an unreadable store; they need the same host
+  // check as a key resolved on this read, before settle can reuse them.
+  for (const [name, gateway] of Object.entries(native.gateways)) {
+    if (memory.lastGood.has(lineageKey(name, gateway)) || memory.lastGood.has(`${lineageKey(name, gateway)}|key`)) keyed.add(name);
+  }
+  const unboundHosts = new Map<string, string>();
+  for (const { gateways } of opts.tenantGateways ?? [{ gateways: native.gateways }]) {
+    for (const [name, message] of unboundKeyHosts(gateways, opts.machineGateways ?? {}, keyed, home)) {
+      unboundHosts.set(name, message);
+    }
+  }
   for (const [name, message] of unboundHosts) {
     const gateway = native.gateways[name];
     if (gateway === undefined) continue;
-    failures.push({ gateway: name, message });
+    failures.push({ gateway: name, message, hostUnbound: true });
     memory.lastGood.delete(`${lineageKey(name, gateway)}|key`);
     memory.lastGood.delete(lineageKey(name, gateway));
     for (const stale of [...memory.lastGoodSource.keys()]) {
@@ -1105,12 +1126,10 @@ function resolveChildEnvFromSnapshot(
     }
     memory.seeds.delete(`${lineageKey(name, gateway)}|key`);
     memory.seeds.delete(lineageKey(name, gateway));
+    found.delete(name);
+    sourcedHits.delete(name);
   }
   const unbound = new Set(unboundHosts.keys());
-  const automaticallyResolved = Object.entries(native.gateways)
-    .filter(([, gateway]) => gateway.auth !== 'session'
-      && (gateway.auth !== 'api-key' || gateway.credentialSource === undefined));
-  const found = new Map(resolveKeys(automaticallyResolved.map(([name]) => name), home).map((hit) => [hit.gateway, hit]));
   for (const [name, gateway] of automaticallyResolved) {
     if (unbound.has(name)) continue;
     const hit = found.get(name);
@@ -1128,7 +1147,8 @@ function resolveChildEnvFromSnapshot(
     const source = gateway.credentialSource;
     if (gateway.auth !== 'api-key' || (source !== 'sonata' && source !== 'opencode')) continue;
     if (unbound.has(name)) continue;
-    const hit = resolveKeyDetail(name, home, source);
+    // Looked up above, so one read per build; `settle` still decides.
+    const hit = sourcedHits.get(name);
     const entries = settle(
       name, lineageKey(name, gateway),
       hit === undefined ? undefined : { [envVarForGateway(name)]: hit.key },
@@ -2099,10 +2119,8 @@ export async function cmdServe(
         chatgptTokenDir: chatgptSeeded?.dir ?? chatgptDirFor(1),
         now: clock,
         warn: warnSkipped,
-        // The merge sees every tenant; with that the merged gateway alone
-        // cannot see two tenants pointing one name at different hosts.
-        tenantGateways: registry.loadable().map(({ config }) => ({ gateways: config.native?.gateways ?? {} })),
         machineGateways: machineConfig()?.native?.gateways ?? {},
+        tenantGateways: registry.loadable().map(({ config }) => ({ gateways: config.native?.gateways ?? {} })),
       });
       seeds = built.seeds;
       const held = chatgptSeeded;
@@ -2136,8 +2154,8 @@ export async function cmdServe(
     const readTorn = (before: number): boolean => credentialMemory.unreadable.torn !== before;
     const startupTorn = readTorn(tornAtStart);
     const machineGateways = machineConfig()?.native?.gateways ?? {};
-    const fatal = startup.failures.find(({ gateway, unreadable }) =>
-      unreadable === undefined && Object.hasOwn(machineGateways, gateway));
+    const fatal = startup.failures.find(({ gateway, unreadable, hostUnbound }) =>
+      hostUnbound !== true && unreadable === undefined && Object.hasOwn(machineGateways, gateway));
     if (fatal !== undefined) throw new Error(`sonata serve: ${fatal.message}`);
     let childEnv = startup.env;
     /**

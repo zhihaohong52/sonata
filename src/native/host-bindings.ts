@@ -145,18 +145,16 @@ export function unboundMessage(gateway: string, hosts: string[]): string {
 }
 
 /**
- * Every gateway name whose merged `base_url` host may not receive its key,
- * with the message serve records as its credential failure. Session and OAuth
- * gateways hold no sendable key and are unaffected.
+ * Every gateway name in one tenant's `gateways` whose `base_url` host may not
+ * receive its key, with the message serve records as its credential failure.
+ * Session and OAuth gateways hold no sendable key and are unaffected.
  *
- * Decided on the merged gateways: the merge keeps one `base_url` per name
- * (per-project endpoints are the supported case, and every project pointing
- * one name at a bound host is served), so a name whose merged URL is bound
- * is served — the tenant split is visible in the merge, not here. A gateway
- * with no stored key gets no failure here either: withholding means omitting
- * an env entry, and with no key there is nothing to omit — but that is
- * decided per gateway in the resolution step, which knows the stores, so
- * this takes the names a key would actually flow for.
+ * Serve runs this over every tenant's gateways, not the merge: the merge
+ * keeps one `base_url` per name, and the tenant whose URL survived could be
+ * bound while another's is not. A gateway with no stored key gets no failure
+ * here either: withholding means omitting an env entry, and with no key there
+ * is nothing to omit — the caller passes the names a key would actually flow
+ * for (`keysPresent`).
  */
 export function unboundKeyHosts(
   merged: NativeConfig['gateways'],
