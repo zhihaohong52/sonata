@@ -66,12 +66,12 @@ export function gatewayTrustFor(
   home: string,
   gateway: string,
   baseUrl: string | undefined,
-  machineUrl: string | undefined,
+  machineGateways: Record<string, { baseUrl: string }> | undefined,
 ): { bound: true } | { bound: false; host: string } | undefined {
   if (baseUrl === undefined) return undefined;
   return gatewayHostBound(gateway, baseUrl, {
     trusted: readTrustBindings(home)[gateway] ?? [],
-    machineUrl,
+    machineGateways,
   });
 }
 

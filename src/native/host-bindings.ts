@@ -96,8 +96,12 @@ function urlHostname(url: string | undefined): string | undefined {
 export interface HostBindingContext {
   /** Hosts the user confirmed for this gateway (`auth trust` / `auth add` / init). */
   trusted?: string[];
-  /** The machine config's own `base_url` for this gateway name, when any. */
-  machineUrl?: string;
+  /**
+   * The machine config's own gateways, keyed by name: only the entry under
+   * this gateway's own name trusts its host. Passed as the whole map (not
+   * one URL) so a caller cannot accidentally bind another name's host.
+   */
+  machineGateways?: Record<string, { baseUrl: string }>;
 }
 
 /** Whether one lowercase hostname may receive this gateway's key. */
@@ -105,7 +109,7 @@ export function hostBoundToGateway(gateway: string, host: string, ctx: HostBindi
   const wellKnown = urlHostname(WELL_KNOWN_PROVIDER_URLS[gateway]);
   if (wellKnown !== undefined && wellKnown === host) return true;
   if ((ctx.trusted ?? []).includes(host)) return true;
-  const machine = urlHostname(ctx.machineUrl);
+  const machine = urlHostname(ctx.machineGateways?.[gateway]?.baseUrl);
   if (machine !== undefined && machine === host) return true;
   return false;
 }
@@ -113,7 +117,11 @@ export function hostBoundToGateway(gateway: string, host: string, ctx: HostBindi
 export type HostBinding = { bound: true } | { bound: false; host: string };
 
 /** Whether this gateway's `base_url` host may receive its key. */
-export function gatewayHostBound(gateway: string, baseUrl: string, ctx: HostBindingContext): HostBinding {
+export function gatewayHostBound(
+  gateway: string,
+  baseUrl: string,
+  ctx: HostBindingContext,
+): HostBinding {
   let host: string;
   try {
     const parsed = new URL(baseUrl);
@@ -137,55 +145,34 @@ export function unboundMessage(gateway: string, hosts: string[]): string {
 }
 
 /**
- * Every gateway name any tenant points at an unbound host, with the message
- * serve records as its credential failure. Session and OAuth gateways hold
- * no sendable key and are unaffected. A gateway with no stored key is
- * unaffected too — there is nothing to withhold — so this names names, and
- * the resolution step decides per gateway whether a key would actually flow.
+ * Every gateway name whose merged `base_url` host may not receive its key,
+ * with the message serve records as its credential failure. Session and OAuth
+ * gateways hold no sendable key and are unaffected.
+ *
+ * Decided on the merged gateways: the merge keeps one `base_url` per name
+ * (per-project endpoints are the supported case, and every project pointing
+ * one name at a bound host is served), so a name whose merged URL is bound
+ * is served — the tenant split is visible in the merge, not here. A gateway
+ * with no stored key gets no failure here either: withholding means omitting
+ * an env entry, and with no key there is nothing to omit — but that is
+ * decided per gateway in the resolution step, which knows the stores, so
+ * this takes the names a key would actually flow for.
  */
 export function unboundKeyHosts(
-  tenants: { gateways: NativeConfig['gateways'] }[],
+  merged: NativeConfig['gateways'],
   machineGateways: NativeConfig['gateways'],
+  keysPresent: Set<string>,
   home: string,
 ): Map<string, string> {
   const trust = readTrustBindings(home);
-  const hostsOf = new Map<string, Set<string>>();
-  const collect = (gateways: NativeConfig['gateways']): void => {
-    for (const [name, gateway] of Object.entries(gateways)) {
-      if ((gateway.auth ?? 'api-key') !== 'api-key') continue;
-      let entry: string;
-      try {
-        const parsed = new URL(gateway.baseUrl);
-        entry = parsed.protocol === 'https:' && parsed.hostname !== ''
-          ? `host:${parsed.hostname.toLowerCase()}`
-          : `url:${gateway.baseUrl}`;
-      } catch {
-        entry = `url:${gateway.baseUrl}`;
-      }
-      const set = hostsOf.get(name) ?? new Set<string>();
-      set.add(entry);
-      hostsOf.set(name, set);
-    }
-  };
-  for (const tenant of tenants) collect(tenant.gateways);
-
   const out = new Map<string, string>();
-  for (const [name, entries] of hostsOf) {
-    const bad: string[] = [];
-    for (const entry of entries) {
-      if (!entry.startsWith('host:')) {
-        bad.push(entry.slice('url:'.length));
-        continue;
-      }
-      const host = entry.slice('host:'.length);
-      if (!hostBoundToGateway(name, host, {
-        trusted: trust[name] ?? [],
-        machineUrl: machineGateways[name]?.baseUrl,
-      })) {
-        bad.push(host);
-      }
-    }
-    if (bad.length > 0) out.set(name, unboundMessage(name, [...new Set(bad)].sort()));
+  for (const [name, gateway] of Object.entries(merged)) {
+    if ((gateway.auth ?? 'api-key') !== 'api-key') continue;
+    // No stored key under this name or any name sharing it: nothing would
+    // flow, so no failure — the gateway resolves keyless exactly as before.
+    if (!keysPresent.has(name)) continue;
+    const binding = gatewayHostBound(name, gateway.baseUrl, { trusted: trust[name] ?? [], machineGateways });
+    if (!binding.bound) out.set(name, unboundMessage(name, [binding.host]));
   }
   return out;
 }

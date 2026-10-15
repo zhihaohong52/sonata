@@ -1517,7 +1517,7 @@ export async function cmdDoctor(
         if ((auth ?? 'api-key') !== 'api-key' || baseUrl === undefined) return;
         const binding = gatewayHostBound(name, baseUrl, {
           trusted: trust[name] ?? [],
-          machineUrl: machineGateways[name]?.baseUrl,
+          machineGateways,
         });
         if (binding.bound) return;
         checks.push({
