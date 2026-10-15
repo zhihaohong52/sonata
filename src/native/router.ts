@@ -476,6 +476,8 @@ interface RecordContext {
    */
   tenantConfig?: SonataConfig;
   textToolCalls?: TextToolCallCounts;
+  /** The turn was withdrawn, never served: a row for its spend alone. */
+  withdrawn?: true;
 }
 
 function headerNumber(headers: Record<string, string>, name: string): number | undefined {
@@ -532,6 +534,7 @@ function withUsageRecording(response: RouterResponse, ctx: RecordContext, deps: 
           ...(ctx.textToolCalls !== undefined && (ctx.textToolCalls.recovered > 0 || ctx.textToolCalls.unparsed > 0)
             ? { textToolCalls: { ...ctx.textToolCalls } }
             : {}),
+          ...(ctx.withdrawn === true ? { withdrawn: true as const } : {}),
         }, ctx.tenantConfig);
       } catch { /* Accounting is strictly best-effort. */ }
     };
@@ -2480,6 +2483,65 @@ async function routeTierRequest(
   unavailable: string | undefined,
   auto?: { alias: string; record?: AutoRouteRecord },
 ): Promise<RouterResponse> {
+  const withdrawn: WithdrawnTurn[] = [];
+  try {
+    return await routeTierCandidates(req, deps, alias, startedAt, session, tenant, unavailable, auto, withdrawn);
+  } finally {
+    // Each withdrawn turn was billed by its upstream, so each is a ledger row
+    // of its own — priced and counted toward `[budget]` like any other —
+    // marked `withdrawn` so reports keep it apart from served requests. A
+    // turn served after all (no other candidate served) is recorded as the
+    // served row instead, never twice. Recorded on every way out, a client
+    // that left included: the upstream was paid either way.
+    for (const turn of withdrawn) {
+      if (!turn.served) await recordWithdrawnTurn(turn, deps);
+    }
+  }
+}
+
+/** A turn withdrawn for an unrecoverable text tool call, with the context its ledger row needs. */
+interface WithdrawnTurn {
+  response: UnrecoverableResponse;
+  ctx: RecordContext;
+  /** Set when no other candidate served and this turn was served after all. */
+  served: boolean;
+}
+
+/**
+ * Writes a withdrawn turn's ledger row, its usage read from the held body by
+ * the same collector a served row uses. A stream that never reported usage
+ * yields an incomplete row with zero tokens, which pricing leaves unpriced.
+ */
+async function recordWithdrawnTurn(turn: WithdrawnTurn, deps: RouterDeps): Promise<void> {
+  if (deps.recordUsage === undefined) return;
+  try {
+    // The auto-route decision rides on the served row only, or it is counted twice.
+    const recorded = withUsageRecording(replayHeld(turn.response), { ...turn.ctx, autoRoute: undefined, withdrawn: true }, deps);
+    if (!Buffer.isBuffer(recorded.body)) for await (const _ of recorded.body) { /* emits the row at its end */ }
+  } catch { /* accounting is strictly best-effort */ }
+}
+
+/** A held turn as the body a client would have read: a stream for SSE, the buffer otherwise. */
+function replayHeld(response: UnrecoverableResponse): RouterResponse {
+  const held = response.body;
+  const body = (response.headers['content-type'] ?? '').includes('text/event-stream')
+    ? (async function* () { yield new Uint8Array(held); })()
+    : held;
+  return { status: response.status, headers: response.headers, body };
+}
+
+/** The candidate loop behind `routeTierRequest`; turns it withdraws are left in `withdrawn` to record. */
+async function routeTierCandidates(
+  req: RouterRequest,
+  deps: RouterDeps,
+  alias: string,
+  startedAt: number,
+  session: string | undefined,
+  tenant: RouterTenant,
+  unavailable: string | undefined,
+  auto: { alias: string; record?: AutoRouteRecord } | undefined,
+  withdrawn: WithdrawnTurn[],
+): Promise<RouterResponse> {
   // Once per request, not once per candidate: a candidate skipped for being
   // in its post-failure cooldown window would otherwise mean this never
   // fires at all, silently masking a real config change behind an unrelated
@@ -2532,7 +2594,7 @@ async function routeTierRequest(
   // candidate serves after it, it is served after all: the client is no worse
   // off than before the turn could be withdrawn, and better off than with a 529.
   let lastUnrecoverable: {
-    at: number; response: UnrecoverableResponse; route: TierRoute; counts: TextToolCallCounts;
+    at: number; turn: WithdrawnTurn; route: TierRoute; counts: TextToolCallCounts;
   } | undefined;
 
   // Which candidate already served this conversation, if any. Preferring it
@@ -2894,9 +2956,33 @@ async function routeTierRequest(
       }, { alias, candidate: variant, outbound: body }, true);
       if (isClientGone(recovered)) return recovered;
       if (isUnrecoverable(recovered)) {
-        attempts.push({ key: route.key, status: recovered.status, textToolCalls: { ...textToolCalls } });
+        attempts.push({ key: route.key, status: recovered.status });
         if (conversation !== undefined) stickyDemote(conversation, route.key);
-        lastUnrecoverable = { at: attempts.length, response: recovered, route, counts: { ...textToolCalls } };
+        const turn: WithdrawnTurn = {
+          response: recovered,
+          served: false,
+          ctx: {
+            startedAt,
+            session,
+            project: tenant.project,
+            tenant: tenant.id,
+            tenantConfig: tenant.config,
+            alias,
+            role: resolved.role,
+            tier: resolved.tier,
+            ...routeFields,
+            key: route.key,
+            effort: route.effort,
+            gateway: route.native!.gateway,
+            ...(route.native!.auth === 'session' ? sessionCredentialField(req.headers) : {}),
+            upstream: 'litellm',
+            // Its fall-through is on the served row's attempts; repeating it here would count it twice.
+            attempts: [],
+            textToolCalls: { ...textToolCalls },
+          },
+        };
+        withdrawn.push(turn);
+        lastUnrecoverable = { at: attempts.length, turn, route, counts: { ...textToolCalls } };
         deps.log?.(`router: ${alias} ${variant} turn withdrawn before reaching the client; trying next`);
         continue;
       }
@@ -2970,15 +3056,12 @@ async function routeTierRequest(
     // did before turns could be withdrawn. Its own attempt comes off the list,
     // because the row is now the candidate that served.
     const last = lastUnrecoverable;
+    last.turn.served = true;
     attempts.pop();
     deps.log?.(`router: no other route for ${label} served; returning ${last.route.key}'s turn with its unrecovered text tool call`);
     if (conversation !== undefined) stickyIncomplete(conversation, last.route.key, now());
     // A held stream is replayed as a stream, so its usage is read as one.
-    const held = last.response.body;
-    const replay = (last.response.headers['content-type'] ?? '').includes('text/event-stream')
-      ? (async function* () { yield new Uint8Array(held); })()
-      : held;
-    return withUsageRecording({ status: last.response.status, headers: last.response.headers, body: replay }, {
+    return withUsageRecording(replayHeld(last.turn.response), {
       startedAt,
       session,
       project: tenant.project,

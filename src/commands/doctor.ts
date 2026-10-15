@@ -1125,12 +1125,8 @@ export async function cmdDoctor(
         total.unparsed += counts.unparsed;
         byKey.set(key, total);
       };
+      // A withdrawn turn has a row of its own, under the model that wrote it.
       if (row.textToolCalls !== undefined) add(row.key ?? row.alias, row.textToolCalls);
-      // A turn withdrawn for an unrecovered call is an attempt, not the row:
-      // its counts belong to the model that wrote it.
-      for (const attempt of row.attempts) {
-        if (attempt.textToolCalls !== undefined) add(attempt.key, attempt.textToolCalls);
-      }
     }
     if (byKey.size > 0) {
       const parts = [...byKey.entries()].map(([key, t]) => `${key}: ${t.recovered} recovered, ${t.unparsed} unrecovered`);

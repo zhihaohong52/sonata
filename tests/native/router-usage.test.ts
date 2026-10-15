@@ -3,6 +3,14 @@ import { describe, expect, it } from 'vitest';
 
 import { activeTextToolCallCooldowns, clearCooldowns, createRouterServer, respond, routeRequest, TEXT_TOOL_CALL_COOLDOWN_MS, TIER_COOLDOWN_MS, type RouterDeps } from '../../src/native/router.js';
 import { rewriteTextToolCallStream } from '../../src/native/text-tool-calls.js';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { appendRow, readRows } from '../../src/ledger.js';
+import { spentTodayUsd } from '../../src/budget.js';
+import { aggregate } from '../../src/commands/usage.js';
+import { priceRow } from '../../src/commands/serve.js';
+import { parseConfig } from '../../src/config.js';
 import type { LedgerRow } from '../../src/ledger.js';
 
 const DELTA = 'event: message_delta\ndata: {"type":"message_delta","usage":{"input_tokens":100,"output_tokens":7}}\n\n';
@@ -418,10 +426,17 @@ describe('router — text-form tool calls', () => {
     // The client sees the second candidate's turn and nothing of the first.
     expect(out).toBe(stream('from pro'));
     expect(seen).toEqual(['default/flash', 'default/pro']);
-    expect(rows).toHaveLength(1);
-    expect(rows[0].key).toBe('pro');
-    expect('textToolCalls' in rows[0]).toBe(false);
-    expect(rows[0].attempts).toEqual([{ key: 'flash', status: 200, textToolCalls: { recovered: 0, unparsed: 1 } }]);
+    // One row served, one for the withdrawn turn's spend.
+    expect(rows).toHaveLength(2);
+    const served = rows.find((r) => r.withdrawn !== true)!;
+    expect(served.key).toBe('pro');
+    expect('textToolCalls' in served).toBe(false);
+    expect(served.attempts).toEqual([{ key: 'flash', status: 200 }]);
+    const withdrawn = rows.find((r) => r.withdrawn === true)!;
+    expect(withdrawn).toMatchObject({
+      key: 'flash', gateway: 'acme', status: 200, complete: true, attempts: [],
+      textToolCalls: { recovered: 0, unparsed: 1 }, tokens: { input: 10, output: 5 },
+    });
     // And the withdrawn candidate is cooling: the next request starts at pro.
     seen.length = 0;
     await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
@@ -438,8 +453,10 @@ describe('router — text-form tool calls', () => {
     const { d } = twoCandidates(rows, (key) => body200(key === 'flash' ? message(UNPARSED) : message('from pro'), 'application/json'));
     const res = await routeRequest(withTools('sonata-code-simple'), d);
     expect(await drain(res.body)).toBe(message('from pro'));
-    expect(rows[0].key).toBe('pro');
-    expect(rows[0].attempts).toEqual([{ key: 'flash', status: 200, textToolCalls: { recovered: 0, unparsed: 1 } }]);
+    const served = rows.find((r) => r.withdrawn !== true)!;
+    expect(served.key).toBe('pro');
+    expect(served.attempts).toEqual([{ key: 'flash', status: 200 }]);
+    expect(rows.find((r) => r.withdrawn === true)).toMatchObject({ key: 'flash', complete: true, tokens: { input: 3, output: 2 } });
   });
 
   it('serves the last withdrawn turn when no candidate serves instead', async () => {
@@ -450,12 +467,58 @@ describe('router — text-form tool calls', () => {
     expect(res.status).toBe(200);
     expect(await drain(res.body)).toContain('<tool_call>');
     expect(seen).toEqual(['default/flash', 'default/pro']);
-    // The row is the candidate whose turn was served; the other is an attempt.
-    expect(rows[0].key).toBe('pro');
-    expect(rows[0].textToolCalls).toEqual({ recovered: 0, unparsed: 1 });
-    expect(rows[0].attempts).toEqual([{ key: 'flash', status: 200, textToolCalls: { recovered: 0, unparsed: 1 } }]);
+    // The served row is the candidate whose turn was served, never also a
+    // withdrawn row; the other turn is an attempt with a withdrawn row of its own.
+    expect(rows).toHaveLength(2);
+    const served = rows.find((r) => r.withdrawn !== true)!;
+    expect(served.key).toBe('pro');
+    expect(served.textToolCalls).toEqual({ recovered: 0, unparsed: 1 });
+    expect(served.attempts).toEqual([{ key: 'flash', status: 200 }]);
     // Replayed as the stream it was, so its usage is still read.
-    expect(rows[0].tokens.output).toBe(5);
+    expect(served.tokens.output).toBe(5);
+    expect(rows.filter((r) => r.withdrawn === true).map((r) => r.key)).toEqual(['flash']);
+  });
+
+  it('prices a withdrawn turn and counts it toward the budget, but not as a served request', async () => {
+    clearCooldowns();
+    const home = mkdtempSync(join(tmpdir(), 'sonata-withdrawn-'));
+    const config = parseConfig([
+      '[models."flash"]', 'gateway = "acme"', 'id = "x"',
+      '[models."flash".price]', 'input = 1', 'output = 2',
+      '[native.gateways."acme"]', 'base_url = "https://example.invalid/v1"',
+    ].join('\n'));
+    const { d } = twoCandidates([], (key) => sse(stream(key === 'flash' ? UNPARSED : 'from pro')), {
+      recordUsage: (row) => appendRow(home, priceRow(config, home, row)),
+    });
+    await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
+    const deadline = Date.now() + 2_000;
+    while (readRows(home, 0, Date.now() + 1).length < 2 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+    const ledger = readRows(home, 0, Date.now() + 1);
+    const withdrawn = ledger.find((r) => r.withdrawn === true)!;
+    // 10 in at $1/M and 5 out at $2/M.
+    expect(withdrawn.price).toMatchObject({ source: 'model', totalUsd: 0.00002 });
+    expect(spentTodayUsd(home)).toBeCloseTo(0.00002, 10);
+    const report = aggregate(ledger, 'model', {});
+    expect(report.buckets.map((b) => [b.label, b.requests])).toEqual([['pro', 1]]);
+    expect(report.withdrawn).toEqual({ turns: 1, costUsd: 0.00002, coveredUsd: 0, unpriced: 0 });
+  });
+
+  it('records a withdrawn turn whose usage never arrived as incomplete, with zero tokens', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const noUsage = [
+      ev('message_start', { message: { id: 'm', role: 'assistant', content: [] } }),
+      ev('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }),
+      ev('content_block_delta', { index: 0, delta: { type: 'text_delta', text: UNPARSED } }),
+      ev('content_block_stop', { index: 0 }),
+      ev('message_stop', {}),
+    ].join('');
+    const { d } = twoCandidates(rows, (key) => sse(key === 'flash' ? noUsage : stream('from pro')));
+    await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
+    const withdrawn = rows.find((r) => r.withdrawn === true)!;
+    expect(withdrawn.complete).toBe(false);
+    expect(withdrawn.tokens).toEqual({ input: 0, output: 0, cacheRead: 0, cacheCreation: 0 });
+    expect(withdrawn.price).toEqual({ source: 'none' });
   });
 
   it('passes a recovered call through the hold unchanged', async () => {

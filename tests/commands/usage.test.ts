@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { aggregate, classifierCostNote, cmdUsage, explicitTierNote, parseDuration, parseUsageFlags, projectResolver, spentLabel, type UsageBucket } from '../../src/commands/usage.js';
+import { aggregate, classifierCostNote, cmdUsage, explicitTierNote, parseDuration, parseUsageFlags, projectResolver, spentLabel, withdrawnNote, type UsageBucket } from '../../src/commands/usage.js';
 import { appendRow, type LedgerRow } from '../../src/ledger.js';
 import { canonicalConfigPath, tenantId } from '../../src/native/tenants.js';
 
@@ -510,6 +510,27 @@ describe('classifierCostNote', () => {
   });
   it('includes failed decisions that called the classifier', () => {
     expect(classifierCostNote(summary(0.00002, 2, 2, 0, 1))).toMatch(/2 of 3 decisions reported a cost/);
+  });
+});
+
+describe('aggregate — withdrawn turns', () => {
+  const rows = [
+    row({ key: 'pro', price: { source: 'model', totalUsd: 0.5 } }),
+    row({ key: 'flash', withdrawn: true, price: { source: 'model', totalUsd: 0.25 } }),
+    row({ key: 'flash', withdrawn: true, complete: false, tokens: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, price: { source: 'none' } }),
+  ];
+
+  it('keeps them out of every bucket and total, reported on their own', () => {
+    const report = aggregate(rows, 'model', {});
+    expect(report.buckets.map((b) => [b.label, b.requests])).toEqual([['pro', 1]]);
+    expect(report.pricedTotalUsd).toBe(0.5);
+    expect(report.unpriced.requests).toBe(0);
+    expect(report.withdrawn).toEqual({ turns: 2, costUsd: 0.25, coveredUsd: 0, unpriced: 1 });
+  });
+
+  it('prints one line only when there were any, naming the unpriced ones', () => {
+    expect(withdrawnNote(aggregate(rows, 'model', {}))).toMatch(/^withdrawn\s+2 turns \(\$0\.2500, 1 unpriced\) — .*counted toward \[budget\]$/);
+    expect(withdrawnNote(aggregate([rows[0]], 'model', {}))).toBeUndefined();
   });
 });
 

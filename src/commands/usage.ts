@@ -166,6 +166,14 @@ export interface UsageReport {
   covered: { requests: number; totalUsd: number };
   failedAttempts: FailedAttempt[];
   /**
+   * Turns withdrawn before reaching the client — a tool call written as text
+   * that could not be recovered — and the next candidate asked. Billed by the
+   * upstream, so priced and counted toward `[budget]`, but not served: never
+   * in a bucket, `pricedTotalUsd` or `unpriced`. `unpriced` counts the turns
+   * whose usage or rate is unknown; it is never folded in as $0.
+   */
+  withdrawn: { turns: number; costUsd: number; coveredUsd: number; unpriced: number };
+  /**
    * Requests the project sent to an explicit tier (`sonata-code-complex`)
    * while its config has `[auto_route]` — present only when it does. Not a
    * fault: an explicit tier is a legitimate manual override. Counted because
@@ -177,6 +185,17 @@ export interface UsageReport {
 }
 
 const EXPLICIT_TIER = new RegExp(`^sonata-(${KNOWN_ROLES.join('|')})-(${TIER_NAMES.join('|')})$`);
+
+/** The `sonata usage` line for withdrawn turns, or undefined when there were none. */
+export function withdrawnNote(report: Pick<UsageReport, 'withdrawn'>): string | undefined {
+  const w = report.withdrawn;
+  if (w.turns === 0) return undefined;
+  const parts = [`$${w.costUsd.toFixed(4)}`];
+  if (w.coveredUsd > 0) parts.push(`$${w.coveredUsd.toFixed(2)} covered`);
+  if (w.unpriced > 0) parts.push(`${w.unpriced} unpriced`);
+  return `withdrawn      ${w.turns} turn${w.turns === 1 ? '' : 's'} (${parts.join(', ')}) — unrecoverable text tool calls, `
+    + 'retried on the next model; outside the totals above, counted toward [budget]';
+}
 
 /** The `sonata usage` line for `explicitTierUnderAuto`, or undefined when there is nothing to say. */
 export function explicitTierNote(report: Pick<UsageReport, 'explicitTierUnderAuto'>): string | undefined {
@@ -376,8 +395,18 @@ export function aggregate(
   let autoRoute: UsageReport['autoRoute'];
   const failed = new Map<string, { count: number; statuses: Set<number> }>();
   let pricedTotalUsd = 0;
+  const withdrawn = { turns: 0, costUsd: 0, coveredUsd: 0, unpriced: 0 };
 
   for (const row of rows) {
+    // A withdrawn turn is spend, not a served request: kept out of every
+    // bucket and total above, and reported on its own line.
+    if (row.withdrawn === true) {
+      withdrawn.turns += 1;
+      if (row.price.source === 'none' || row.price.totalUsd === undefined) withdrawn.unpriced += 1;
+      else if (row.price.source === 'covered') withdrawn.coveredUsd += row.price.totalUsd;
+      else withdrawn.costUsd += row.price.totalUsd;
+      continue;
+    }
     if (row.autoRoute !== undefined) {
       autoRoute ??= {
         outcomes: { accepted: 0, 'low-confidence': 0, invalid: 0, failed: 0, 'no-task': 0 },
@@ -459,6 +488,7 @@ export function aggregate(
     noPromptTokens,
     ...(autoRoute === undefined ? {} : { autoRoute }),
     covered,
+    withdrawn,
     failedAttempts: [...failed.entries()]
       .map(([key, { count, statuses }]) => ({ key, count, statuses: [...statuses].sort((a, b) => a - b) }))
       .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key)),

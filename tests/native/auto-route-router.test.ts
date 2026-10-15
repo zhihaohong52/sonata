@@ -91,4 +91,26 @@ describe('per-project decision provider', () => {
     expect(calls).toHaveLength(1);
     expect(seen).toEqual(['t/c']);
   });
+
+  it('keeps the decision on the served row, not on a withdrawn turn\'s row', async () => {
+    const { c } = classifierSaying('simple');
+    const { deps, rows } = depsWith(c);
+    const twoSimple = (alias: string) => alias === 'sonata-code-simple'
+      ? { role: 'code', tier: 'simple', routes: [{ key: 'a', native: { gateway: 'g', id: 'a-1' } }, { key: 'b', native: { gateway: 'g', id: 'b-1' } }] }
+      : routesFor(alias);
+    const reply = (text: string) => JSON.stringify({ type: 'message', role: 'assistant', content: [{ type: 'text', text }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } });
+    Object.assign(deps, {
+      resolveTier: twoSimple,
+      fetch: (async (_url: string, init: RequestInit) => {
+        const model = (JSON.parse(init.body as string) as { model: string }).model;
+        const text = model === 't/a' ? '<tool_call><function=Nope></function></tool_call>' : 'done';
+        return new Response(reply(text), { status: 200, headers: { 'content-type': 'application/json' } });
+      }) as unknown as typeof fetch,
+    });
+    const withTools = { ...req(), body: Buffer.from(JSON.stringify({ model: 'sonata-code-auto', messages: [{ role: 'user', content: 'Rename foo to bar' }], tools: [{ name: 'Bash', input_schema: {} }] })) };
+    await routed(withTools, deps as any);
+    expect(rows).toHaveLength(2);
+    expect(rows.filter((r) => r.autoRoute !== undefined).map((r) => [r.key, r.withdrawn])).toEqual([['b', undefined]]);
+    expect(rows.find((r) => r.withdrawn === true)).toMatchObject({ key: 'a', alias: 'sonata-code-auto', route: 'auto' });
+  });
 });

@@ -122,18 +122,24 @@ export interface LedgerRow {
    * Absent when there were none.
    */
   textToolCalls?: { recovered: number; unparsed: number };
+  /**
+   * The candidate's turn was withdrawn before reaching the client (a tool
+   * call written as text that could not be recovered) and another candidate
+   * asked instead. The upstream billed it, so it is spend — priced, and
+   * counted toward `[budget]` — but not a served request: `sonata usage`
+   * reports these on their own line. Absent on every served row.
+   */
+  withdrawn?: true;
 }
 
-/** A candidate a request fell past before one served it (or none did). */
+/**
+ * A candidate a request fell past before one served it (or none did). A 200
+ * here is a turn withdrawn for an unrecoverable text tool call; its spend is
+ * the `withdrawn` row written beside this one.
+ */
 export interface LedgerAttempt {
   key: string;
   status: number;
-  /**
-   * Set when the candidate answered 200 but its turn was withdrawn for a tool
-   * call written as text that could not be recovered — the counts that turn
-   * carried, so they stay attributed to the model that wrote them.
-   */
-  textToolCalls?: { recovered: number; unparsed: number };
 }
 
 export const LEDGER_RETENTION_DAYS = 30;
@@ -316,6 +322,7 @@ function autoRouteIsValid(record: unknown): boolean {
 function hasRequiredFields(row: LedgerRow): boolean {
   if ('route' in row && row.route !== 'auto' && row.route !== 'manual') return false;
   if ('autoRoute' in row && !autoRouteIsValid(row.autoRoute)) return false;
+  if ('withdrawn' in row && row.withdrawn !== true) return false;
   if ('textToolCalls' in row) {
     const t = row.textToolCalls;
     if (t === null || typeof t !== 'object' || Array.isArray(t) || !isCount(t.recovered) || !isCount(t.unparsed)) return false;

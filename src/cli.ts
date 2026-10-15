@@ -38,7 +38,7 @@ import { JEVBENCH_ATTRIBUTION } from './decision-catalog.js';
 import { cmdLitellm } from './commands/litellm.js';
 import { AA_ATTRIBUTION, aaCatalogPath, loadAaCatalog } from './catalog.js';
 import { MODELS_DEV_ATTRIBUTION } from './modelsdev.js';
-import { classifierCostNote, cmdUsage, coveredLabel, explicitTierNote, parseUsageFlags, spentLabel } from './commands/usage.js';
+import { classifierCostNote, cmdUsage, coveredLabel, explicitTierNote, parseUsageFlags, spentLabel, withdrawnNote } from './commands/usage.js';
 import { readRows } from './ledger.js';
 
 const USAGE = `sonata — foreign-model subagents for Claude Code
@@ -657,6 +657,8 @@ export async function main(argv: string[]): Promise<number> {
       const o = report.autoRoute.outcomes;
       console.log(`auto-route decisions: ${o.accepted} accepted, ${o['low-confidence']} low-confidence, ${o.invalid} invalid, ${o.failed} failed, ${o['no-task']} without a task · classifier ${report.autoRoute.classifierTokens.input} in / ${report.autoRoute.classifierTokens.output} out tokens${classifierCostNote(report.autoRoute)}`);
     }
+    const withdrawnTurns = withdrawnNote(report);
+    if (withdrawnTurns !== undefined) console.log(withdrawnTurns);
     const explicitTiers = explicitTierNote(report);
     if (explicitTiers !== undefined) console.log(explicitTiers);
     if (report.noPromptTokens.requests > 0) {
@@ -764,7 +766,7 @@ export async function main(argv: string[]): Promise<number> {
         : 'no routes from this project in the last hour — `--global` shows every project');
     } else {
       for (const line of recent) {
-        const served = `${line.served ?? '(none — all candidates failed)'}${line.effort !== undefined ? `@${line.effort}` : ''}`;
+        const served = `${line.served ?? '(none — all candidates failed)'}${line.effort !== undefined ? `@${line.effort}` : ''}${line.withdrawn === true ? ' (withdrawn)' : ''}`;
         const when = localTime(line.ts);
         const via = line.gateway !== undefined ? ` via ${line.gateway}` : '';
         console.log(`${when}  ${line.status}  ${line.alias.padEnd(24)} -> ${served.padEnd(24)}${via.padEnd(16)} ${line.input} in / ${line.output} out  ${routeCostLabel(line)}`);

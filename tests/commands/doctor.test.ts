@@ -2436,10 +2436,12 @@ describe('doctor — text tool calls', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'doc-ttc-cwd-'));
     const home = mkdtempSync(join(tmpdir(), 'doc-ttc-home-'));
     writeFileSync(join(cwd, 'sonata.toml'), 'schema_version = 1\n');
-    const served = row(projectTenant(cwd, home), 'pro', { recovered: 0, unparsed: 0 });
+    const tenant = projectTenant(cwd, home);
+    const served = row(tenant, 'pro', { recovered: 0, unparsed: 0 });
     delete served.textToolCalls;
-    served.attempts = [{ key: 'mimo', status: 200, textToolCalls: { recovered: 0, unparsed: 1 } }];
+    served.attempts = [{ key: 'mimo', status: 200 }];
     appendRow(home, served);
+    appendRow(home, { ...row(tenant, 'mimo', { recovered: 0, unparsed: 1 }), withdrawn: true });
     const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
     const check = checks.find((c) => c.name === 'text tool calls');
     expect(check?.ok).toBe(false);

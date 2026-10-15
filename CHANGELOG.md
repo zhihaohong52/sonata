@@ -41,7 +41,10 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   calls are not held), so a turn carrying an unrecoverable call is withdrawn
   and the next ranked model asked, as for a 5xx. Text already sent before a
   marker still reaches the client, as before; when no other model serves, the
-  withdrawn turn is served after all. A model that does this twice within 30
+  withdrawn turn is served after all. A withdrawn turn was still billed, so it
+  gets a ledger row of its own, marked `withdrawn`: priced and counted toward
+  `[budget]`, and shown by `sonata usage` on its own line rather than as a
+  served request. A model that does this twice within 30
   minutes is skipped for 30 minutes instead of 60 seconds, and `sonata doctor`
   names it with the reason.
 
