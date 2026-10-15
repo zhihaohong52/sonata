@@ -5749,6 +5749,72 @@ litellm = ${litellmPort}
     expect(spawns).toBe(2);
   });
 
+  it('escalates a failed lazy start to SIGKILL when the child ignores SIGTERM', async () => {
+    // A child stuck in a device-code login ignores SIGTERM for the whole of
+    // its poll. The failed lazy start used to send SIGTERM alone and forget
+    // the pid, orphaning the child; it now escalates exactly the way the
+    // eager-failure path and stop() do.
+    writeMachineConfig(`
+[models."m"]
+gateway = "anth"
+id = "some-model"
+[native.gateways."anth"]
+base_url = "https://anth.example"
+provider = "anthropic"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+    writeSonataKey(home, 'anth', 'k');
+    const project = mkdtempSync(join(tmpdir(), 'serve-tenant-lazy-sigkill-'));
+    writeFileSync(join(project, 'sonata.toml'), TENANT('needs-litellm'));
+    let spawns = 0;
+    const signals: string[] = [];
+    const realFetch = globalThis.fetch;
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      litellmExitTimeoutMs: 20,
+      spawnLitellm: () => {
+        spawns += 1;
+        const exited: ((code: number | null, signal: NodeJS.Signals | null) => void)[] = [];
+        return {
+          pid: 9000 + spawns,
+          kill: () => { signals.push('SIGTERM'); },
+          // SIGTERM-deaf like a device-code login: only SIGKILL ends it.
+          forceKill: () => { signals.push('SIGKILL'); exited.forEach((cb) => cb(null, 'SIGKILL')); },
+          onExit: (cb) => { exited.push(cb); },
+        };
+      },
+      waitForLitellm: async () => { throw new Error('not ready'); },
+      respawnDelayMs: 0,
+    });
+    handles.push(handle);
+    vi.unstubAllGlobals();
+    const res = await realFetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...projectHeaders(project) },
+      body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+    });
+    // The failed start never becomes ready, so the request waits on it and
+    // then reaches the stubbed upstream (which answers 200): the retry, not
+    // the answer, is what this test proves — the next request must spawn
+    // again rather than reuse a forgotten child.
+    expect(res.status).toBe(200);
+    expect(spawns).toBe(1);
+    expect(signals).toContain('SIGTERM');
+    await waitFor(() => signals.includes('SIGKILL'), 'the SIGKILL escalation');
+    expect(signals).toEqual(['SIGTERM', 'SIGKILL']);
+    // The retry owns the next start: a second request spawns again.
+    const res2 = await realFetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...projectHeaders(project) },
+      body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+    });
+    expect(res2.status).toBe(200);
+    expect(spawns).toBe(2);
+  });
+
   it('leaves a tenant that will not parse out of the union and still serves the others', async () => {
     writeMachineConfig(TENANT('machine-model'));
     const broken = mkdtempSync(join(tmpdir(), 'serve-tenant-broken-'));
