@@ -283,8 +283,10 @@ export function isLoopbackUrl(baseUrl: string): boolean {
  * a self-hosted decision server, keyed under one shared name.
  */
 export function decisionGatewayFor(baseUrl: string): 'typesafe' | 'openrouter' | 'auto-route' {
+  // `host`, not `hostname`: the well-known host is that host on its default
+  // port only. `https://api.typesafe.ai:8443` is a different server.
   let host = '';
-  try { host = new URL(baseUrl).hostname; } catch { /* other */ }
+  try { host = new URL(baseUrl).host; } catch { /* other */ }
   if (host === 'api.typesafe.ai') return 'typesafe';
   if (host === 'openrouter.ai') return 'openrouter';
   return 'auto-route';

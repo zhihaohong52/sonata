@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { jevClassifier } from '../../src/native/auto-route.js';
+import { decisionGatewayFor, jevClassifier } from '../../src/native/auto-route.js';
 import { decisionHostBinding, decisionKeyBinding, decisionUnboundMessage } from '../../src/native/decision-binding.js';
 import { addTrustBinding } from '../../src/native/host-bindings.js';
 
@@ -29,6 +29,26 @@ describe('decisionHostBinding', () => {
     const home = tmp();
     addTrustBinding(home, 'acme', 'decide.example');
     expect(decisionHostBinding('https://decide.example', home).bound).toBe(false);
+  });
+});
+
+describe('the well-known decision hosts compare the port too', () => {
+  it('does not treat TypeSafe or OpenRouter on another port as the well-known host', () => {
+    const home = tmp();
+    expect(decisionGatewayFor('https://api.typesafe.ai:8443')).toBe('auto-route');
+    expect(decisionHostBinding('https://api.typesafe.ai:8443', home).bound).toBe(false);
+    expect(decisionHostBinding('https://openrouter.ai:8443/api', home).bound).toBe(false);
+  });
+
+  it('keeps the well-known host on its default port', () => {
+    expect(decisionGatewayFor('https://api.typesafe.ai:443')).toBe('typesafe');
+    expect(decisionHostBinding('https://api.typesafe.ai', tmp())).toEqual({ bound: true });
+  });
+
+  it('binds another port of a decision host only by its own trust entry', () => {
+    const home = tmp();
+    addTrustBinding(home, 'auto-route', 'api.typesafe.ai:8443');
+    expect(decisionHostBinding('https://api.typesafe.ai:8443', home)).toEqual({ bound: true });
   });
 });
 
