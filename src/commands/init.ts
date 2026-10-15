@@ -117,30 +117,6 @@ async function runInit(
     onProbe: opts.onProbe,
   }, out);
 
-  // A config file that exists but fails to parse stops init before the wizard
-  // and writes nothing: proceeding from defaults would silently replace the
-  // file — its tiers, prices and `[budget]` — with a fresh proposal. This
-  // includes a file stamped with a newer `schema_version`, which
-  // `applyMigrations` refuses on purpose. The same refusal in `--yes` throws,
-  // matching how that lane reports every other refusal.
-  if (env.unreadableConfigs.length > 0) {
-    // Report the scope init would write first: `opts.configScope` is only the
-    // `--yes` lane's answer — the wizard asks again — so lead with every file.
-    const chosenScope = !opts.yes && opts.configScope === undefined ? undefined : (opts.configScope ?? 'project');
-    const ordered = [...env.unreadableConfigs].sort((a, b) =>
-      a.scope === chosenScope ? -1 : b.scope === chosenScope ? 1 : 0);
-    const lines = ordered.map(({ path, error }) => `  ✗ ${path}: ${error}`);
-    if (!interactive) throw new Error(
-      [`sonata init: the existing config cannot be read — fix it or move it aside to start over.`,
-        ...ordered.map(({ path, error }) => `${path}: ${error}`),
-      ].join('\n'));
-    for (const l of lines) out(l);
-    out('');
-    out('  The existing config cannot be read — fix it or move it aside to start over.');
-    out('  Nothing written.');
-    return blockedResult(env.problems, opts);
-  }
-
   if (env.problems.some((p) => p.severity === 'error')) {
     for (const p of env.problems) out(renderProblem(p));
     out('');
@@ -171,6 +147,34 @@ async function runInit(
   if (chosen.cancelled) {
     out('  Nothing written.');
     return cancelledResult(env.problems, chosen.state, opts);
+  }
+
+  // A config file at the scope being written that fails to parse stops init
+  // here — after the scope is known — and writes nothing: proceeding from
+  // defaults would silently replace the file's tiers, prices and `[budget]`
+  // with a fresh proposal. Scoped, because the file at the other scope is
+  // never touched: a broken project config must not block a global init, and
+  // vice versa. The other scope's broken file is still noted, and it simply
+  // contributes nothing this run. This includes a file stamped with a newer
+  // `schema_version`, which `applyMigrations` refuses on purpose. The `--yes`
+  // lane throws, matching how it reports every other refusal.
+  const writeScope = chosen.state.configScope ?? 'project';
+  const broken = env.unreadableConfigs.filter((c) => c.scope === writeScope);
+  const otherBroken = env.unreadableConfigs.filter((c) => c.scope !== writeScope);
+  for (const c of otherBroken) {
+    out(`  ! not reading ${c.path}: ${c.error}`);
+  }
+  if (broken.length > 0) {
+    const lines = broken.map(({ path, error }) => `  ✗ ${path}: ${error}`);
+    if (!interactive) throw new Error(
+      [`sonata init: the existing ${writeScope} config cannot be read — fix it or move it aside to start over.`,
+        ...broken.map(({ path, error }) => `${path}: ${error}`),
+      ].join('\n'));
+    for (const l of lines) out(l);
+    out('');
+    out('  The existing config cannot be read — fix it or move it aside to start over.');
+    out('  Nothing written.');
+    return blockedResult(env.problems, opts, broken[0].path);
   }
 
   // ---- validate ---------------------------------------------------------
@@ -254,10 +258,10 @@ async function runInit(
   };
 }
 
-function blockedResult(problems: Problem[], opts: InitOptions): InitResult {
+function blockedResult(problems: Problem[], opts: InitOptions, configPath?: string): InitResult {
   return {
     problems, models: [], roles: [], scope: 'skip', routing: 'skip', hookChanged: false,
-    agentsWritten: [], configPath: join(opts.cwd, 'sonata.toml'),
+    agentsWritten: [], configPath: configPath ?? join(opts.cwd, 'sonata.toml'),
     pruned: [],
   };
 }

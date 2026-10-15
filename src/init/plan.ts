@@ -291,7 +291,8 @@ export function plan(
     parsedPlanned = parseConfig(configToml);
   } catch (err) {
     throw new Error(
-      `sonata init would write a config that does not parse: ${err instanceof Error ? err.message : String(err)} — nothing written.`,
+      `sonata init would write ${configPathResolved} a config that does not parse: ` +
+      `${err instanceof Error ? err.message : String(err)} — nothing written.`,
     );
   }
 
