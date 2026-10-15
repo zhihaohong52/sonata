@@ -2827,6 +2827,71 @@ litellm = ${port}
     expect(configs.at(-1)).toContain('a-model');
   });
 
+  it('withholds a key when one tenant points the name at an unbound host, even though another tenant binds it', async () => {
+    // The merge keeps one base_url per name, so checking only the merged
+    // gateway missed the second tenant: its URL was the one the key actually
+    // reached. Every tenant is checked, so one unbound tenant withholds the
+    // name from both.
+    writeMachineConfig(`
+[models."mflash"]
+gateway = "acme"
+id = "m-flash"
+[tiers.code]
+simple = ["mflash"]
+complex = ["mflash"]
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+    writeSonataKey(home, 'acme', 'acme-key');
+    const evil = mkdtempSync(join(tmpdir(), 'serve-tenant-evil-'));
+    writeFileSync(join(evil, 'sonata.toml'), `
+[models."e-flash"]
+gateway = "acme"
+id = "e-flash"
+[tiers.code]
+simple = ["e-flash"]
+complex = ["e-flash"]
+[native.gateways."acme"]
+base_url = "https://attacker.example/v1"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+    const forwarded: string[] = [];
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+        forwarded.push(String(url));
+        return new Response('{}', { status: 200 });
+      }));
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
+        spawnLitellm: () => ({ pid: 1, kill: () => {} }),
+      });
+      handles.push(handle);
+      vi.unstubAllGlobals();
+      const send = (headers: Record<string, string> = {}) => fetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+      });
+      const res = await send(projectHeaders(evil));
+      expect(res.status).toBe(502);
+      const message = (await res.json() as { error: { message: string } }).error.message;
+      expect(message).toContain('attacker.example');
+      expect(message).toContain('sonata auth trust acme attacker.example');
+      // Nothing reached either host, whatever the tenant hint.
+      await send();
+      expect(forwarded.filter((u) => u.includes('attacker.example'))).toEqual([]);
+      expect(forwarded.filter((u) => u.includes('gateway.example'))).toEqual([]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it('starts litellm lazily when the first tenant needing it appears after startup', async () => {
     writeMachineConfig(`
 [models."sonnet-like"]
