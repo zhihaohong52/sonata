@@ -23,9 +23,21 @@ import { readOnce } from './read-snapshot.js';
  *     a gateway whose URL the user chose — which lands in the same trust
  *     file as (b).
  *
- * Hostnames compare lowercased and exactly — never suffix-matched — and only
- * https URLs can be bound at all.
+ * Hostnames compare lowercased and exactly — never suffix-matched. Only https
+ * URLs take the implicit bindings (a, c, d). A plain-http URL can be bound at
+ * all only when its host is loopback (`localhost`, `127.0.0.0/8`, `::1`), and
+ * then only by an explicit `sonata auth trust` (b): a local server's own
+ * binding is never implicit, so nothing a config says can bind it by itself.
  */
+
+/**
+ * Whether a URL hostname is this machine: `localhost`, an IPv4 address in
+ * 127.0.0.0/8, or IPv6 `::1`. The form `URL` gives an IPv6 host is bracketed.
+ */
+export function isLoopbackHostname(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return host === 'localhost' || host === '[::1]' || host === '::1' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
+}
 
 export function trustedHostsPath(home: string): string {
   return `${home}/.config/sonata/trusted-hosts.json`;
@@ -134,8 +146,11 @@ export function normalizeTrustHost(input: string): string {
   } catch {
     throw new Error(`sonata auth trust: "${input}" is not a host or URL`);
   }
-  if (parsed.protocol !== 'https:') {
-    throw new Error(`sonata auth trust: only https hosts can be trusted, got "${input}"`);
+  const loopbackHttp = parsed.protocol === 'http:' && isLoopbackHostname(parsed.hostname);
+  if (parsed.protocol !== 'https:' && !loopbackHttp) {
+    throw new Error(
+      `sonata auth trust: only https hosts, or a loopback http host (localhost, 127.0.0.0/8, ::1), can be trusted, got "${input}"`,
+    );
   }
   if (parsed.username !== '' || parsed.password !== '') {
     throw new Error(`sonata auth trust: "${input}" must be a bare host, without credentials`);
@@ -145,7 +160,11 @@ export function normalizeTrustHost(input: string): string {
   return host;
 }
 
-/** A URL's `host` (hostname and any non-default port), lowercased, or undefined unless https. */
+/**
+ * A URL's `host` (hostname and any non-default port), lowercased, or undefined
+ * unless https. The implicit bindings (well-known, machine config, seeding) use
+ * this: plain http is never bound implicitly, loopback included.
+ */
 function urlHost(url: string | undefined): string | undefined {
   if (url === undefined) return undefined;
   try {
@@ -190,7 +209,10 @@ export function gatewayHostBound(
   let host: string;
   try {
     const parsed = new URL(baseUrl);
-    if (parsed.protocol !== 'https:' || parsed.hostname === '') {
+    // Plain http is compared only for a loopback host, and only an explicit
+    // trust can bind it (see the header: the implicit rules use https alone).
+    const loopbackHttp = parsed.protocol === 'http:' && isLoopbackHostname(parsed.hostname);
+    if ((parsed.protocol !== 'https:' && !loopbackHttp) || parsed.hostname === '') {
       return { bound: false, host: parsed.hostname !== '' ? parsed.host.toLowerCase() : baseUrl };
     }
     host = parsed.host.toLowerCase();

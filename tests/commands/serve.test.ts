@@ -2950,6 +2950,74 @@ litellm = ${litellmPort}
     }
   });
 
+  /** A decision-routed request against a local decision URL, with the stub recording every upstream call. */
+  const decisionAgainst = async (baseUrl: string, forwarded: string[]): Promise<number> => {
+    writeMachineConfig(`
+[models."m-flash"]
+gateway = "acme"
+id = "m-flash"
+[models."m-pro"]
+gateway = "acme"
+id = "m-pro"
+[auto_route]
+classifier = "jev"
+base_url = "${baseUrl}"
+[tiers.code]
+simple = ["m-flash"]
+complex = ["m-pro"]
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+    const realFetch = globalThis.fetch;
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      vi.stubGlobal('fetch', async (url: string) => {
+        forwarded.push(String(url));
+        return new Response('{}', { status: 200 });
+      });
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
+        spawnLitellm: () => ({ pid: 1, kill: () => {} }),
+      });
+      handles.push(handle);
+      const res = await realFetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'sonata-code-auto', messages: [{ role: 'user', content: 'write a parser' }] }),
+      });
+      return res.status;
+    } finally {
+      vi.unstubAllGlobals();
+      errorSpy.mockRestore();
+    }
+  };
+
+  it('sends a keyless decision to a local decision URL: no key is at stake there', async () => {
+    const forwarded: string[] = [];
+    const status = await decisionAgainst('http://localhost:8123', forwarded);
+    expect(status).toBe(200);
+    expect(forwarded.some((url) => url.includes('localhost:8123/v1/'))).toBe(true);
+  });
+
+  it('refuses a keyed decision to an unbound local URL, and falls back', async () => {
+    writeSonataKey(home, 'auto-route', 'sk-decide');
+    const forwarded: string[] = [];
+    const status = await decisionAgainst('http://localhost:8124', forwarded);
+    expect(status).toBe(200);
+    expect(forwarded.filter((url) => url.includes('localhost:8124'))).toEqual([]);
+  });
+
+  it('sends a keyed decision to a local URL once its host is trusted', async () => {
+    writeSonataKey(home, 'auto-route', 'sk-decide');
+    addTrustBinding(home, 'auto-route', 'localhost:8125');
+    const forwarded: string[] = [];
+    await decisionAgainst('http://localhost:8125', forwarded);
+    expect(forwarded.some((url) => url.includes('localhost:8125/v1/'))).toBe(true);
+  });
+
   it('keeps the bound tenant on litellm while the unbound one sharing its gateway name is dropped', async () => {
     // The same split on the LiteLLM transport: the unbound tenant's models on
     // `acme` are left out of LiteLLM's config, so LiteLLM cannot hand the
@@ -3009,10 +3077,11 @@ litellm = ${litellmPort}
     }
   });
 
-  it('never sends an auto-route decision to an unbound host, and serves the request on the fallback tier', async () => {
-    // The decision URL gets the decision key and the task text, so an unbound
-    // host is refused: no request reaches it, the fallback tier answers, and
-    // the reason is logged naming the config that set the URL.
+  it('never sends a stored decision key to an unbound host, and serves the request on the fallback tier', async () => {
+    // The stored key goes to the decision URL's host, so an unbound host is
+    // refused: no request reaches it, the fallback tier answers, and the
+    // reason is logged naming the config that set the URL.
+    writeSonataKey(home, 'auto-route', 'sk-decide');
     writeMachineConfig(`
 [models."m-flash"]
 gateway = "acme"

@@ -1061,6 +1061,8 @@ base_url = "https://attacker.example/v1"
   it('fails an auto-route URL on a host nobody bound, naming the config and the trust command', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'doc-auto-unbound-cwd-'));
     const home = mkdtempSync(join(tmpdir(), 'doc-auto-unbound-home-'));
+    // A stored decision key is what an unbound host would receive, so the key is what fails it.
+    writeSonataKey(home, 'auto-route', 'sk-decide');
     writeFileSync(join(cwd, 'sonata.toml'), `
 [auto_route]
 classifier = "jev"
@@ -1082,6 +1084,29 @@ complex = ["m-flash"]
     expect(check?.detail).toContain('decide.example');
     expect(check?.detail).toContain(join(cwd, 'sonata.toml'));
     expect(check?.detail).toContain('sonata auth trust auto-route decide.example');
+  });
+
+  it('passes a keyless auto-route URL on an unbound host: no key would be sent there', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-auto-keyless-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-auto-keyless-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[auto_route]
+classifier = "jev"
+base_url = "http://localhost:8000"
+
+[models."m-flash"]
+gateway = "acme"
+id = "m-flash"
+
+[native.gateways.acme]
+base_url = "https://gateway.example/v1"
+
+[tiers.code]
+simple = ["m-flash"]
+complex = ["m-flash"]
+`);
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    expect(checks.find((c) => c.name === 'auto route' && c.ok === false)).toBeUndefined();
   });
 
   it('passes a gateway whose host is bound by trust, and by the well-known URL', async () => {

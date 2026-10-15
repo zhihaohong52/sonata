@@ -15,6 +15,7 @@ import { nativeTomlFor } from './toml.js';
 import { reconcilePerRoleModels, reconcileTierList, gatewayNamesOf, avoidedKeysOf, gatewayRankOf } from './helpers.js';
 import { configPathFor, agentsDirFor } from './helpers.js';
 import { resolveKeyFromSource, keyReport } from '../native/credentials.js';
+import { isLoopbackHostname } from '../native/host-bindings.js';
 import { credentialDir, credentialFileFor } from '../native/oauth-login.js';
 import { readChatGptOAuth } from '../native/codex-auth.js';
 import { GLOBAL_CONFIG_RELATIVE } from '../config.js';
@@ -503,7 +504,10 @@ function typedHostsToTrust(
   const hostOf = (url: string): string | undefined => {
     try {
       const parsed = new URL(url);
-      return parsed.protocol === 'https:' && parsed.hostname !== '' ? parsed.host.toLowerCase() : undefined;
+      // A typed loopback http URL is the user's own choice, so it is bound too.
+      const loopbackHttp = parsed.protocol === 'http:' && isLoopbackHostname(parsed.hostname);
+      return (parsed.protocol === 'https:' || loopbackHttp) && parsed.hostname !== ''
+        ? parsed.host.toLowerCase() : undefined;
     } catch {
       return undefined;
     }

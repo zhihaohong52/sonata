@@ -46,7 +46,7 @@ import { keyReport, resolveDecisionKey, resolveKeyDetail } from '../native/crede
 import { gatewayHostBound, readTrustBindings, unboundMessage } from '../native/host-bindings.js';
 import { decisionKeyFor } from '../native/auto-route.js';
 import { seedTrustOnUpgrade } from '../native/trust-seed.js';
-import { decisionHostBinding, decisionUnboundMessage } from '../native/decision-binding.js';
+import { decisionKeyBinding, decisionUnboundMessage } from '../native/decision-binding.js';
 import { ModelListCache, chooseDecisionModel } from '../native/decision-models.js';
 import { loadDecisionCatalog } from '../decision-catalog.js';
 import { opencodeCredentialOrigin, opencodeDbPath, readOpencodeCredentials } from '../native/opencode-store.js';
@@ -1019,8 +1019,8 @@ export async function cmdDoctor(
     const keyRequired = decisionHost === 'openrouter.ai' || decisionHost === 'api.typesafe.ai';
     // An unbound host is refused outright: serve sends it neither the key nor
     // the task text, and every -auto request takes the fallback tier.
-    const binding = decisionHostBinding(auto.baseUrl, home);
-    if (!binding.bound) {
+    const binding = decisionKeyBinding(auto.baseUrl, credential.key, home);
+    if (binding !== undefined && !binding.bound) {
       checks.push({
         name: 'auto route',
         ok: false,

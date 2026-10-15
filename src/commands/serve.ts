@@ -29,7 +29,7 @@ import type { UiDeps } from '../native/ui.js';
 import {
   decisionClassifier, decisionKeyFor, refusedClassifier, type TierClassifier,
 } from '../native/auto-route.js';
-import { decisionHostBinding, decisionUnboundMessage } from '../native/decision-binding.js';
+import { decisionKeyBinding, decisionUnboundMessage } from '../native/decision-binding.js';
 import { ModelListCache, chooseDecisionModel } from '../native/decision-models.js';
 import { loadDecisionCatalog } from '../decision-catalog.js';
 import { createRouterServer, type RouterTenant } from '../native/router.js';
@@ -2819,12 +2819,17 @@ export async function cmdServe(
       // URL's listed decision models and the cached JevBench scores, so a
       // `sonata catalog update` or a new model at the URL needs no restart.
       classifierFor: (settings, tenant) => {
-        // The decision URL gets the decision key and the task text, so its
-        // host must be bound first. Checked per request, not cached: a trust
-        // change takes effect at once, and an unbound host is never handed the
-        // classifier that would send the key.
-        const binding = decisionHostBinding(settings.baseUrl, opts.home);
-        if (!binding.bound) {
+        const credential = () => decisionKeyFor(settings.baseUrl, {
+          openrouter: () => resolveDecisionKey('openrouter', opts.home)?.key,
+          typesafe: () => resolveDecisionKey('typesafe', opts.home)?.key,
+          other: () => resolveDecisionKey('auto-route', opts.home)?.key,
+        });
+        // A stored decision key goes to the URL's host, so that host must be
+        // bound first; with no key there is nothing to protect. Checked per
+        // request, not cached: a trust change takes effect at once, and an
+        // unbound host is never handed the classifier that would send the key.
+        const binding = decisionKeyBinding(settings.baseUrl, credential().key, opts.home);
+        if (binding !== undefined && !binding.bound) {
           const message = decisionUnboundMessage(settings.baseUrl, binding.host, tenant.configPath ?? 'the config');
           if (!loggedDecisionRefusals.has(message)) {
             loggedDecisionRefusals.add(message);
@@ -2835,11 +2840,6 @@ export async function cmdServe(
         const id = `${settings.baseUrl}|${settings.model ?? ''}`;
         let classifier = decisionClassifiers.get(id);
         if (classifier === undefined) {
-          const credential = () => decisionKeyFor(settings.baseUrl, {
-            openrouter: () => resolveDecisionKey('openrouter', opts.home)?.key,
-            typesafe: () => resolveDecisionKey('typesafe', opts.home)?.key,
-            other: () => resolveDecisionKey('auto-route', opts.home)?.key,
-          });
           classifier = decisionClassifier(settings, {
             fetch,
             key: () => credential().key,

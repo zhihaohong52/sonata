@@ -3,7 +3,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { jevClassifier } from '../../src/native/auto-route.js';
-import { decisionHostBinding, decisionUnboundMessage } from '../../src/native/decision-binding.js';
+import { decisionHostBinding, decisionKeyBinding, decisionUnboundMessage } from '../../src/native/decision-binding.js';
 import { addTrustBinding } from '../../src/native/host-bindings.js';
 
 const tmp = (): string => mkdtempSync(join(tmpdir(), 'decision-binding-'));
@@ -29,6 +29,32 @@ describe('decisionHostBinding', () => {
     const home = tmp();
     addTrustBinding(home, 'acme', 'decide.example');
     expect(decisionHostBinding('https://decide.example', home).bound).toBe(false);
+  });
+});
+
+describe('decisionKeyBinding', () => {
+  it('needs no binding when no key would be sent, even to an unbound host', () => {
+    expect(decisionKeyBinding('http://localhost:8000', undefined, tmp())).toBeUndefined();
+    expect(decisionKeyBinding('https://decide.example', undefined, tmp())).toBeUndefined();
+  });
+
+  it('requires the host binding when a key would be sent', () => {
+    expect(decisionKeyBinding('https://decide.example', 'k', tmp())).toEqual({ bound: false, host: 'decide.example' });
+  });
+});
+
+describe('plain http decision URLs', () => {
+  it('bind a loopback host only by explicit trust', () => {
+    const home = tmp();
+    expect(decisionHostBinding('http://localhost:8000', home).bound).toBe(false);
+    addTrustBinding(home, 'auto-route', 'localhost:8000');
+    expect(decisionHostBinding('http://localhost:8000', home)).toEqual({ bound: true });
+  });
+
+  it('never bind a non-loopback plain-http host, even when trusted', () => {
+    const home = tmp();
+    addTrustBinding(home, 'auto-route', 'decide.example');
+    expect(decisionHostBinding('http://decide.example', home)).toEqual({ bound: false, host: 'decide.example' });
   });
 });
 

@@ -12,6 +12,7 @@ import {
   readTrustBindings,
   removeTrustBinding,
   trustedHostsPath,
+  isLoopbackHostname,
   refreshHostReasons,
   unboundKeyHosts,
   unboundMessage,
@@ -290,5 +291,40 @@ describe('host comparison includes a non-default port', () => {
     expect(gatewayHostBound('acme', 'https://proxy.example:443/v1', { trusted: ['proxy.example'] })).toEqual({ bound: true });
     expect(normalizeTrustHost('https://PROXY.example:443')).toBe('proxy.example');
     expect(normalizeTrustHost('proxy.example:8443')).toBe('proxy.example:8443');
+  });
+});
+
+describe('plain-http loopback hosts', () => {
+  it('recognises localhost, 127.0.0.0/8 and ::1, and nothing else', () => {
+    for (const host of ['localhost', '127.0.0.1', '127.8.9.10', '[::1]', '::1']) expect(isLoopbackHostname(host)).toBe(true);
+    for (const host of ['localhost.example', '128.0.0.1', 'example.com', '10.0.0.1']) expect(isLoopbackHostname(host)).toBe(false);
+  });
+
+  it('is bound only by an explicit trust, port-aware', () => {
+    const home = tmp();
+    expect(gatewayHostBound('acme', 'http://localhost:8000/v1', { trusted: readTrustBindings(home).acme ?? [] }).bound).toBe(false);
+    addTrustBinding(home, 'acme', 'localhost:8000');
+    expect(gatewayHostBound('acme', 'http://localhost:8000/v1', { trusted: readTrustBindings(home).acme })).toEqual({ bound: true });
+    expect(gatewayHostBound('acme', 'http://localhost:9000/v1', { trusted: readTrustBindings(home).acme }).bound).toBe(false);
+  });
+
+  it('is never bound implicitly: not by the machine config, nor by the well-known table', () => {
+    const machine = { acme: gw('http://127.0.0.1:8000/v1') };
+    expect(gatewayHostBound('acme', 'http://127.0.0.1:8000/v1', { machineGateways: machine }).bound).toBe(false);
+  });
+
+  it('trusts an IPv6 loopback with its brackets', () => {
+    expect(normalizeTrustHost('http://[::1]:8080')).toBe('[::1]:8080');
+    expect(gatewayHostBound('acme', 'http://[::1]:8080/v1', { trusted: ['[::1]:8080'] })).toEqual({ bound: true });
+  });
+
+  it('accepts a loopback http URL to trust, and refuses any other plain http', () => {
+    expect(normalizeTrustHost('http://localhost:8000')).toBe('localhost:8000');
+    expect(() => normalizeTrustHost('http://decide.example')).toThrow(/only https/);
+    expect(() => normalizeTrustHost('http://10.0.0.5:8000')).toThrow(/only https/);
+  });
+
+  it('never binds a non-loopback plain-http URL, even when its host is trusted', () => {
+    expect(gatewayHostBound('acme', 'http://proxy.example/v1', { trusted: ['proxy.example'] }).bound).toBe(false);
   });
 });
