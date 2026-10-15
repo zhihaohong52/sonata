@@ -476,6 +476,27 @@ function parsePricingProvider(name: string, raw: unknown): string[] | undefined 
   return pricingProvider.map((provider) => provider.trim());
 }
 
+/**
+ * Names a gateway may not take. `seeded` is the trust file's marker; the
+ * Object.prototype properties (`constructor`, `__proto__`, `toString`, ...) read
+ * inherited values from any plain map keyed by name.
+ */
+const RESERVED_GATEWAY_NAMES = new Set(['seeded']);
+
+/**
+ * Refuses a `[native.gateways]` name that sonata cannot key by: an
+ * Object.prototype property, the reserved names, or anything outside letters,
+ * digits, `.`, `_` and `-` (the charset every shipped name already uses).
+ */
+export function assertGatewayName(name: string): void {
+  if (name in Object.prototype || RESERVED_GATEWAY_NAMES.has(name) || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) {
+    throw new Error(
+      `sonata.toml: native gateway name "${name}" is not allowed — use letters, digits, ".", "_" or "-", starting ` +
+      'with a letter or digit. Names such as "constructor", "__proto__" and "seeded" are reserved.',
+    );
+  }
+}
+
 export function parseConfig(text: string): SonataConfig {
   // Every field-level check below reads the *current* shape, so the chain runs
   // first: an older file is walked forward here, and a file stamped newer than
@@ -766,6 +787,7 @@ export function parseConfig(text: string): SonataConfig {
     const rawNative = raw.native as Record<string, unknown>;
     const gateways: Record<string, NativeGatewayConfig> = {};
     for (const [name, def] of Object.entries((rawNative.gateways ?? {}) as Record<string, unknown>)) {
+      assertGatewayName(name);
       const d = def as Record<string, unknown>;
       const rawAuth = d.auth ?? 'api-key';
       if (typeof rawAuth !== 'string' || !NATIVE_GATEWAY_AUTHS.includes(rawAuth as NativeGatewayAuth)) {

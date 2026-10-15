@@ -57,10 +57,12 @@ export function readTrustBindings(home: string): TrustBindings {
   try {
     value = JSON.parse(readOnce(trustedHostsPath(home)).toString('utf8'));
   } catch {
-    return {};
+    return Object.create(null);
   }
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return {};
-  const out: TrustBindings = {};
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return Object.create(null);
+  // A null-prototype map: a gateway named after an Object.prototype property
+  // is an ordinary key here, never an inherited value.
+  const out: TrustBindings = Object.create(null);
   for (const [gateway, hosts] of Object.entries(value as Record<string, unknown>)) {
     if (!Array.isArray(hosts)) continue;
     const clean = [...new Set(
@@ -97,19 +99,19 @@ function readTrustFileForWrite(home: string): TrustFile {
     // Read fresh, never from a read snapshot: a writer must see the file as it is.
     text = readFileSync(path, 'utf8');
   } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return { bindings: {} };
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return { bindings: Object.create(null) };
     throw new Error(`cannot update the host trust file ${path}: ${(error as Error).message}`);
   }
   let value: unknown;
   try {
     value = JSON.parse(text);
   } catch {
-    throw new Error(`${path} is not valid JSON (refusing to rewrite it — fix or remove it, then retry)`);
+    throw new Error(`${path} is not valid JSON (refusing to rewrite it — fix it, then retry)`);
   }
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error(`${path} does not hold a JSON object (refusing to rewrite it — fix or remove it, then retry)`);
+    throw new Error(`${path} does not hold a JSON object (refusing to rewrite it — fix it, then retry)`);
   }
-  const file: TrustFile = { bindings: {} };
+  const file: TrustFile = { bindings: Object.create(null) };
   for (const [gateway, hosts] of Object.entries(value as Record<string, unknown>)) {
     if (gateway === TRUST_SEED_MARKER) {
       if (typeof hosts === 'string') file.seeded = hosts;
@@ -209,10 +211,12 @@ export interface HostBindingContext {
 
 /** Whether one lowercase hostname may receive this gateway's key. */
 export function hostBoundToGateway(gateway: string, host: string, ctx: HostBindingContext): boolean {
-  const wellKnown = urlHost(WELL_KNOWN_PROVIDER_URLS[gateway]);
+  const wellKnown = urlHost(Object.hasOwn(WELL_KNOWN_PROVIDER_URLS, gateway) ? WELL_KNOWN_PROVIDER_URLS[gateway] : undefined);
   if (wellKnown !== undefined && wellKnown === host) return true;
   if ((ctx.trusted ?? []).includes(host)) return true;
-  const machine = bindableUrlHost(ctx.machineGateways?.[gateway]?.baseUrl);
+  const machineEntry = ctx.machineGateways !== undefined && Object.hasOwn(ctx.machineGateways, gateway)
+    ? ctx.machineGateways[gateway] : undefined;
+  const machine = bindableUrlHost(machineEntry?.baseUrl);
   if (machine !== undefined && machine === host) return true;
   return false;
 }

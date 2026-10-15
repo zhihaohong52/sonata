@@ -168,7 +168,8 @@ export function resolveKeys(gateways: string[], home: string): KeySource[] {
   for (const gateway of new Set(gateways)) {
     search: for (const name of keyNamesFor(gateway)) {
       for (const source of sources) {
-        const value = source.keys[name];
+        // An own key only: a gateway named `constructor` must not read an inherited value.
+        const value = Object.hasOwn(source.keys, name) ? source.keys[name] : undefined;
         if (value !== undefined) {
           resolved.push({ gateway, source: value.source, key: value.key });
           break search;
