@@ -19,17 +19,21 @@ import { readOnce } from './read-snapshot.js';
  * (b) the user confirmed it with `sonata auth trust <gateway> <host>`;
  * (c) it is the host of the machine config's own gateway of that name (the
  *     machine config is trusted by definition; project configs are not);
- * (d) `sonata auth add` or `sonata init` recorded it while storing a key for
- *     a gateway whose URL the user chose — which lands in the same trust
- *     file as (b).
+ * (d) `sonata init` recorded it while storing a key, for a URL typed in its own
+ *     run: a custom provider's URL, or a changed auto-route URL. The binding
+ *     lands in the same trust file as (b). A URL read from an existing config
+ *     is never bound this way, and `sonata auth add` binds nothing at all:
+ *     the URL it reads comes from a config a repo can carry.
+ * (e) the upgrade seed, once, for the machine config and the projects that
+ *     predate the install (see `seedUpgradeTrust`).
  *
- * Hostnames compare lowercased and exactly — never suffix-matched. The
- * well-known table (a) is https only. A plain-http URL can be bound at all only
- * when its host is loopback (`localhost`, `127.0.0.0/8`, `::1`). Such a URL
- * takes the implicit bindings in the two places the user owns: the machine
- * config (c) and the upgrade seed (e). Anywhere else — a project config, or a
- * URL typed later — a loopback http host is bound only by an explicit trust
- * (b). Non-loopback plain http is never bindable.
+ * Hostnames compare lowercased and exactly — never suffix-matched, with a
+ * non-default port part of the host. The well-known table (a) is https only.
+ * A plain-http URL can be bound at all only when its host is loopback
+ * (`localhost`, `127.0.0.0/8`, `::1`): the machine config's own URL (c) and the
+ * upgrade seed (e) bind it, and (b), or (d) for a URL typed in init, bind it
+ * too. A loopback http URL in a project config binds only by an explicit trust.
+ * Non-loopback plain http is never bindable.
  */
 
 /**

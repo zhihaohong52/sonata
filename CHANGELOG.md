@@ -78,17 +78,19 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 - **Host bindings compare the port.** A host bound on one port was bound on
   every port. A non-default port is part of the host now; the https default
   port is the same as none.
-- **Upgrade: existing configs are trusted once.** On the first run after
-  upgrading, `sonata serve` and `sonata doctor` bind, once, the host of every
-  https (or loopback http) api-key gateway that has a stored or opencode-sourced
-  key, in the machine config and in each project sonata already knows about. Each binding is
-  reported by `sonata serve` and `sonata doctor` when it is written, and
+- **Upgrade: existing configs are trusted once, and only the ones that predate the upgrade.**
+  On the first run after upgrading, `sonata serve`, `sonata doctor`, `sonata auth
+  add` and `sonata init` bind, once, the host of every https (or loopback http)
+  api-key gateway that has a stored or opencode-sourced key, in the machine config
+  and in each project a session recorded before the install ran in whose
+  `sonata.toml` was last changed before the install. The install time is the change
+  time of the package's manifest. A project opened or cloned after the upgrade is
+  never seeded, and neither is the directory a command happens to run in. Each
+  binding is reported by `sonata serve` and `sonata doctor`, and
   `sonata auth untrust <gateway> <host>` removes one. A marker in
-  `trusted-hosts.json` makes this run once: a config first seen afterwards is
-  never seeded, and a fresh install seeds nothing. Projects are found through
-  sonata's session records and its tenant registry; `route-sessions.json` holds
-  only session ids, so a project it alone names is not seeded. The gateway name
-  `seeded` is reserved for the marker.
+  `trusted-hosts.json` is written on the first post-upgrade run whether or not any
+  key is stored, so the seed runs once; a fresh install seeds nothing. The gateway
+  name `seeded` is reserved for the marker.
 - **`sonata auth login` leftover backups are swept.** A login that crashed while
   swapping in its new credential left the previous one beside it; a later
   successful login now removes such a backup once it is ten minutes old, so a
@@ -96,6 +98,37 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   between the two renames the previous credential sits in a `.login-*-old`
   backup beside the live one, and a crash in that window leaves it there until
   the next successful login.
+
+- **A base URL is accepted only in its plain form, and only its href is sent.**
+  Node's `URL` and httpx (LiteLLM's client) disagree on the authority of
+  `https://openrouter.ai\@evil.example/api/v1`: Node reads `openrouter.ai`,
+  httpx reads `evil.example`, so a repo could pass the well-known check while its
+  key went elsewhere. A gateway or `[auto_route]` `base_url` now parses only as
+  scheme, host, optional port and path, with no userinfo, backslash, whitespace,
+  control character, query, fragment or percent-encoded authority, and it is
+  stored as its `URL` href. The probe is recorded in the code.
+- **A gateway name cannot be an Object.prototype property, and `seeded` is
+  refused.** A name such as `constructor` read an inherited value from the plain
+  maps keyed by name, which could make the seed throw and abort `auth add` and
+  `init`. Names are letters, digits, `.`, `_` and `-`, and every lookup reads an
+  own property.
+- **Doctor never lists decision models at an unbound host with its stored key.**
+- **A decision and the send that follows it use one config.** The unbound-host check
+  for a tenant is computed from the config the request carries, for both the LiteLLM
+  config and the direct path, rather than from the last build.
+- **TypeSafe and OpenRouter decision hosts match with their port.** A port other
+  than the default is a different server and gets no well-known key.
+- **Unbound-URL messages lead with the remove instruction.** "If you did not choose
+  this URL, remove it from <file>" comes first, then the trust command.
+- **The init refresh's binding check is required, not optional.**
+- **A rollback copy of a login is aged from when it was set aside, and a failed
+  rollback names where the previous credential is.** A crashed login's staging
+  directory is swept once a day old.
+- **Residual: LiteLLM's own client follows redirects.** Sonata's fetches refuse
+  them, but a gateway served through LiteLLM can answer with a redirect that
+  LiteLLM follows. LiteLLM strips `Authorization` on a cross-host redirect but not
+  `x-api-key` or `x-goog-api-key`, so a key sent under those headers can reach the
+  redirect's host. Use a gateway that does not redirect, or serve it directly.
 
 ### Fixed
 

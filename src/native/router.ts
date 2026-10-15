@@ -2599,8 +2599,9 @@ async function routeTierRequest(
     // sonata's own `[budget]` cap, which refuses before forwarding and never
     // reaches this branch.
     //
-    // Only >= 400 is considered: a 3xx never arrives (fetch follows
-    // redirects) and a 2xx that is not 200 — 204, say — is a success.
+    // Only >= 400 is considered: a 3xx never arrives, because every upstream
+    // fetch refuses redirects (`redirect: 'error'`) and a refused redirect is
+    // a transport failure. A 2xx that is not 200 — 204, say — is a success.
     if (response.status >= 400 && !TERMINAL_STATUSES.has(response.status)) {
       await drainBody(response.body, deps);
       attempts.push({ key: route.key, status: response.status });
