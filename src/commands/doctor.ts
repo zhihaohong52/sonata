@@ -1499,8 +1499,9 @@ export async function cmdDoctor(
     // to comes from a config — including a cloned repo's project config
     // pointing the name at an attacker's host. Serve withholds a key from any
     // host not bound to its gateway name (well-known, user-confirmed, or the
-    // machine config's own), so the gateway fails here with the exact command
-    // that binds it, rather than only as a 502 on the first request.
+    // machine config's own), so the gateway fails here rather than only as a
+    // 502 on the first request. Every tenant serve routes is checked, not just
+    // this file's config, and each failure names the config that sets its URL.
     {
       const trust = readTrustBindings(home);
       const machineGateways = (() => {
@@ -1513,7 +1514,7 @@ export async function cmdDoctor(
           return {};
         }
       })();
-      const check = (name: string, baseUrl: string | undefined, auth: string | undefined): void => {
+      const check = (name: string, baseUrl: string | undefined, auth: string | undefined, configPath: string): void => {
         if ((auth ?? 'api-key') !== 'api-key' || baseUrl === undefined) return;
         const binding = gatewayHostBound(name, baseUrl, {
           trusted: trust[name] ?? [],
@@ -1523,10 +1524,12 @@ export async function cmdDoctor(
         checks.push({
           name: `credential host: ${name}`,
           ok: false,
-          detail: `${unboundMessage(name, [binding.host])}\n  ! serve withholds this gateway's key until that host is trusted`,
+          detail: `${unboundMessage(name, binding.host, configPath)}\n  ! serve withholds this gateway's key until that host is trusted`,
         });
       };
-      for (const [name, gateway] of Object.entries(config.native!.gateways)) check(name, gateway.baseUrl, gateway.auth);
+      for (const { id, gateways } of tenants) {
+        for (const [name, gateway] of Object.entries(gateways)) check(name, gateway.baseUrl, gateway.auth, id);
+      }
     }
 
     // A credential store that exists but cannot be read. serve treats one as

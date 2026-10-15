@@ -139,17 +139,20 @@ describe('trust bindings file', () => {
 });
 
 describe('unboundKeyHosts', () => {
-  it('names a gateway whose merged host is bound to nothing', () => {
+  const CFG = '/work/project/sonata.toml';
+
+  it('names a gateway whose host is bound to nothing, and the config that sets it', () => {
     const message = unboundKeyHosts(
-      { acme: gw('https://attacker.example/v1') }, {}, new Set(['acme']), tmp(),
+      { acme: gw('https://attacker.example/v1') }, {}, new Set(['acme']), tmp(), CFG,
     ).get('acme');
     expect(message).toContain('attacker.example');
+    expect(message).toContain(CFG);
     expect(message).toContain('sonata auth trust acme attacker.example');
   });
 
   it('says nothing for a well-known host', () => {
     expect(unboundKeyHosts(
-      { openrouter: gw('https://openrouter.ai/api/v1') }, {}, new Set(['openrouter']), tmp(),
+      { openrouter: gw('https://openrouter.ai/api/v1') }, {}, new Set(['openrouter']), tmp(), CFG,
     ).size).toBe(0);
   });
 
@@ -157,7 +160,7 @@ describe('unboundKeyHosts', () => {
     const home = tmp();
     addTrustBinding(home, 'acme', 'proxy.example');
     expect(unboundKeyHosts(
-      { acme: gw('https://proxy.example/v1') }, {}, new Set(['acme']), home,
+      { acme: gw('https://proxy.example/v1') }, {}, new Set(['acme']), home, CFG,
     ).size).toBe(0);
   });
 
@@ -167,12 +170,13 @@ describe('unboundKeyHosts', () => {
       { acme: gw('https://proxy.example/v1') },
       new Set(['acme']),
       tmp(),
+      CFG,
     ).size).toBe(0);
   });
 
   it('says nothing when no key is stored for the name', () => {
     expect(unboundKeyHosts(
-      { acme: gw('https://attacker.example/v1') }, {}, new Set(), tmp(),
+      { acme: gw('https://attacker.example/v1') }, {}, new Set(), tmp(), CFG,
     ).size).toBe(0);
   });
 
@@ -181,15 +185,24 @@ describe('unboundKeyHosts', () => {
       claude: { baseUrl: 'https://api.anthropic.com/v1', auth: 'session' },
       codex: { baseUrl: 'https://chatgpt.com/backend-api/codex', auth: 'codex-oauth' },
     };
-    expect(unboundKeyHosts(merged, {}, new Set(['claude', 'codex']), tmp()).size).toBe(0);
+    expect(unboundKeyHosts(merged, {}, new Set(['claude', 'codex']), tmp(), CFG).size).toBe(0);
   });
 });
 
 describe('unboundMessage', () => {
-  it('names the exact trust command for one host', () => {
-    expect(unboundMessage('acme', ['proxy.example'])).toBe(
-      'gateway "acme": its key is not served to "proxy.example" — that host is not bound to this gateway; ' +
-      'run `sonata auth trust acme proxy.example` to allow it',
+  const CFG = '/work/project/sonata.toml';
+
+  it('names the config that sets the URL and the exact trust command', () => {
+    expect(unboundMessage('acme', 'proxy.example', CFG)).toBe(
+      'gateway "acme": its key is not served to "proxy.example" — the URL is set in /work/project/sonata.toml, ' +
+      'and that host is not bound to this gateway. If you did not choose this URL, remove it from that file — ' +
+      'do not trust it. If you did, run `sonata auth trust acme proxy.example` to allow it',
     );
+  });
+
+  it('never steers toward trusting a URL the user did not set before saying to remove it', () => {
+    const message = unboundMessage('acme', 'proxy.example', CFG);
+    expect(message.indexOf('remove it from that file')).toBeGreaterThan(-1);
+    expect(message.indexOf('remove it from that file')).toBeLessThan(message.indexOf('sonata auth trust'));
   });
 });

@@ -135,13 +135,15 @@ export function gatewayHostBound(
   return hostBoundToGateway(gateway, host, ctx) ? { bound: true } : { bound: false, host };
 }
 
-export function unboundMessage(gateway: string, hosts: string[]): string {
-  const list = hosts.map((h) => `"${h}"`).join(', ');
-  return hosts.length === 1
-    ? `gateway "${gateway}": its key is not served to ${list} — that host is not bound to this gateway; ` +
-      `run \`sonata auth trust ${gateway} ${hosts[0]}\` to allow it`
-    : `gateway "${gateway}": its key is not served to ${list} — those hosts are not bound to this gateway; ` +
-      `run \`sonata auth trust ${gateway} <host>\` for each to allow it`;
+/**
+ * Why a key is withheld from one host, naming the config that set the URL.
+ * The user is told to remove a URL they did not choose rather than trust it:
+ * a project config is the usual place a hostile one comes from.
+ */
+export function unboundMessage(gateway: string, host: string, configPath: string): string {
+  return `gateway "${gateway}": its key is not served to "${host}" — the URL is set in ${configPath}, ` +
+    'and that host is not bound to this gateway. If you did not choose this URL, remove it from that file — ' +
+    `do not trust it. If you did, run \`sonata auth trust ${gateway} ${host}\` to allow it`;
 }
 
 /**
@@ -157,20 +159,21 @@ export function unboundMessage(gateway: string, hosts: string[]): string {
  * for (`keysPresent`).
  */
 export function unboundKeyHosts(
-  merged: NativeConfig['gateways'],
+  gateways: NativeConfig['gateways'],
   machineGateways: NativeConfig['gateways'],
   keysPresent: Set<string>,
   home: string,
+  configPath: string,
 ): Map<string, string> {
   const trust = readTrustBindings(home);
   const out = new Map<string, string>();
-  for (const [name, gateway] of Object.entries(merged)) {
+  for (const [name, gateway] of Object.entries(gateways)) {
     if ((gateway.auth ?? 'api-key') !== 'api-key') continue;
     // No stored key under this name or any name sharing it: nothing would
     // flow, so no failure — the gateway resolves keyless exactly as before.
     if (!keysPresent.has(name)) continue;
     const binding = gatewayHostBound(name, gateway.baseUrl, { trusted: trust[name] ?? [], machineGateways });
-    if (!binding.bound) out.set(name, unboundMessage(name, [binding.host]));
+    if (!binding.bound) out.set(name, unboundMessage(name, binding.host, configPath));
   }
   return out;
 }

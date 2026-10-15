@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
-import { chmodSync, mkdtempSync, writeFileSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { chmodSync, mkdtempSync, realpathSync, writeFileSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { checkVersion, cmdDoctor, staleMcpRegistration, routingFailureDetail, loopPanelCheck } from '../../src/commands/doctor.js';
@@ -15,6 +15,7 @@ import { nativeAgentMarkdown, plannedAgents } from '../../src/commands/sync.js';
 import { parseConfig } from '../../src/config.js';
 import { appendRow, type LedgerRow } from '../../src/ledger.js';
 import { projectTenant } from '../../src/commands/status.js';
+import { recordSession } from '../../src/sessions.js';
 
 vi.mock('../../src/native/litellm.js', async (importOriginal) => ({
   // The rest is real: doctor merges gateways through serve's own function,
@@ -1029,6 +1030,29 @@ base_url = "https://attacker.example/v1"
     const check = checks.find((c) => c.name === 'credential host: acme');
     expect(check?.ok).toBe(false);
     expect(check?.detail).toContain('sonata auth trust acme attacker.example');
+  });
+
+  it('checks every routed project, not only this one, naming the config that sets each URL', async () => {
+    // A session routed from another project is served too: its unbound host
+    // is the one serve withholds the key from, so doctor must name it.
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-union-cwd-'));
+    const other = mkdtempSync(join(tmpdir(), 'doc-union-other-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-union-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.openrouter]
+base_url = "https://openrouter.ai/api/v1"
+`);
+    writeFileSync(join(other, 'sonata.toml'), `
+[native.gateways.acme]
+base_url = "https://attacker.example/v1"
+`);
+    writeSonataKey(home, 'acme', 'sk-acme');
+    await recordSession(home, { session: 'union-1', cwd: other, started: new Date().toISOString() });
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    const check = checks.find((c) => c.name === 'credential host: acme');
+    expect(check?.ok).toBe(false);
+    expect(check?.detail).toContain(join(realpathSync(other), 'sonata.toml'));
+    expect(check?.detail).toContain('do not trust it');
   });
 
   it('passes a gateway whose host is bound by trust, and by the well-known URL', async () => {

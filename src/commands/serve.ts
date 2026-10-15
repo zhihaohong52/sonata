@@ -894,7 +894,7 @@ interface ResolveChildEnvOptions {
   /** The machine config's own gateways: their hosts are trusted for their names. */
   machineGateways: NativeConfig['gateways'];
   /** Every loadable tenant's own gateways, checked one by one — the merge keeps one `base_url` per name. */
-  tenantGateways: { id: string; gateways: NativeConfig['gateways'] }[];
+  tenantGateways: { id: string; configPath: string; gateways: NativeConfig['gateways'] }[];
 }
 
 /**
@@ -1120,32 +1120,27 @@ function resolveChildEnvFromSnapshot(
   // from the child env, and its merged resolution dropped, only when every
   // tenant that holds an api-key gateway under that name is unbound: while
   // one is bound the key stays, and the unbound tenant is kept off it by its
-  // own drop set (`unboundByTenant`), not by the env.
+  // own drop set (`unboundByTenant`), not by the env. Every unbound tenant's
+  // message is recorded, each naming the config that set its URL.
   const unboundByTenant = new Map<string, Map<string, string>>();
-  for (const { id, gateways } of opts.tenantGateways) {
-    const perTenant = unboundKeyHosts(gateways, opts.machineGateways, keyed, home);
-    if (perTenant.size > 0) unboundByTenant.set(id, perTenant);
+  for (const { id, configPath, gateways } of opts.tenantGateways) {
+    const perTenant = unboundKeyHosts(gateways, opts.machineGateways, keyed, home, configPath);
+    if (perTenant.size === 0) continue;
+    unboundByTenant.set(id, perTenant);
+    for (const [name, message] of perTenant) failures.push({ gateway: name, message, hostUnbound: true });
   }
-  const unboundHosts = new Map<string, string>();
+  const unboundHosts = new Set<string>();
   for (const name of keyed) {
     const holders = opts.tenantGateways.filter(({ gateways }) => {
       const gateway = gateways[name];
       return gateway !== undefined && (gateway.auth ?? 'api-key') === 'api-key';
     });
     if (holders.length === 0) continue;
-    const messages = holders.map(({ id }) => unboundByTenant.get(id)?.get(name));
-    if (messages.every((message) => message !== undefined)) unboundHosts.set(name, messages[0] as string);
+    if (holders.every(({ id }) => unboundByTenant.get(id)?.has(name) === true)) unboundHosts.add(name);
   }
-  for (const perTenant of unboundByTenant.values()) {
-    for (const [name, message] of perTenant) {
-      // Logged with the failures; a bound tenant's key is not a failure.
-      if (!unboundHosts.has(name)) failures.push({ gateway: name, message, hostUnbound: true });
-    }
-  }
-  for (const [name, message] of unboundHosts) {
+  for (const name of unboundHosts) {
     const gateway = native.gateways[name];
     if (gateway === undefined) continue;
-    failures.push({ gateway: name, message, hostUnbound: true });
     memory.lastGood.delete(`${lineageKey(name, gateway)}|key`);
     memory.lastGood.delete(lineageKey(name, gateway));
     for (const stale of [...memory.lastGoodSource.keys()]) {
@@ -1158,7 +1153,7 @@ function resolveChildEnvFromSnapshot(
     found.delete(name);
     sourcedHits.delete(name);
   }
-  const unbound = new Set(unboundHosts.keys());
+  const unbound = unboundHosts;
   for (const [name, gateway] of automaticallyResolved) {
     if (unbound.has(name)) continue;
     const hit = found.get(name);
@@ -2161,7 +2156,9 @@ export async function cmdServe(
         now: clock,
         warn: warnSkipped,
         machineGateways: machineConfig()?.native?.gateways ?? {},
-        tenantGateways: registry.loadable().map(({ id, config }) => ({ id, gateways: config.native?.gateways ?? {} })),
+        tenantGateways: registry.loadable().map(({ id, configPath, config }) => ({
+          id, configPath, gateways: config.native?.gateways ?? {},
+        })),
       });
       seeds = built.seeds;
       const held = chatgptSeeded;

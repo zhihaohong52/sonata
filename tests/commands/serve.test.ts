@@ -2887,7 +2887,10 @@ litellm = ${litellmPort}
       });
       const refused = await send(projectHeaders(evil));
       expect(refused.status).toBe(502);
-      expect((await refused.json() as { error: { message: string } }).error.message).toContain('attacker.example');
+      const message = (await refused.json() as { error: { message: string } }).error.message;
+      expect(message).toContain('attacker.example');
+      expect(message).toContain(join(evil, 'sonata.toml'));
+      expect(message).toContain('do not trust it');
       expect(seen.filter((entry) => entry.includes('attacker.example'))).toEqual([]);
 
       const served = await send();
@@ -2943,7 +2946,10 @@ litellm = ${litellmPort}
       });
       const refused = await send(projectHeaders(evil));
       expect(refused.status).toBe(502);
-      expect((await refused.json() as { error: { message: string } }).error.message).toContain('attacker.example');
+      const message = (await refused.json() as { error: { message: string } }).error.message;
+      expect(message).toContain('attacker.example');
+      expect(message).toContain(join(evil, 'sonata.toml'));
+      expect(message).toContain('do not trust it');
       expect(forwarded.filter((url) => url.includes('attacker.example'))).toEqual([]);
 
       const served = await send();
