@@ -9,6 +9,10 @@ import { assertEffortsPinned, loadAaCatalog } from './catalog.js';
 import { loadModelsDev } from './modelsdev.js';
 import { configUpstreamFor } from './pricing.js';
 import { envVarForGateway } from './native/gateway-env.js';
+import { assertGatewayName } from './native/gateway-name.js';
+import { canonicalBaseUrl, canonicalBaseUrlOrUndefined } from './native/base-url.js';
+
+export { assertGatewayName, canonicalBaseUrl, canonicalBaseUrlOrUndefined };
 
 export const KNOWN_HARNESSES = ['opencode', 'codex', 'pi', 'reasonix', 'claude'] as const;
 export const KNOWN_ROLES = ['review', 'code', 'explore', 'plan'] as const;
@@ -223,67 +227,6 @@ export const AUTO_ROUTE_DEFAULT_MIN_CONFIDENCE = 0.5;
 /** Where the tier question is asked when `[auto_route]` names no `base_url`. */
 export const DEFAULT_DECISION_BASE_URL = 'https://api.typesafe.ai';
 
-/**
- * The canonical form of a base URL: the URL href of a string that carries no
- * authority-confusion shape. Probed 2026-10-15 with
- * `https://openrouter.ai\@evil.example/api/v1`: Node's `URL` gives host
- * `openrouter.ai`, while httpx (the client LiteLLM sends with, sonata's own
- * venv, 0.28.1) and urllib give `evil.example`. So the refused shapes are the
- * ones where parsers can disagree about where the authority ends: a backslash,
- * `@` (userinfo), a `%` in the authority, a query, a fragment, whitespace or a
- * control character inside the URL. Everything else is accepted and normalised
- * by `URL`: an uppercase scheme, a punycode or IDN host, an underscore host
- * (docker-compose names such as `ollama_server`), a default port, and whitespace
- * around the whole string. Probe, same venv: httpx's `raw_host` (the bytes
- * sent) equals Node's href for `http://ollama_server:11434/v1` and for
- * `https://bücher.example/v1`, which both become `xn--bcher-kva.example`.
- * Only the href is stored, so every consumer sends what was checked.
- */
-
-/**
- * The canonical form of a configured base URL: the `URL` href of a URL that
- * carries no authority-confusion shape (see above). Throws, naming `where`,
- * for anything refused.
- */
-export function canonicalBaseUrl(raw: unknown, where: string): string {
-  const fail = (why: string): never => {
-    throw new Error(
-      `sonata.toml: ${where} must be an absolute http(s) URL — ${why} — got ${JSON.stringify(String(raw))}. ` +
-      'Write a plain URL: a scheme, a host, an optional port, and a path.',
-    );
-  };
-  if (typeof raw !== 'string') return fail('it is not a string');
-  const text = (raw as string).trim();
-  if (text === '') return fail('it is empty');
-  if (/[\\@]/.test(text)) fail('a backslash or @ is not allowed');
-  if (/[\x00-\x20\x7f]/.test(text)) fail('no whitespace or control character is allowed inside the URL');
-  if (text.includes('?') || text.includes('#')) fail('a query string or fragment is not allowed');
-  const scheme = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.exec(text);
-  if (scheme === null) return fail('it needs a scheme, http:// or https://');
-  const authority = text.slice(scheme[0].length).split('/')[0] ?? '';
-  if (authority.includes('%')) fail('a percent-encoded character is not allowed in the host');
-  let url: URL;
-  try {
-    url = new URL(text);
-  } catch {
-    return fail('it does not parse as a URL');
-  }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') fail('the scheme must be http or https');
-  if (url.username !== '' || url.password !== '') fail('userinfo is not allowed');
-  // A bare origin gets a trailing slash from `URL`, which the stored form does
-  // not carry (sonata appends its own path to the base).
-  return url.pathname === '/' ? url.href.slice(0, -1) : url.href;
-}
-
-/** `canonicalBaseUrl` for a URL typed at run time: undefined when it is not a plain URL. */
-export function canonicalBaseUrlOrUndefined(raw: unknown): string | undefined {
-  try {
-    return canonicalBaseUrl(raw, 'base_url');
-  } catch {
-    return undefined;
-  }
-}
-
 /** The decision model OpenRouter is asked for when nothing better is selected. */
 export const OPENROUTER_DEFAULT_DECISION_MODEL = '~typesafe/jev-latest';
 
@@ -487,30 +430,6 @@ function parsePricingProvider(name: string, raw: unknown): string[] | undefined 
   // as unpriced — the same silent failure the blank check above refuses,
   // arriving by a route the blank check cannot see.
   return pricingProvider.map((provider) => provider.trim());
-}
-
-/**
- * Names a gateway may not take. `seeded` is the trust file's marker; the
- * Object.prototype properties (`constructor`, `__proto__`, `toString`, ...) read
- * inherited values from any plain map keyed by name.
- */
-const RESERVED_GATEWAY_NAMES = new Set(['seeded']);
-
-/**
- * Refuses a `[native.gateways]` name that cannot be a gateway: an empty name,
- * one with a control character, an Object.prototype property, or the reserved
- * `seeded`. Any other name is accepted, spaces and dots included: the lookups
- * that key by name are own-property reads over null-prototype or hasOwn checks,
- * so no name reaches an inherited value, and the environment variable a name
- * maps to is a plain one (`envVarForGateway`).
- */
-export function assertGatewayName(name: string): void {
-  if (name === '' || /[\x00-\x1f\x7f]/.test(name) || name in Object.prototype || RESERVED_GATEWAY_NAMES.has(name)) {
-    throw new Error(
-      `sonata.toml: native gateway name ${JSON.stringify(name)} is not allowed — a name must not be empty or contain ` +
-      'a control character, and "constructor", "__proto__", "seeded" and the other JavaScript object property names are reserved.',
-    );
-  }
 }
 
 export function parseConfig(text: string): SonataConfig {

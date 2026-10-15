@@ -1,4 +1,6 @@
 import { byokCandidateKey } from '../native/models.js';
+import { checkBaseUrl } from '../native/base-url.js';
+import { gatewayNameProblem } from '../native/gateway-name.js';
 import { splitCandidate } from '../effort.js';
 import { reconcileTierList } from '../init/helpers.js';
 import { TIER_NAMES, isOauthGatewayAuth, type CredentialSource, type NativeGatewayAuth } from '../config.js';
@@ -837,23 +839,21 @@ export function alreadyImportedKeys(providerKeys: readonly string[], importable:
 export function validateCustomProviderName(name: string, existingNames: readonly string[]): string | undefined {
   const trimmed = name.trim();
   if (trimmed === '') return 'A name is required.';
+  // The name is a gateway name: the parser refuses the same names, so the wizard does too.
+  const refused = gatewayNameProblem(trimmed);
+  if (refused !== undefined) return `${refused[0]?.toUpperCase() ?? ''}${refused.slice(1)} — pick a different name.`;
   if (existingNames.some((existing) => existing.toLowerCase() === trimmed.toLowerCase())) {
     return `"${trimmed}" is already a provider — pick a different name.`;
   }
   return undefined;
 }
 
+/**
+ * The wizard's URL check is the config parser's (`checkBaseUrl`): a URL the
+ * parser would refuse is refused here, with the same reason.
+ */
 export function validateProviderUrl(url: string): string | undefined {
-  const trimmed = url.trim();
-  if (trimmed === '') return 'A base URL is required.';
-  let parsed: URL;
-  try {
-    parsed = new URL(trimmed);
-  } catch {
-    return 'Enter a full URL, including https://.';
-  }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    return 'The URL must start with http:// or https://.';
-  }
-  return undefined;
+  if (url.trim() === '') return 'A base URL is required.';
+  const check = checkBaseUrl(url);
+  return 'href' in check ? undefined : `This URL is refused: ${check.problem}.`;
 }
