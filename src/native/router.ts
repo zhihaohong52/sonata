@@ -1024,6 +1024,14 @@ export const TEXT_TOOL_CALL_COOLDOWN_MS = 30 * 60_000;
  */
 const textToolCallStrikes = new Map<string, number[]>();
 
+/**
+ * Cools `cool` until `until`, never shortening a cooldown already longer: a
+ * concurrent request's 60 s failure must not cut a 30-minute one short.
+ */
+function coolUntil(cool: string, until: number): void {
+  cooldowns.set(cool, Math.max(cooldowns.get(cool) ?? 0, until));
+}
+
 /** The escalated cooldowns, for `/__sonata_health` to name. Keyed like `cooldowns`. */
 const textToolCallCooldowns = new Map<string, { tenant: string; model: string; until: number; strikes: number }>();
 
@@ -1034,6 +1042,10 @@ const textToolCallCooldowns = new Map<string, { tenant: string; model: string; u
  */
 function strikeTextToolCall(tenant: RouterTenant, model: string, cool: string, at: number): number {
   const recent = (textToolCallStrikes.get(cool) ?? []).filter((t) => at - t < TEXT_TOOL_CALL_STRIKE_WINDOW_MS);
+  // Concurrent requests on one candidate fail together, before the first
+  // strike's cooldown could keep the second away: one failure, not two.
+  const last = recent.at(-1);
+  if (last !== undefined && at - last < TIER_COOLDOWN_MS) return TIER_COOLDOWN_MS;
   recent.push(at);
   textToolCallStrikes.set(cool, recent);
   if (recent.length < TEXT_TOOL_CALL_STRIKES) return TIER_COOLDOWN_MS;
@@ -2762,7 +2774,7 @@ async function routeTierCandidates(
       const cooling = !('replaced' in response && response.replaced === true) &&
         deps.gatewayUnavailable?.(tenant, route.native!.gateway) === undefined;
       if (cooling) {
-        cooldowns.set(cool, now() + TIER_COOLDOWN_MS);
+        coolUntil(cool, now() + TIER_COOLDOWN_MS);
         if (gateway !== undefined) providerCooldowns.set(providerCooldownKey(tenant, gateway), now() + TIER_COOLDOWN_MS);
       }
       skippedDropped.push(loginRefusedMessage(deps, tenant, route.native!.gateway));
@@ -2810,7 +2822,7 @@ async function routeTierCandidates(
     if (response.status >= 400 && !TERMINAL_STATUSES.has(response.status)) {
       await drainBody(response.body, deps);
       attempts.push({ key: route.key, status: response.status });
-      cooldowns.set(cool, now() + TIER_COOLDOWN_MS);
+      coolUntil(cool, now() + TIER_COOLDOWN_MS);
       // An account-level refusal is about the gateway, not this model, so it
       // cools the gateway too and every sibling on it is skipped rather than
       // asked the same question again. The candidate is cooled as well: it
@@ -2859,7 +2871,7 @@ async function routeTierCandidates(
         : undefined;
       if (modelUnservable !== undefined) {
         attempts.push({ key: route.key, status: response.status });
-        cooldowns.set(cool, now() + TIER_COOLDOWN_MS);
+        coolUntil(cool, now() + TIER_COOLDOWN_MS);
         if (conversation !== undefined) stickyDemote(conversation, route.key);
         deps.log?.(`router: ${route.key} refused (400 "${modelUnservable}"), cooling it and trying next`);
         // A refusal every candidate gives may be the request's own fault (a
@@ -2870,7 +2882,7 @@ async function routeTierCandidates(
       }
       if (unservable !== undefined) {
         attempts.push({ key: route.key, status: response.status });
-        cooldowns.set(cool, now() + TIER_COOLDOWN_MS);
+        coolUntil(cool, now() + TIER_COOLDOWN_MS);
         const refusingGateway = gatewayOf(route);
         if (refusingGateway !== undefined) {
           providerCooldowns.set(providerCooldownKey(tenant, refusingGateway), now() + TIER_COOLDOWN_MS);
@@ -2902,7 +2914,7 @@ async function routeTierCandidates(
         if (seen >= TIER_CAPABILITY_400_THRESHOLD) {
           capability400Counts.delete(counterKey);
           attempts.push({ key: route.key, status: response.status });
-          cooldowns.set(cool, now() + TIER_COOLDOWN_MS);
+          coolUntil(cool, now() + TIER_COOLDOWN_MS);
           deps.log?.(
             `router: ${route.key} cannot serve this request shape ` +
             `(${seen}× 400 "${fingerprint}"), cooling down and trying next`,
@@ -2977,7 +2989,7 @@ async function routeTierCandidates(
       const recovered = await recoverTextToolCalls(response, req, deps, textToolCalls, (n) => {
         const at = now();
         const coolMs = strikeTextToolCall(tenant, route.key, cool, at);
-        cooldowns.set(cool, at + coolMs);
+        coolUntil(cool, at + coolMs);
         deps.log?.(
           `router: ${alias} ${variant} wrote ${n} tool call(s) as text that could not be recovered; ` +
           (coolMs > TIER_COOLDOWN_MS

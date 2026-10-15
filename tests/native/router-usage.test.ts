@@ -806,6 +806,50 @@ describe('router — text-form tool calls', () => {
     expect(await ask()).toEqual(['default/flash', 'default/pro']);
   });
 
+  it('counts concurrent unrecoverable calls from one candidate as one strike', async () => {
+    clearCooldowns();
+    const clock = 1_000_000;
+    const rows: LedgerRow[] = [];
+    const { seen, d } = twoCandidates(rows, (key) => sse(stream(key === 'flash' ? UNPARSED : 'from pro')), { now: () => clock });
+    await Promise.all([1, 2].map(async () => drain((await routeRequest(withTools('sonata-code-simple'), d)).body)));
+    expect(seen.filter((m) => m === 'default/flash')).toHaveLength(2);
+    expect(activeTextToolCallCooldowns(clock)).toEqual([]);
+  });
+
+  it('never lets a short cooldown cut a long one short', async () => {
+    clearCooldowns();
+    let clock = 1_000_000;
+    let phase = 1;
+    let flashCalls = 0;
+    const rows: LedgerRow[] = [];
+    const { seen, d } = twoCandidates(rows, (key) => {
+      if (key === 'pro') return sse(stream('from pro'));
+      flashCalls += 1;
+      if (phase === 1 || flashCalls % 2 === 0) return sse(stream(UNPARSED));
+      // In phase 2 the other concurrent request fails late, after the strike escalated.
+      return new Response(new ReadableStream<Uint8Array>({
+        async start(controller) { await new Promise((r) => setTimeout(r, 50)); controller.close(); },
+      }), { status: 503 });
+    }, { now: () => clock });
+    await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
+    clock += TIER_COOLDOWN_MS + 1;
+    phase = 2;
+    flashCalls = 0;
+    const fiveHundred = d.fetch;
+    // The 503 must arrive after the escalation: delay its whole response.
+    d.fetch = (async (url: string, init: { body: string }) => {
+      const res = await (fiveHundred as unknown as (u: string, i: { body: string }) => Promise<Response>)(url, init);
+      if (res.status === 503) await new Promise((r) => setTimeout(r, 50));
+      return res;
+    }) as unknown as typeof fetch;
+    await Promise.all([1, 2].map(async () => drain((await routeRequest(withTools('sonata-code-simple'), d)).body)));
+    expect(activeTextToolCallCooldowns(clock).map((c) => c.model)).toEqual(['flash']);
+    clock += TIER_COOLDOWN_MS + 1;
+    seen.length = 0;
+    await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
+    expect(seen).toEqual(['default/pro']);
+  });
+
   it('resets the run of unrecoverable calls once the model serves a turn', async () => {
     clearCooldowns();
     let clock = 1_000_000;
