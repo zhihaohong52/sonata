@@ -87,7 +87,10 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 - **`sonata auth login` leftover backups are swept.** A login that crashed while
   swapping in its new credential left the previous one beside it; a later
   successful login now removes such a backup once it is ten minutes old, so a
-  login in progress keeps its rollback copy.
+  login in progress keeps its rollback copy. The swap is brief: for the moment
+  between the two renames the previous credential sits in a `.login-*-old`
+  backup beside the live one, and a crash in that window leaves it there until
+  the next successful login.
 
 ### Fixed
 
