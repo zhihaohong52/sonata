@@ -8,6 +8,7 @@ import { installLoopSkill, loopSkillFiles, loopSkillSource, pluginPanel } from '
 import { cmdSync } from '../commands/sync.js';
 import { cmdRoute } from '../commands/route.js';
 import { writeSonataKey } from '../native/credentials.js';
+import { assertPlannedConfigParses } from './plan.js';
 import { addTrustBinding } from '../native/host-bindings.js';
 import { seedTrustBeforeKeyWrite } from '../native/trust-seed.js';
 import { litellmStatus } from '../native/litellm-venv.js';
@@ -55,6 +56,10 @@ export async function apply(
   hookChanged: boolean;
 }> {
   const { cwd, home, packageRoot } = opts;
+
+  // The planned config must load before anything is stored: a key or a trust
+  // binding written for a config that is then refused would be left behind.
+  assertPlannedConfigParses(plan.configToml);
 
   // ---- credentials (first, so a partially-failed run still leaves keys behind) ----
   // Keys typed in the wizard are stored here and nowhere earlier: a cancelled

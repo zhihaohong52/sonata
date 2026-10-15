@@ -86,6 +86,20 @@ export interface InitPlan {
  * so a flag honoured by only one of them would make them write different
  * configs from one command.
  */
+/**
+ * Throws, naming the cause, when a planned sonata.toml would not load. Called by
+ * `plan` before it returns and by `apply` before its first write, so a refused
+ * config leaves no key and no trust binding behind.
+ */
+export function assertPlannedConfigParses(configToml: string): void {
+  try {
+    parseConfig(configToml);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`sonata init: the sonata.toml it would write does not load — ${reason}. Nothing was written; fix the value named above and run init again.`);
+  }
+}
+
 export function plan(
   env: InitEnvironment,
   state: InitState,
@@ -438,6 +452,9 @@ export function plan(
 
   // ---- routing ----
   const routing = state.routing ?? 'project';
+  // Refused here, before anything is stored: a planned config the parser would
+  // refuse must not be written, and no key or trust binding goes with it.
+  assertPlannedConfigParses(configToml);
 
   return {
     configScope,
