@@ -598,6 +598,21 @@ describe('plan — [auto_route] from the Setup step', () => {
     ]);
   });
 
+  it('binds stored keys to the hosts init writes', () => {
+    // `acme`'s candidate URL is https://acme.example/v1 (see `candidate`
+    // above); the trust entry is exactly that host, not the gateway name.
+    const p = plan(withSaved(), {
+      ...state,
+      byokKeys: { acme: 'sk-provider' },
+    }, noCredentials, opts);
+    expect(p.hostsToTrust).toEqual([{ gateway: 'acme', host: 'acme.example' }]);
+  });
+
+  it('binds nothing when no keys are stored', () => {
+    const p = plan(withSaved(), state, noCredentials, opts);
+    expect(p.hostsToTrust).toEqual([]);
+  });
+
   it('stores nothing for a decision key there is none of', () => {
     const p = plan(withSaved(), { ...state, autoRoute: { baseUrl: 'https://api.typesafe.ai' } }, noCredentials, opts);
     expect(p.keysToStore).toEqual([]);
