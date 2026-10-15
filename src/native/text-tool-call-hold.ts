@@ -128,8 +128,8 @@ export type HoldOutcome =
   | { kind: 'serve'; body: AsyncIterable<Uint8Array> & { cancel(): void } }
   /** The whole turn was held and held an unrecoverable call; `held` is it, rewritten, never sent. */
   | { kind: 'unrecoverable'; held: Buffer }
-  /** The client left while the turn was held. */
-  | { kind: 'client-gone' };
+  /** The client left while the turn was held; `held` is what had been held, for its ledger row. */
+  | { kind: 'client-gone'; held: Buffer };
 
 /**
  * Drives `rewrite` over `upstream` while holding its output, as described
@@ -207,7 +207,7 @@ export async function holdForTextToolCalls(
     if (next === 'aborted') {
       pending.catch(() => { /* the client is gone; nothing to report to */ });
       rewritten.cancel();
-      return { kind: 'client-gone' };
+      return { kind: 'client-gone', held: Buffer.concat(held) };
     }
     if (next === 'limit') {
       // The read in flight is the released body's first result, not a fresh one.

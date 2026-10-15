@@ -478,6 +478,8 @@ interface RecordContext {
   textToolCalls?: TextToolCallCounts;
   /** The turn was withdrawn, never served: a row for its spend alone. */
   withdrawn?: true;
+  /** The row is incomplete whatever its body shows: the client left while it was held. */
+  incomplete?: true;
 }
 
 function headerNumber(headers: Record<string, string>, name: string): number | undefined {
@@ -523,7 +525,7 @@ function withUsageRecording(response: RouterResponse, ctx: RecordContext, deps: 
           litellmModel: response.headers['x-litellm-model-name'],
           callId: response.headers['x-litellm-call-id'],
           status: response.status,
-          complete,
+          complete: ctx.incomplete === true ? false : complete,
           tokens,
           // The router knows observations, while serve owns pricing config.
           price: { source: 'none' },
@@ -1526,7 +1528,8 @@ async function recoverTextToolCalls(
       deps.textToolCallHoldLimits ?? TEXT_TOOL_CALL_HOLD_LIMITS,
       req.signal,
     );
-    if (outcome.kind === 'client-gone') return clientGone();
+    // Answered upstream and so billed: what was held goes back for its row.
+    if (outcome.kind === 'client-gone') return Object.assign(clientGone(), { held: { status: response.status, headers: response.headers, body: outcome.held } });
     if (outcome.kind === 'unrecoverable') return { ...response, body: outcome.held, unrecoverable: true };
     return { ...response, body: outcome.body };
   }
@@ -2510,19 +2513,27 @@ interface WithdrawnTurn {
 /**
  * Writes a withdrawn turn's ledger row, its usage read from the held body by
  * the same collector a served row uses. A stream that never reported usage
- * yields an incomplete row with zero tokens, which pricing leaves unpriced.
+ * yields an incomplete row with zero tokens.
  */
 async function recordWithdrawnTurn(turn: WithdrawnTurn, deps: RouterDeps): Promise<void> {
+  // The auto-route decision rides on the served row only, or it is counted twice.
+  await recordHeld(turn.response, { ...turn.ctx, autoRoute: undefined, withdrawn: true }, deps);
+}
+
+/** Writes the ledger row for a held body that no client will read through `withUsageRecording`. */
+async function recordHeld(response: HeldBody, ctx: RecordContext, deps: RouterDeps): Promise<void> {
   if (deps.recordUsage === undefined) return;
   try {
-    // The auto-route decision rides on the served row only, or it is counted twice.
-    const recorded = withUsageRecording(replayHeld(turn.response), { ...turn.ctx, autoRoute: undefined, withdrawn: true }, deps);
+    const recorded = withUsageRecording(replayHeld(response), ctx, deps);
     if (!Buffer.isBuffer(recorded.body)) for await (const _ of recorded.body) { /* emits the row at its end */ }
   } catch { /* accounting is strictly best-effort */ }
 }
 
+/** What a hold kept back: the response's status and headers, and the bytes held. */
+interface HeldBody { status: number; headers: Record<string, string>; body: Buffer }
+
 /** A held turn as the body a client would have read: a stream for SSE, the buffer otherwise. */
-function replayHeld(response: UnrecoverableResponse): RouterResponse {
+function replayHeld(response: HeldBody): RouterResponse {
   const held = response.body;
   const body = (response.headers['content-type'] ?? '').includes('text/event-stream')
     ? (async function* () { yield new Uint8Array(held); })()
@@ -2567,6 +2578,23 @@ async function routeTierCandidates(
   const now = deps.now ?? Date.now;
   const flattened = litellmBody(req.body);
   const ranked = resolved.routes.filter((route) => route.native !== undefined);
+  /** The ledger context a LiteLLM-path row for `route` shares with every other. */
+  const candidateCtx = (route: TierRoute): Omit<RecordContext, 'attempts'> => ({
+    startedAt,
+    session,
+    project: tenant.project,
+    tenant: tenant.id,
+    tenantConfig: tenant.config,
+    alias,
+    role: resolved.role,
+    tier: resolved.tier,
+    ...routeFields,
+    key: route.key,
+    effort: route.effort,
+    gateway: route.native!.gateway,
+    ...(route.native!.auth === 'session' ? sessionCredentialField(req.headers) : {}),
+    upstream: 'litellm',
+  });
   const attempts: LedgerAttempt[] = [];
   let skippedUnavailableLitellm = false;
   // Why LiteLLM-routed candidates are being skipped: serve's own mark at the
@@ -2955,7 +2983,21 @@ async function routeTierCandidates(
             : 'cooling it'),
         );
       }, { alias, candidate: variant, outbound: body }, true);
-      if (isClientGone(recovered)) return recovered;
+      if (isClientGone(recovered)) {
+        // The client left while the turn was held. The upstream answered and
+        // billed it, so it gets the row a disconnect mid-stream gets: served,
+        // and incomplete, with whatever usage the held bytes carry.
+        const held = (recovered as { held?: HeldBody }).held;
+        if (held !== undefined) {
+          await recordHeld(held, {
+            ...candidateCtx(route),
+            attempts,
+            ...(textToolCalls.recovered > 0 || textToolCalls.unparsed > 0 ? { textToolCalls: { ...textToolCalls } } : {}),
+            incomplete: true,
+          }, deps);
+        }
+        return recovered;
+      }
       if (isUnrecoverable(recovered)) {
         attempts.push({ key: route.key, status: recovered.status });
         if (conversation !== undefined) stickyDemote(conversation, route.key);
@@ -2963,20 +3005,7 @@ async function routeTierCandidates(
           response: recovered,
           served: false,
           ctx: {
-            startedAt,
-            session,
-            project: tenant.project,
-            tenant: tenant.id,
-            tenantConfig: tenant.config,
-            alias,
-            role: resolved.role,
-            tier: resolved.tier,
-            ...routeFields,
-            key: route.key,
-            effort: route.effort,
-            gateway: route.native!.gateway,
-            ...(route.native!.auth === 'session' ? sessionCredentialField(req.headers) : {}),
-            upstream: 'litellm',
+            ...candidateCtx(route),
             // Its fall-through is on the served row's attempts; repeating it here would count it twice.
             attempts: [],
             textToolCalls: { ...textToolCalls },

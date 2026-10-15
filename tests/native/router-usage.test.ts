@@ -644,12 +644,12 @@ describe('router — text-form tool calls', () => {
     expect(cancelled).toBe(true);
   });
 
-  it('gives up a held turn the moment the client leaves', async () => {
+  it('gives up a held turn the moment the client leaves, recording it as served and incomplete', async () => {
     clearCooldowns();
     const rows: LedgerRow[] = [];
     let cancelled = false;
     const open = [
-      ev('message_start', { message: { id: 'm', role: 'assistant', content: [] } }),
+      ev('message_start', { message: { id: 'm', role: 'assistant', content: [], usage: { input_tokens: 42, output_tokens: 1 } } }),
       ev('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }),
       ev('content_block_delta', { index: 0, delta: { type: 'text_delta', text: 'hi' } }),
     ];
@@ -661,7 +661,12 @@ describe('router — text-form tool calls', () => {
     expect(Date.now() - started).toBeLessThan(2_000);
     expect(res.status).toBe(499);
     expect(cancelled).toBe(true);
-    expect(rows).toHaveLength(0);
+    // The upstream answered and billed it: the row a disconnect mid-stream
+    // gets, with the usage the held bytes carried.
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ key: 'flash', status: 200, complete: false, attempts: [] });
+    expect(rows[0].withdrawn).toBeUndefined();
+    expect(rows[0].tokens.input).toBe(42);
   });
 
   it('stops holding past the byte limit and streams as before', async () => {
