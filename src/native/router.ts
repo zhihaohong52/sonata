@@ -226,12 +226,24 @@ export const ERROR_BODY_LIMITS = { maxBytes: 1024 * 1024, timeoutMs: 10_000 };
 export const TEXT_TOOL_CALL_READ_LIMITS = { maxBytes: 64 * 1024 * 1024, idleMs: 10_000 };
 
 /**
- * Bounds on holding a streamed turn back while deciding whether it carries an
- * unrecoverable text tool call (`holdForTextToolCalls`). Past any of them the
- * held bytes are released and the turn streams as it would have unheld — a
- * call found after that can no longer be withdrawn, only cooled.
+ * Bounds on holding a streamed tier turn back while deciding whether it
+ * carries an unrecoverable text tool call (`holdForTextToolCalls`). Past any
+ * of them the held bytes are released and the turn streams as it would have
+ * unheld — a call found after that can no longer be withdrawn, only cooled.
+ * Hitting one never fails the turn.
+ *
+ * The hold now spans a whole turn up to its first real `tool_use`, thinking
+ * included, so these are sized for the longest ordinary turn rather than a
+ * prefix:
+ *
+ * - `maxMs` 5 min: a 20–30k-token thinking or report turn at 50–100 tokens/s.
+ *   Kept well under the 10 min a client waits for response headers (Claude
+ *   Code's default `API_TIMEOUT_MS`), since nothing is sent while held.
+ * - `maxBytes` 32 MiB: SSE costs roughly 150 bytes a token, so ~200k tokens.
+ * - `idleMs` 10 s, counted from the first byte: upstreams send pings, so this
+ *   long without a byte is a stall, not a slow model.
  */
-export const TEXT_TOOL_CALL_HOLD_LIMITS: HoldLimits = { maxBytes: 8 * 1024 * 1024, idleMs: 10_000, maxMs: 120_000 };
+export const TEXT_TOOL_CALL_HOLD_LIMITS: HoldLimits = { maxBytes: 32 * 1024 * 1024, idleMs: 10_000, maxMs: 300_000 };
 
 export interface RouterRequest {
   method: string;
@@ -2988,7 +3000,9 @@ async function routeTierCandidates(
     // as text and ends the turn; Claude Code then ends the agent. Recover
     // what parses. A turn with a call that does not parse is withdrawn and the
     // next candidate asked, as for a 5xx — unless part of it had already
-    // streamed, when it reaches the client as text. Either way the candidate
+    // streamed (a real tool_use came first, a hold limit was hit, or a turn
+    // was already withdrawn in this request), when it reaches the client as
+    // text. Either way the candidate
     // cools, for much longer once it keeps doing it (`strikeTextToolCall`).
     // LiteLLM path only: Anthropic speaks tool_use itself.
     const textToolCalls: TextToolCallCounts = { recovered: 0, unparsed: 0 };

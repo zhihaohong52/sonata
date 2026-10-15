@@ -36,11 +36,14 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   Every other tool is sent unchanged. A model that still refuses a tool schema
   is skipped for the next candidate instead of ending the request.
 - **A tool call a model writes as text that cannot be recovered no longer
-  ends the agent.** The router holds the start of a tier response until its
-  first text rules a tool call in or out (thinking and real tool calls are not
-  held), so a turn carrying an unrecoverable call is withdrawn and the next
-  ranked model asked, as for a 5xx — once per request; later models stream as
-  before. Only a `<tool_call>` tag followed by a call body (`<function=…>` or
+  ends the agent.** On tier routes, which carry only subagent traffic, the
+  router holds a response until its first real tool call or its end, so a
+  turn carrying an unrecoverable call is withdrawn and the next ranked model
+  asked, as for a 5xx — once per request; later models stream as before. A
+  turn that calls tools properly streams from that call on; one that only
+  thinks and writes text reaches the client when it ends (at most 5 minutes
+  held, then it streams). A main session and bare `--model` requests are
+  never held. Only a `<tool_call>` tag followed by a call body (`<function=…>` or
   `{`) counts: the tag mentioned in prose or quoted in code is ordinary text.
   Text already sent before a call still reaches the client, as before; when
   no other model serves, the withdrawn turn is served after all. A withdrawn

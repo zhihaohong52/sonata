@@ -624,10 +624,10 @@ describe('router — text-form tool calls', () => {
     expect(rows[0].textToolCalls).toEqual({ recovered: 1, unparsed: 0 });
   });
 
-  it('serves and cools when prose had already streamed before the marker', async () => {
+  it('withdraws a call after a long preamble', async () => {
     clearCooldowns();
     const rows: LedgerRow[] = [];
-    const prose = 'I will now look around the whole repository to find where this behaviour lives. ';
+    const prose = 'I will now look around the whole repository to find where this behaviour lives, '.repeat(20);
     const proseThenCall = [
       ev('message_start', { message: { id: 'm', role: 'assistant', content: [] } }),
       ev('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }),
@@ -639,15 +639,30 @@ describe('router — text-form tool calls', () => {
     ];
     const { seen, d } = twoCandidates(rows, (key) => key === 'flash' ? chunked(proseThenCall) : sse(stream('from pro')));
     const out = await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
-    // Past the probe, the prose went out; the turn could not be withdrawn.
-    expect(out).toContain(prose);
-    expect(out).toContain('<tool_call>');
-    expect(rows[0].key).toBe('flash');
-    expect(rows[0].textToolCalls).toEqual({ recovered: 0, unparsed: 1 });
-    expect(seen).toEqual(['default/flash']);
-    seen.length = 0;
-    await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
-    expect(seen).toEqual(['default/pro']);
+    // The whole turn was held, so the preamble never reached the client either.
+    expect(out).toBe(stream('from pro'));
+    expect(seen).toEqual(['default/flash', 'default/pro']);
+    expect(rows.find((r) => r.withdrawn === true)).toMatchObject({ key: 'flash', textToolCalls: { recovered: 0, unparsed: 1 } });
+  });
+
+  it('withdraws a call that follows a thinking block', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const thinkingThenCall = [
+      ev('message_start', { message: { id: 'm', role: 'assistant', content: [] } }),
+      ev('content_block_start', { index: 0, content_block: { type: 'thinking', thinking: '' } }),
+      ev('content_block_delta', { index: 0, delta: { type: 'thinking_delta', thinking: 'I should list the files.' } }),
+      ev('content_block_stop', { index: 0 }),
+      ev('content_block_start', { index: 1, content_block: { type: 'text', text: '' } }),
+      ev('content_block_delta', { index: 1, delta: { type: 'text_delta', text: UNPARSED } }),
+      ev('content_block_stop', { index: 1 }),
+      ev('message_delta', { delta: { stop_reason: 'end_turn' }, usage: { input_tokens: 10, output_tokens: 5 } }),
+      ev('message_stop', {}),
+    ];
+    const { seen, d } = twoCandidates(rows, (key) => key === 'flash' ? chunked(thinkingThenCall) : sse(stream('from pro')));
+    const out = await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
+    expect(out).toBe(stream('from pro'));
+    expect(seen).toEqual(['default/flash', 'default/pro']);
   });
 
   it('finds a marker split across SSE chunks and deltas', async () => {
@@ -800,21 +815,47 @@ describe('router — text-form tool calls', () => {
     }
   });
 
-  it('streams a thinking block without holding, as before', async () => {
+  it('never holds a bare-key or Anthropic request, only tier routes', async () => {
+    const head = [
+      ev('message_start', { message: { id: 'm', role: 'assistant', content: [] } }),
+      ev('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }),
+      ev('content_block_delta', { index: 0, delta: { type: 'text_delta', text: 'hi' } }),
+    ];
+    for (const model of ['flash', 'claude-opus-4-1']) {
+      clearCooldowns();
+      let cancelled = false;
+      const d: RouterDeps = {
+        ...deps([], () => chunked(head, true, () => { cancelled = true; })),
+        resolveNative: (key) => key === 'flash' ? { gateway: 'acme', id: 'x', transport: 'litellm' as const } : undefined,
+      };
+      const started = Date.now();
+      const res = await routeRequest(withTools(model), d);
+      // Left open: a held stream would not return until a limit.
+      expect(Date.now() - started, model).toBeLessThan(1_000);
+      const iterator = (res.body as AsyncIterable<Uint8Array>)[Symbol.asyncIterator]();
+      expect(new TextDecoder().decode((await iterator.next()).value)).toContain('message_start');
+      (res.body as { cancel?: () => void }).cancel?.();
+      expect(cancelled, model).toBe(true);
+    }
+  });
+
+  it('streams a turn whose first block is a real tool_use without holding it', async () => {
     clearCooldowns();
     const rows: LedgerRow[] = [];
     const head = [
       ev('message_start', { message: { id: 'm', role: 'assistant', content: [] } }),
-      ev('content_block_start', { index: 0, content_block: { type: 'thinking', thinking: '' } }),
-      ev('content_block_delta', { index: 0, delta: { type: 'thinking_delta', thinking: 'hmm' } }),
+      ev('content_block_start', { index: 0, content_block: { type: 'tool_use', id: 'toolu_1', name: 'Bash', input: {} } }),
+      ev('content_block_delta', { index: 0, delta: { type: 'input_json_delta', partial_json: '{"command"' } }),
     ];
     let cancelled = false;
     // Left open: a held stream would never return.
     const { d } = twoCandidates(rows, () => chunked(head, true, () => { cancelled = true; }));
+    const started = Date.now();
     const res = await routeRequest(withTools('sonata-code-simple'), d);
+    expect(Date.now() - started).toBeLessThan(1_000);
     const iterator = (res.body as AsyncIterable<Uint8Array>)[Symbol.asyncIterator]();
     let out = '';
-    while (!out.includes('thinking_delta')) out += new TextDecoder().decode((await iterator.next()).value);
+    while (!out.includes('input_json_delta')) out += new TextDecoder().decode((await iterator.next()).value);
     expect(out).toBe(head.join(''));
     (res.body as { cancel?: () => void }).cancel?.();
     expect(cancelled).toBe(true);

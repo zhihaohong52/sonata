@@ -1,111 +1,47 @@
-import { classifyOpening, insideCode, TOOL_CALL_OPEN } from './text-tool-calls.js';
-
 /**
- * Holds the start of a streamed turn back from the client until it is clear
- * whether the model wrote a tool call as text — so that a call the router
- * cannot recover is a turn the client never saw, and the next ranked
- * candidate can be asked instead (spec
+ * Holds a streamed tier turn back from the client until it is clear whether
+ * the model wrote a tool call as text — so that a call the router cannot
+ * recover is a turn the client never saw, and the next ranked candidate can
+ * be asked instead (spec
  * docs/superpowers/specs/2026-10-02-text-tool-calls-design.md, "fall through").
  *
  * Only the decision is made here. Rewriting stays in
  * `rewriteTextToolCallStream`, whose output is what is held and replayed, so a
  * held turn reaches the client byte for byte as an unheld one would.
  *
- * What is held, and for how long:
+ * Used only on tier routes (`sonata-<role>-<tier>`, `-auto`), which carry
+ * subagent traffic nobody watches stream; a main session's own model and a
+ * bare `--model` request are never held. So the whole turn is held —
+ * thinking and text alike, since a text call can follow either — until:
  *
- * - Everything before the first content block (`message_start`, `ping`):
- *   withdrawing a turn is only possible while the client has received none
- *   of it.
- * - A first content block that is not text (thinking, a real `tool_use`)
- *   releases at once: those stream as they always have, and the turn can no
- *   longer be withdrawn.
- * - A text block is held until its first `PROBE_NON_WHITESPACE` non-whitespace
- *   characters are known, its end, or the marker. No marker in that prefix
- *   releases it; a marker holds the rest of the turn until it ends, when the
- *   rewriter's counts say whether the call was recovered.
- * - A whitespace-only text block keeps holding: the marker may be in the next.
- *
- * `limits` bound the whole hold: past `maxBytes` of held output, `idleMs`
- * without an upstream byte once the first has arrived, or `maxMs` in total
- * (time to first token included), what is held is released and
- * the rest streams as it would have unheld.
+ * - the first real `tool_use` block starts: a turn that calls tools properly
+ *   is released at once and streams on as it always has;
+ * - the turn ends, when the rewriter's counts decide (an unrecovered call
+ *   withdraws it, anything else is served);
+ * - or a limit is hit: past `maxBytes` of held output, `idleMs` without an
+ *   upstream byte once the first has arrived, or `maxMs` in total (time to
+ *   first token included), what is held is released and the rest streams as
+ *   it would have unheld. A limit only costs that turn its withdrawal.
  */
-
-/** Non-whitespace characters of a text block read before it is ruled marker-free. */
-export const PROBE_NON_WHITESPACE = 64;
 
 export interface HoldLimits { maxBytes: number; idleMs: number; maxMs: number }
 
-type ProbeState = 'pending' | 'released' | 'marker';
+type ProbeState = 'pending' | 'released';
 
-/** Reads raw upstream SSE bytes and decides whether the turn must be held. */
-export function createMarkerProbe() {
+/** Reads raw upstream SSE bytes and releases the hold at the first real `tool_use` block. */
+export function createToolUseProbe() {
   const decoder = new TextDecoder();
   let buffer = '';
   let carry = '';
   let state: ProbeState = 'pending';
-  let textIndex: number | undefined;
-  let text = '';
-
-  const nonWhitespace = (s: string): number => s.replace(/\s+/g, '').length;
-  /** Whether `s` ends with a proper prefix of the marker, which the next delta may complete. */
-  const endsInMarkerPrefix = (s: string): boolean => {
-    for (let n = Math.min(TOOL_CALL_OPEN.length - 1, s.length); n > 0; n--) {
-      if (TOOL_CALL_OPEN.startsWith(s.slice(-n))) return true;
-    }
-    return false;
-  };
 
   const event = (raw: string): void => {
     const payload = raw.split('\n').filter((line) => line.startsWith('data:'))
       .map((line) => line.slice(5).replace(/^ /, '')).join('\n');
     if (payload === '') return;
-    let data: Record<string, any>;
-    try { data = JSON.parse(payload) as Record<string, any>; } catch { return; }
-    switch (data.type) {
-      case 'content_block_start':
-        if (textIndex !== undefined) return;
-        if (data.content_block?.type === 'text') {
-          textIndex = data.index;
-          text = String(data.content_block.text ?? '');
-          check();
-        } else {
-          state = 'released';
-        }
-        return;
-      case 'content_block_delta':
-        if (data.index !== textIndex || data.delta?.type !== 'text_delta') return;
-        text += String(data.delta.text ?? '');
-        check();
-        return;
-      case 'content_block_stop':
-        if (data.index !== textIndex) return;
-        // A marker-free block with something in it is ordinary text; one of
-        // only whitespace leaves the question to the next block.
-        if (nonWhitespace(text) > 0) state = 'released';
-        textIndex = undefined;
-        text = '';
-        return;
-      case 'message_delta':
-      case 'message_stop':
-        // The turn is ending with no marker seen: nothing left to decide.
-        state = 'released';
-        return;
-      default:
-    }
-  };
-
-  const check = (): void => {
-    // A tag quoted in code, or mentioned in prose, is no call; one whose body
-    // has not arrived yet keeps the turn held.
-    let undecided = false;
-    for (let at = text.indexOf(TOOL_CALL_OPEN); at !== -1; at = text.indexOf(TOOL_CALL_OPEN, at + 1)) {
-      if (insideCode(text.slice(0, at))) continue;
-      const opening = classifyOpening(text.slice(at + TOOL_CALL_OPEN.length));
-      if (opening === 'call') { state = 'marker'; return; }
-      if (opening === 'undecided') undecided = true;
-    }
-    if (!undecided && nonWhitespace(text) >= PROBE_NON_WHITESPACE && !endsInMarkerPrefix(text)) state = 'released';
+    let data: { type?: unknown; content_block?: { type?: unknown } };
+    try { data = JSON.parse(payload) as typeof data; } catch { return; }
+    if (data.type === 'content_block_start' && data.content_block?.type === 'tool_use') state = 'released';
   };
 
   return {
@@ -120,6 +56,8 @@ export function createMarkerProbe() {
         event(buffer.slice(0, split));
         buffer = buffer.slice(split + 2);
       }
+      // A turn's text is held whole; only the scan for the next event is kept.
+      if (state !== 'pending') buffer = '';
     },
   };
 }
@@ -144,7 +82,7 @@ export async function holdForTextToolCalls(
   limits: HoldLimits,
   signal?: AbortSignal,
 ): Promise<HoldOutcome> {
-  const probe = createMarkerProbe();
+  const probe = createToolUseProbe();
   const started = Date.now();
   // Idle is measured from the first upstream byte: a model slow to its first
   // token has sent nothing to release yet. Before then only `maxMs` applies.
