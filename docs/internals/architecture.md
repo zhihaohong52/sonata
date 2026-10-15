@@ -72,8 +72,10 @@ Key design points:
   narrows the cap without saying so. `nativeTomlFor` takes the config being
   rewritten and preserves `pricing_provider`, gateway `[price]` and per-model
   `[price]`, windows in declaration order because the first match wins at read
-  time. Price rates are written only when present: `costOf` charges an absent
-  dimension at 0, so emitting a zero would turn "unknown" into "free". **Add a
+  time. Price rates are written only when present. `costOf` charges a cache
+  read or cache creation at the `input` rate when its own rate is absent —
+  deliberately, toward overcounting rather than undercounting — so emitting a
+  zero for any other absent dimension would turn "unknown" into "free". **Add a
   round-trip test through `parseConfig` for any new config key** — asserting on
   the emitted text cannot catch the sibling failure where the key is written
   but bound to the wrong table.

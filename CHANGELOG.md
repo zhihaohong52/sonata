@@ -29,6 +29,19 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   project config never blocks a global init and vice versa — names that
   file and the parse error, says to fix the file or move it aside to start
   over, and writes nothing.
+- **A price window no longer charges unset rates at $0 while it runs.** A
+  window setting only `input` used to replace the flat rates entirely, so
+  output and cache reads priced at nothing for the window's duration. Each
+  rate a window does not set now falls back to the flat rate.
+- **A hand-written `[price]` without `cached_input` no longer charges cache
+  reads at $0.** Cache reads fall back to the `input` rate, erring toward
+  overcounting rather than undercounting. Scraped models.dev tables still
+  decline a partial rate instead of filling the gap.
+- **Non-streamed (`stream: false`) 200s no longer record 0 tokens.** The
+  usage recorder parsed a streamed body only with the SSE collector, so a
+  JSON 200 escaped pricing and `[budget]`. It now accumulates an
+  `application/json` body, bounded like the other collectors, and reads
+  usage from the finished document with the existing JSON reader.
 
 - **Muse Spark 1.3 Contributor no longer refuses every Claude Code request.**
   Its server rejects a tool schema whose pattern uses the `\0` (NUL) escape,

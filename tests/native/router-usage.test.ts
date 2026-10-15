@@ -73,18 +73,21 @@ describe('router usage recording', () => {
     const session = { gateway: 'claude', id: 'claude-opus-4-1', transport: 'direct' as const, baseUrl: 'https://api.anthropic.com/v1', auth: 'session' as const };
     const rows: LedgerRow[] = [];
     const sessionDeps: RouterDeps = {
-      fetch: (async () => new Response(JSON.stringify({ usage: { input_tokens: 1, output_tokens: 1 } }), { status: 200 })) as typeof fetch,
+      fetch: (async () => new Response(JSON.stringify({ usage: { input_tokens: 1, output_tokens: 1 } }), { status: 200, headers: { 'content-type': 'application/json' } })) as typeof fetch,
       litellmBase: 'http://litellm.invalid', litellmKey: 'k', recordUsage: (row) => rows.push(row),
       resolveTier: () => ({ role: 'code', tier: 'simple', routes: [{ key: 'opus', native: session }] }),
     };
     await drain((await routeRequest({ ...req('sonata-code-simple'), headers: { authorization: 'Bearer sk-ant-oat01-SECRET' } }, sessionDeps)).body);
     expect(rows[0]).toMatchObject({ credential: 'subscription', gateway: 'claude', upstream: 'direct' });
     expect(JSON.stringify(rows[0])).not.toContain('SECRET');
+    // A non-streamed JSON 200 on a direct gateway records its usage, not 0 tokens.
+    expect(rows[0]).toMatchObject({ complete: true, tokens: { input: 1, output: 1 } });
 
     rows.length = 0;
     await drain((await routeRequest({ ...req('sonata-code-simple'), headers: { 'x-api-key': 'SECRET2' } }, sessionDeps)).body);
     expect(rows[0].credential).toBe('key');
     expect(JSON.stringify(rows[0])).not.toContain('SECRET2');
+    expect(rows[0]).toMatchObject({ complete: true, tokens: { input: 1, output: 1 } });
 
     rows.length = 0;
     await drain((await routeRequest(req('sonata-code-simple'), deps(rows, () => sse(DELTA)))).body);
@@ -197,6 +200,29 @@ describe('router usage recording', () => {
     expect(rows[0]).toMatchObject({ alias: 'flash', key: 'flash', gateway: 'acme', role: undefined, tier: undefined });
   });
 
+  it('records tokens from a non-streamed JSON 200 on a direct gateway', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const json = JSON.stringify({ usage: { input_tokens: 3, output_tokens: 4 } });
+    const d: RouterDeps = {
+      ...deps(rows, () => body200(json, 'application/json')),
+      resolveTier: () => ({
+        role: 'code', tier: 'simple',
+        routes: [{
+          key: 'direct-1',
+          native: { gateway: 'g', id: 'model-1', transport: 'direct' as const, baseUrl: 'https://gw.example/v1' },
+        }],
+      }),
+      gatewayKeys: () => ({ g: 'GATEWAY-KEY' }),
+    };
+    const res = await routeRequest(req('sonata-code-simple'), d);
+    expect(await drain(res.body)).toBe(json);
+    expect(rows).toHaveLength(1);
+    // The bug this pins: previously 0 tokens and complete: false, escaping
+    // pricing and [budget].
+    expect(rows[0]).toMatchObject({ upstream: 'direct', complete: true, tokens: { input: 3, output: 4 } });
+  });
+
   it('records the anthropic path too', async () => {
     clearCooldowns();
     const rows: LedgerRow[] = [];
@@ -204,6 +230,49 @@ describe('router usage recording', () => {
     const res = await routeRequest(req('claude-sonnet-5'), d);
     await drain(res.body);
     expect(rows[0]).toMatchObject({ upstream: 'anthropic', alias: 'claude-sonnet-5' });
+  });
+
+  it('records tokens from a non-streamed JSON 200 on the anthropic pass-through', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const json = JSON.stringify({ usage: { input_tokens: 5, output_tokens: 6 } });
+    const d = { ...deps(rows, () => body200(json, 'application/json')), anthropicBase: 'https://anthropic.invalid' };
+    const res = await routeRequest(req('claude-sonnet-5'), d);
+    expect(await drain(res.body)).toBe(json);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ upstream: 'anthropic', alias: 'claude-sonnet-5', complete: true, tokens: { input: 5, output: 6 } });
+  });
+
+  it('records tokens from a multi-chunk non-streamed JSON 200', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const json = JSON.stringify({ usage: { input_tokens: 7, output_tokens: 8 } });
+    const mid = Math.ceil(json.length / 2);
+    const res = await routeRequest(req('sonata-code-simple'), deps(rows, () => jsonChunks([json.slice(0, mid), json.slice(mid)])));
+    expect(await drain(res.body)).toBe(json);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ complete: true, tokens: { input: 7, output: 8 } });
+  });
+
+  it('records tokens when the JSON content-type carries a charset', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const json = JSON.stringify({ usage: { input_tokens: 9, output_tokens: 10 } });
+    const res = await routeRequest(req('sonata-code-simple'), deps(rows, () => body200(json, 'application/json; charset=utf-8')));
+    expect(await drain(res.body)).toBe(json);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ complete: true, tokens: { input: 9, output: 10 } });
+  });
+
+  it('records a JSON 200 with no usage key as incomplete with zero tokens', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const json = JSON.stringify({ id: 'm', type: 'message' });
+    const res = await routeRequest(req('sonata-code-simple'), deps(rows, () => body200(json, 'application/json')));
+    expect(await drain(res.body)).toBe(json);
+    expect(rows).toHaveLength(1);
+    // priceRow leaves this shape unpriced (source 'none'), never $0.
+    expect(rows[0]).toMatchObject({ complete: false, tokens: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 } });
   });
 
   it('records `ts` at request start, not at stream completion', async () => {
