@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { cmdAuthAdd, cmdAuthList, cmdAuthLogin, cmdAuthRemove, cmdAuthTrust, cmdAuthTrustList, cmdAuthUntrust } from '../../src/commands/auth.js';
+import { cmdAuthAdd, cmdAuthList, cmdAuthLogin, cmdAuthRemove, cmdAuthTrust, cmdAuthTrustList, cmdAuthUntrust, unboundConfigUrlNotice } from '../../src/commands/auth.js';
 import { readTrustBindings } from '../../src/native/host-bindings.js';
 
 let home: string;
@@ -65,14 +65,30 @@ describe('auth trust', () => {
     expect(() => cmdAuthUntrust({ home, gateway: 'acme', host: 'proxy.example' })).toThrow(/no trusted host/);
   });
 
-  it('auth add records the configured base_url host beside the key', () => {
-    cmdAuthAdd({ home, gateway: 'acme', key: 'k', baseUrl: 'https://proxy.example/v1' });
-    expect(readTrustBindings(home)).toEqual({ acme: ['proxy.example'] });
-  });
-
-  it('auth add with no configured URL records no binding', () => {
+  it('auth add binds nothing, even with a project config naming a host', () => {
+    // A cloned repo's config must never bind its host to the user's key.
+    const cwd = mkdtempSync(join(tmpdir(), 'auth-add-repo-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.acme]
+base_url = "https://proxy.example/v1"
+`);
     cmdAuthAdd({ home, gateway: 'acme', key: 'k' });
     expect(readTrustBindings(home)).toEqual({});
+    const notice = unboundConfigUrlNotice(home, cwd, 'acme');
+    expect(notice).toContain(join(cwd, 'sonata.toml'));
+    expect(notice).toContain('sonata auth trust acme proxy.example');
+    expect(notice).toContain('do not trust it');
+  });
+
+  it('says nothing when the gateway URL is bound, or no config names it', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'auth-add-bound-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.openrouter]
+base_url = "https://openrouter.ai/api/v1"
+`);
+    expect(unboundConfigUrlNotice(home, cwd, 'openrouter')).toBeUndefined();
+    expect(unboundConfigUrlNotice(home, cwd, 'absent')).toBeUndefined();
+    expect(unboundConfigUrlNotice(home, mkdtempSync(join(tmpdir(), 'auth-add-none-')), 'acme')).toBeUndefined();
   });
 });
 

@@ -450,29 +450,7 @@ export function plan(
     ],
     // Bind each stored key to the URL init is about to write for its gateway:
     // the user chose that URL in this run, on the screens that asked for it.
-    hostsToTrust: (() => {
-      const byok = new Set(Object.keys(state.byokKeys ?? {}));
-      if (state.decisionKey !== undefined) byok.add(state.decisionKey.gateway);
-      if (byok.size === 0) return [];
-      const urls = new Map<string, string>();
-      for (const candidate of nativeByKey.values()) {
-        if (byok.has(candidate.gateway) && candidate.auth === 'api-key' && !urls.has(candidate.gateway)) {
-          urls.set(candidate.gateway, candidate.baseUrl);
-        }
-      }
-      const out: Array<{ gateway: string; host: string }> = [];
-      for (const [gateway, url] of urls) {
-        try {
-          const parsed = new URL(url);
-          if (parsed.protocol === 'https:' && parsed.hostname !== '') {
-            out.push({ gateway, host: parsed.hostname.toLowerCase() });
-          }
-        } catch {
-          // Not a URL: binds nothing; doctor names it.
-        }
-      }
-      return out;
-    })(),
+    hostsToTrust: typedHostsToTrust(state, savedAutoRoute?.baseUrl),
     hook,
     skillPath,
     guidance,
@@ -509,4 +487,37 @@ export function fsCredentialProbe(home: string, copilotUsable: boolean): Credent
     },
     copilotUsable,
   };
+}
+/**
+ * The hosts this run's own typed URLs name, each bound to the gateway name its
+ * key is stored under. Only URLs typed in this wizard run count: a URL read
+ * from an existing config is never bound here, because a repo's own config is
+ * the case the trust rule exists for — doctor names those instead. A typed
+ * auto-route URL counts only when it differs from the one the config already
+ * held, since the wizard offers that one back as a default.
+ */
+function typedHostsToTrust(
+  state: InitState,
+  savedAutoRouteBaseUrl: string | undefined,
+): Array<{ gateway: string; host: string }> {
+  const hostOf = (url: string): string | undefined => {
+    try {
+      const parsed = new URL(url);
+      return parsed.protocol === 'https:' && parsed.hostname !== '' ? parsed.hostname.toLowerCase() : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const out = new Map<string, string>();
+  for (const gateway of Object.keys(state.byokKeys ?? {})) {
+    const typed = state.customProviders?.find((provider) => provider.name === gateway);
+    const host = typed === undefined ? undefined : hostOf(typed.url);
+    if (host !== undefined) out.set(gateway, host);
+  }
+  const autoRoute = state.autoRoute ?? undefined;
+  if (state.decisionKey !== undefined && autoRoute !== undefined && autoRoute.baseUrl !== savedAutoRouteBaseUrl) {
+    const host = hostOf(autoRoute.baseUrl);
+    if (host !== undefined) out.set(state.decisionKey.gateway, host);
+  }
+  return [...out].map(([gateway, host]) => ({ gateway, host }));
 }

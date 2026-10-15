@@ -25,7 +25,7 @@ import { homedir } from 'node:os';
 import { readBuildInfo, stampedVersion } from './build-info.js';
 import { fileURLToPath } from 'node:url';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
-import { cmdAuthAdd, cmdAuthList, cmdAuthLogin, cmdAuthRemove, cmdAuthTrust, cmdAuthTrustList, cmdAuthUntrust } from './commands/auth.js';
+import { cmdAuthAdd, cmdAuthList, cmdAuthLogin, cmdAuthRemove, cmdAuthTrust, cmdAuthTrustList, cmdAuthUntrust, unboundConfigUrlNotice } from './commands/auth.js';
 import { cmdServe, cmdRestart, startServeDaemon, isSonataRouter, sonataRouterReady, sonataRouterHasUi } from './commands/serve.js';
 import { routerPorts } from './commands/ports.js';
 import { cmdCode } from './commands/code.js';
@@ -850,7 +850,9 @@ export async function main(argv: string[]): Promise<number> {
       }
       const key = await readAuthKey();
       if (!key) throw new Error('sonata auth add requires a non-empty key');
-      cmdAuthAdd({ home: homedir(), gateway, key, baseUrl: configured[gateway]?.baseUrl });
+      cmdAuthAdd({ home: homedir(), gateway, key });
+      const notice = unboundConfigUrlNotice(homedir(), process.cwd(), gateway);
+      if (notice !== undefined) console.log(notice);
       // artificialanalysis is the one gateway sonata itself calls directly
       // (never through LiteLLM), so it is the one case a plain, uncached
       // request can confirm immediately — otherwise a bad key surfaces only

@@ -1,3 +1,6 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { keyReport, removeSonataKey, writeSonataKey } from '../native/credentials.js';
 import {
   addTrustBinding,
@@ -6,7 +9,7 @@ import {
   readTrustBindings,
   removeTrustBinding,
 } from '../native/host-bindings.js';
-import { loadConfig, isOauthGatewayAuth } from '../config.js';
+import { configPath, GLOBAL_CONFIG_RELATIVE, isOauthGatewayAuth, loadConfig, parseConfig } from '../config.js';
 import { credentialDir, loginGateway } from '../native/oauth-login.js';
 
 export function cmdAuthList(opts: { home: string; gateways: string[] }): { text: string } {
@@ -16,18 +19,48 @@ export function cmdAuthList(opts: { home: string; gateways: string[] }): { text:
   return { text };
 }
 
-export function cmdAuthAdd(opts: { home: string; gateway: string; key: string; baseUrl?: string }): void {
+/**
+ * Stores the key and binds nothing. The gateway's URL is read from a config,
+ * and a project config is one a cloned repo can carry: trusting it here would
+ * bind a repo's host to the user's key for good. A well-known host needs no
+ * binding, and any other is named by `unboundConfigUrlNotice`.
+ */
+export function cmdAuthAdd(opts: { home: string; gateway: string; key: string }): void {
   writeSonataKey(opts.home, opts.gateway, opts.key);
-  if (opts.baseUrl !== undefined) {
+}
+
+/**
+ * What `sonata auth add` says when the gateway's URL, as the config in effect
+ * names it, is on a host nobody bound: the config that set it, the command
+ * that would trust it, and the advice not to trust a URL the user did not set.
+ */
+export function unboundConfigUrlNotice(home: string, cwd: string, gateway: string): string | undefined {
+  const file = configPath(cwd, home);
+  if (file === null) return undefined;
+  let config: ReturnType<typeof loadConfig>;
+  try {
+    config = loadConfig(cwd, home);
+  } catch {
+    return undefined;
+  }
+  const baseUrl = config.native?.gateways[gateway]?.baseUrl;
+  if (baseUrl === undefined) return undefined;
+  let machineGateways: Record<string, { baseUrl: string }> = {};
+  const machineFile = join(home, GLOBAL_CONFIG_RELATIVE);
+  if (file === machineFile) {
+    machineGateways = config.native?.gateways ?? {};
+  } else if (existsSync(machineFile)) {
     try {
-      const parsed = new URL(opts.baseUrl);
-      if (parsed.protocol === 'https:' && parsed.hostname !== '') {
-        addTrustBinding(opts.home, opts.gateway, parsed.hostname.toLowerCase());
-      }
+      machineGateways = parseConfig(readFileSync(machineFile, 'utf8')).native?.gateways ?? {};
     } catch {
-      // A base_url that is not a URL binds nothing; doctor names it.
+      // An unreadable machine config binds nothing beyond the well-known hosts.
     }
   }
+  const binding = gatewayTrustFor(home, gateway, baseUrl, machineGateways);
+  if (binding === undefined || binding.bound) return undefined;
+  return `gateway "${gateway}": its URL is set in ${file}, and host "${binding.host}" is not bound to this gateway — ` +
+    `serve withholds the key until you run \`sonata auth trust ${gateway} ${binding.host}\`. ` +
+    'If you did not choose this URL, remove it from that file — do not trust it.';
 }
 
 export function cmdAuthRemove(opts: { home: string; gateway: string }): void {
