@@ -3,8 +3,9 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { aggregate, classifierCostNote, cmdUsage, parseDuration, parseUsageFlags, projectResolver, spentLabel, type UsageBucket } from '../../src/commands/usage.js';
+import { aggregate, classifierCostNote, cmdUsage, explicitTierNote, parseDuration, parseUsageFlags, projectResolver, spentLabel, type UsageBucket } from '../../src/commands/usage.js';
 import { appendRow, type LedgerRow } from '../../src/ledger.js';
+import { canonicalConfigPath, tenantId } from '../../src/native/tenants.js';
 
 function row(over: Partial<LedgerRow> = {}): LedgerRow {
   return {
@@ -509,5 +510,47 @@ describe('classifierCostNote', () => {
   });
   it('includes failed decisions that called the classifier', () => {
     expect(classifierCostNote(summary(0.00002, 2, 2, 0, 1))).toMatch(/2 of 3 decisions reported a cost/);
+  });
+});
+
+describe('cmdUsage — explicit tiers while auto-routing is on', () => {
+  const recent = () => new Date(Date.now() - 60_000).toISOString();
+  const setup = (autoRoute: boolean) => {
+    const home = mkdtempSync(join(tmpdir(), 'usage-auto-home-'));
+    const cwd = realpathSync(mkdtempSync(join(tmpdir(), 'usage-auto-cwd-')));
+    writeFileSync(join(cwd, 'sonata.toml'), `schema_version = 1\n${autoRoute ? '[auto_route]\nclassifier = "jev"\n' : ''}`);
+    return { home, cwd, tenant: tenantId(canonicalConfigPath(join(cwd, 'sonata.toml'))) };
+  };
+
+  it('counts this project\'s explicit-tier requests when [auto_route] is set', async () => {
+    const { home, cwd, tenant } = setup(true);
+    appendRow(home, row({ ts: recent(), tenant, alias: 'sonata-code-complex', route: 'manual' }));
+    appendRow(home, row({ ts: recent(), tenant, alias: 'sonata-review-simple', route: 'manual' }));
+    appendRow(home, row({ ts: recent(), tenant, alias: 'sonata-code-auto', route: 'auto' }));
+    appendRow(home, row({ ts: recent(), tenant, alias: 'claude-opus-4-1' }));
+    appendRow(home, row({ ts: recent(), tenant: 'another-project', alias: 'sonata-code-complex', route: 'manual' }));
+    const report = await cmdUsage({ home, since: '1d', by: 'model', cwd, json: true });
+    expect(report.explicitTierUnderAuto).toBe(2);
+  });
+
+  it('reports zero when every request was auto-routed', async () => {
+    const { home, cwd, tenant } = setup(true);
+    appendRow(home, row({ ts: recent(), tenant, alias: 'sonata-code-auto', route: 'auto' }));
+    const report = await cmdUsage({ home, since: '1d', by: 'model', cwd, json: true });
+    expect(report.explicitTierUnderAuto).toBe(0);
+  });
+
+  it('says nothing for a project without [auto_route]', async () => {
+    const { home, cwd, tenant } = setup(false);
+    appendRow(home, row({ ts: recent(), tenant, alias: 'sonata-code-complex', route: 'manual' }));
+    const report = await cmdUsage({ home, since: '1d', by: 'model', cwd, json: true });
+    expect(report.explicitTierUnderAuto).toBeUndefined();
+  });
+
+  it('prints one line, and only when there is something to count', () => {
+    expect(explicitTierNote({ explicitTierUnderAuto: 3 })).toBe('3 requests used an explicit tier while auto-routing is on');
+    expect(explicitTierNote({ explicitTierUnderAuto: 1 })).toBe('1 request used an explicit tier while auto-routing is on');
+    expect(explicitTierNote({ explicitTierUnderAuto: 0 })).toBeUndefined();
+    expect(explicitTierNote({})).toBeUndefined();
   });
 });

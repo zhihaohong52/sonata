@@ -10,11 +10,12 @@
  * usage could not be attributed, which `sonata runs` shows rather than this
  * report guessing at.
  */
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { dirname, join, resolve as resolve0, sep } from 'node:path';
 
-import { configPath, GLOBAL_CONFIG_RELATIVE } from '../config.js';
+import { configPath, GLOBAL_CONFIG_RELATIVE, KNOWN_ROLES, parseConfig, TIER_NAMES } from '../config.js';
+import { canonicalConfigPath, tenantId } from '../native/tenants.js';
 import { loadModelsDev } from '../modelsdev.js';
 import { readRows, type LedgerRow } from '../ledger.js';
 import { loadSessions, type SessionRecord } from '../sessions.js';
@@ -164,7 +165,44 @@ export interface UsageReport {
   };
   covered: { requests: number; totalUsd: number };
   failedAttempts: FailedAttempt[];
+  /**
+   * Requests the project sent to an explicit tier (`sonata-code-complex`)
+   * while its config has `[auto_route]` — present only when it does. Not a
+   * fault: an explicit tier is a legitimate manual override. Counted because
+   * an orchestrator that stopped trusting `-auto` after one bad turn pins
+   * explicit tiers for the rest of the session, and nothing else shows it.
+   */
+  explicitTierUnderAuto?: number;
   priceCacheAgeMs?: number;
+}
+
+const EXPLICIT_TIER = new RegExp(`^sonata-(${KNOWN_ROLES.join('|')})-(${TIER_NAMES.join('|')})$`);
+
+/** The `sonata usage` line for `explicitTierUnderAuto`, or undefined when there is nothing to say. */
+export function explicitTierNote(report: Pick<UsageReport, 'explicitTierUnderAuto'>): string | undefined {
+  const n = report.explicitTierUnderAuto ?? 0;
+  return n > 0 ? `${n} request${n === 1 ? '' : 's'} used an explicit tier while auto-routing is on` : undefined;
+}
+
+/** How many of `rows` belong to `tenant` and named an explicit tier rather than `sonata-<role>-auto`. */
+export function countExplicitTiers(rows: readonly LedgerRow[], tenant: string): number {
+  return rows.filter((row) => row.tenant === tenant && row.route !== 'auto' && EXPLICIT_TIER.test(row.alias)).length;
+}
+
+/**
+ * The tenant id of the config `dir` resolves to, when that config has
+ * `[auto_route]`; otherwise undefined. A config that does not parse is
+ * answered undefined too: this only adds a line to a report.
+ */
+function autoRoutedTenant(dir: string, home: string): string | undefined {
+  try {
+    const path = configPath(dir, home);
+    if (path === null) return undefined;
+    if (parseConfig(readFileSync(path, 'utf8')).autoRoute === undefined) return undefined;
+    return tenantId(canonicalConfigPath(path));
+  } catch {
+    return undefined;
+  }
 }
 
 const UNITS: Record<string, number> = { m: 60_000, h: 3_600_000, d: 86_400_000 };
@@ -434,6 +472,8 @@ export async function cmdUsage(opts: {
   session?: string;
   /** Restrict to one project, named by any directory inside it. */
   project?: string;
+  /** Where the command runs: whose `[auto_route]` the explicit-tier count is about, absent `project`. */
+  cwd?: string;
   json: boolean;
 }): Promise<UsageReport> {
   const now = Date.now();
@@ -479,6 +519,9 @@ export async function cmdUsage(opts: {
   }
 
   const report = aggregate(rows, opts.by, sessions, resolve);
+  const configDir = opts.project !== undefined ? resolve0(opts.project) : opts.cwd;
+  const autoTenant = configDir === undefined ? undefined : autoRoutedTenant(configDir, opts.home);
+  if (autoTenant !== undefined) report.explicitTierUnderAuto = countExplicitTiers(rows, autoTenant);
   const cache = loadModelsDev(opts.home);
   if (cache !== undefined) {
     const fetched = Date.parse(cache.fetchedAt);
