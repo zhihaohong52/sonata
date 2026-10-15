@@ -761,6 +761,8 @@ interface ChildEnvResolution {
    * login has ended, by the login and not by the gateway's name.
    */
   chatgptGone: string[];
+  /** The gateway names this build resolved a stored key for: what `unboundKeyHosts` checks. */
+  keyed: ReadonlySet<string>;
 }
 
 /**
@@ -1285,7 +1287,7 @@ function resolveChildEnvFromSnapshot(
   for (const lineage of [...memory.seeds.keys()]) {
     if (!live.has(lineage)) memory.seeds.delete(lineage);
   }
-  return { env: childEnv, failures, transient, seeds, chatgptGone, unboundByTenant };
+  return { env: childEnv, failures, transient, seeds, chatgptGone, unboundByTenant, keyed };
 }
 
 /** Default bound on how long a model-registry restart waits for the old litellm child to exit (see `litellmExitTimeoutMs`). */
@@ -1840,11 +1842,12 @@ export async function cmdServe(
    */
   let litellmCredentialFailures = new Set<string>();
   /**
-   * Per tenant id, the gateways its own base_url host may not receive. Set
-   * with every build. Its models on those gateways are left out of LiteLLM's
-   * config, and its direct requests on them are answered with a 502.
+   * The gateway names the last build resolved a stored key for. Which hosts a
+   * tenant may not receive is decided per request from that tenant's config
+   * object (`hostUnboundFor`), not from the last build's answer, so a decision
+   * and the send that follows it are made from the same config.
    */
-  let tenantUnbound = new Map<string, Map<string, string>>();
+  let keyedGateways: ReadonlySet<string> = new Set<string>();
   /** Each gateway's last good credential, across child-env builds; see `resolveChildEnv`. */
   const credentialMemory = newCredentialMemory();
   /** A credential store skipped for staying unreadable, reported once per stretch by `boundUnreadable`. */
@@ -1918,13 +1921,30 @@ export async function cmdServe(
    * does hold — for an OAuth kind, another project's account, or a blocking
    * device-code login.
    */
+  /**
+   * The gateways a tenant's own `base_url` host may not receive a stored key
+   * at, with the message for each. Computed from the config object passed in,
+   * so whatever is written from it (LiteLLM's `api_base`) and whatever is
+   * sent from it (the direct path) are decided by the same URLs.
+   */
+  const hostUnboundFor = (tenant: { configPath?: string; config?: SonataConfig }): Map<string, string> => {
+    const gateways = tenant.config?.native?.gateways;
+    if (gateways === undefined) return new Map();
+    return unboundKeyHosts(
+      gateways,
+      machineConfig()?.native?.gateways ?? {},
+      keyedGateways,
+      opts.home,
+      tenant.configPath ?? 'the config',
+    );
+  };
   const servableTenants = (loaded: ReturnType<TenantRegistry['loadable']> = registry.loadable()) => {
     mergeGateways(() => { /* logged by mergedNative */ }, loaded);
     const dropped = droppedGateways;
     const unresolved = litellmCredentialFailures;
     return loaded.map((tenant) => {
       const native = tenant.config.native;
-      const hostUnbound = tenantUnbound.get(tenant.id);
+      const hostUnbound = hostUnboundFor(tenant);
       const keep = <T extends { gateway?: string }>(models: Record<string, T>) =>
         Object.fromEntries(Object.entries(models).filter(([, model]) =>
           model.gateway === undefined || (!dropped.has(model.gateway) && !unresolved.has(model.gateway)
@@ -2066,7 +2086,7 @@ export async function cmdServe(
         const gw = cfg.gateways[gateway];
         if (gw === undefined) continue;
         // A host the tenant's own base_url may not receive is kept off per
-        // tenant (`tenantUnbound`), never machine-wide.
+        // tenant (`hostUnboundFor`), never machine-wide.
         if (hostUnbound === true) continue;
         all.set(gateway, message);
         // A tentative failure keeps its models in LiteLLM's config: the
@@ -2075,7 +2095,7 @@ export async function cmdServe(
       }
       credentialFailures = all;
       litellmCredentialFailures = litellm;
-      tenantUnbound = built.unboundByTenant;
+      keyedGateways = built.keyed;
     };
 
     // Startup fails outright only for the machine config's own gateways — the
@@ -2856,7 +2876,7 @@ export async function cmdServe(
       },
       resolveGateway: (key, tenant) => tenant.config?.unifiedModels[key]?.gateway,
       gatewayUnavailable: (tenant, gateway) => droppedGateways.get(gateway) ?? credentialFailures.get(gateway) ??
-        tenantUnbound.get(tenant.id)?.get(gateway) ??
+        hostUnboundFor(tenant).get(gateway) ??
         (tenant.config?.native?.gateways[gateway]?.auth === 'codex-oauth'
           ? (chatgptLoginRefused === undefined ? undefined
             : ((why) => (why === undefined ? (refusedToken(), chatgptLoginRefused?.message) : `${why}; retry`))(chatgptReseedDue()))
@@ -2894,7 +2914,7 @@ export async function cmdServe(
       },
       gatewayKeys: (tenant) => {
         const out: Record<string, string> = {};
-        const hostUnbound = tenantUnbound.get(tenant.id);
+        const hostUnbound = hostUnboundFor(tenant);
         for (const [name, gateway] of Object.entries(tenant.config?.native?.gateways ?? {})) {
           if (transportFor(gateway, name) !== 'direct' || hostUnbound?.has(name)) continue;
           const key = childEnv[envVarForGateway(name)];

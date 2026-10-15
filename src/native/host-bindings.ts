@@ -271,7 +271,7 @@ export function unboundMessage(gateway: string, host: string, configPath: string
 export function unboundKeyHosts(
   tenantGateways: NativeConfig['gateways'],
   machineGateways: NativeConfig['gateways'],
-  keysPresent: Set<string>,
+  keysPresent: ReadonlySet<string>,
   home: string,
   configPath: string,
 ): Map<string, string> {

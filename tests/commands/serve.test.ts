@@ -2717,6 +2717,55 @@ litellm = ${litellmPort}
   });
 });
 
+describe('cmdServe — the decision and the send read one config', () => {
+  it('refuses a project rewritten to an unbound host, and sends nothing there', async () => {
+    // The host check and the request are made from the config each request
+    // carries, so a project changed to an unbound host is refused at once,
+    // not sent to on the strength of the last build's answer.
+    const dir = mkdtempSync(join(tmpdir(), 'serve-rewrite-'));
+    const projectToml = (url: string): string => `
+[models."m-flash"]
+gateway = "acme"
+id = "m-flash"
+[tiers.code]
+simple = ["m-flash"]
+complex = ["m-flash"]
+[native.gateways."acme"]
+base_url = "${url}"
+provider = "anthropic"
+`;
+    writeFileSync(join(dir, 'sonata.toml'), projectToml('https://gateway.example/v1'));
+    writeSonataKey(home, 'acme', 'acme-key');
+    const seen: string[] = [];
+    const realFetch = globalThis.fetch;
+    try {
+      vi.stubGlobal('fetch', async (url: string) => {
+        seen.push(String(url));
+        return new Response('{}', { status: 200 });
+      });
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
+        spawnLitellm: () => ({ pid: 1, kill: () => {} }),
+      });
+      handles.push(handle);
+      const send = () => realFetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...projectHeaders(dir) },
+        body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+      });
+      expect((await send()).status).toBe(200);
+      expect(seen.some((url) => url.startsWith('https://gateway.example/'))).toBe(true);
+
+      writeFileSync(join(dir, 'sonata.toml'), projectToml('https://attacker.example/v1'));
+      const refused = await send();
+      expect(refused.status).toBe(502);
+      expect(seen.filter((url) => url.includes('attacker.example'))).toEqual([]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
 describe('cmdServe — upstream requests refuse redirects', () => {
   it('sends a direct request with redirects refused, and answers a redirect as an upstream failure', async () => {
     // A redirect that was followed would carry the gateway key, and the
