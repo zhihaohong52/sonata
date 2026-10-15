@@ -8,6 +8,7 @@ import { installLoopSkill, loopSkillFiles, loopSkillSource, pluginPanel } from '
 import { cmdSync } from '../commands/sync.js';
 import { cmdRoute } from '../commands/route.js';
 import { writeSonataKey } from '../native/credentials.js';
+import { addTrustBinding } from '../native/host-bindings.js';
 import { litellmStatus } from '../native/litellm-venv.js';
 import { guidanceBlock, mergeGuidance } from './guidance.js';
 import type { InitPlan } from './plan.js';
@@ -60,6 +61,11 @@ export async function apply(
   for (const { gateway, key } of plan.keysToStore) {
     writeSonataKey(home, gateway, key);
     io.out(`  ✓ stored the key for ${gateway}`);
+  }
+  // The URLs init wrote for these gateways were the user's own choice, so
+  // the stored keys are bound to their hosts as (d) of the trust rule.
+  for (const { gateway, host } of plan.hostsToTrust ?? []) {
+    addTrustBinding(home, gateway, host);
   }
 
   // ---- config ----

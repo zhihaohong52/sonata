@@ -39,6 +39,12 @@ export interface InitPlan {
   configPath: string;
   configToml: string;
   keysToStore: Array<{ gateway: string; key: string }>;
+  /**
+   * Host bindings `apply` records beside the keys: gateways whose URL the
+   * user chose this run, so serve sends the stored key there. A name maps to
+   * the host init wrote into the config — `auth add` reads it back off the
+   * file it writes, but init knows both halves before either is written.
+   */
   hook: { scope: 'project' | 'global' | 'skip'; settingsPath?: string; allowListScope?: 'project' | 'global' | 'skip' };
   skillPath: string;
   /**
@@ -53,6 +59,8 @@ export interface InitPlan {
   syncCwd: string;
   agentsDir: string;
   chosenNative: NativeCandidate[];
+  /** Gateway → https host `apply` trusts beside storing its key (see `keysToStore`). */
+  hostsToTrust: Array<{ gateway: string; host: string }>;
   roles: string[];
   /**
    * Whether the config this plan is about to write routes anything through
@@ -440,6 +448,31 @@ export function plan(
       ...Object.entries(state.byokKeys ?? {}).map(([gateway, key]) => ({ gateway, key })),
       ...(state.decisionKey ? [{ gateway: state.decisionKey.gateway, key: state.decisionKey.key }] : []),
     ],
+    // Bind each stored key to the URL init is about to write for its gateway:
+    // the user chose that URL in this run, on the screens that asked for it.
+    hostsToTrust: (() => {
+      const byok = new Set(Object.keys(state.byokKeys ?? {}));
+      if (state.decisionKey !== undefined) byok.add(state.decisionKey.gateway);
+      if (byok.size === 0) return [];
+      const urls = new Map<string, string>();
+      for (const candidate of nativeByKey.values()) {
+        if (byok.has(candidate.gateway) && candidate.auth === 'api-key' && !urls.has(candidate.gateway)) {
+          urls.set(candidate.gateway, candidate.baseUrl);
+        }
+      }
+      const out: Array<{ gateway: string; host: string }> = [];
+      for (const [gateway, url] of urls) {
+        try {
+          const parsed = new URL(url);
+          if (parsed.protocol === 'https:' && parsed.hostname !== '') {
+            out.push({ gateway, host: parsed.hostname.toLowerCase() });
+          }
+        } catch {
+          // Not a URL: binds nothing; doctor names it.
+        }
+      }
+      return out;
+    })(),
     hook,
     skillPath,
     guidance,
