@@ -989,7 +989,7 @@ describe('autoAgentMarkdown — tier trouble is reported, not routed around', ()
 
   it('reserves explicit tiers for a user who asks for one, with the one exception', () => {
     expect(description).toContain('only when the user asks for a specific tier; earlier tier failures do not count');
-    expect(description).toContain('The one exception: a task that failed review twice may be re-dispatched once on the explicit -complex agent, for that task only.');
+    expect(description).toContain("The one exception: a task that failed review twice may be re-dispatched on the explicit -complex agent, and kept there for that task's fixes — that task only.");
   });
 
   it('tells the caller to retry on -auto and report a misbehaving dispatch', () => {
