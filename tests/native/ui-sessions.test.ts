@@ -77,6 +77,17 @@ describe('sessionRows', () => {
     expect(s1.models).not.toContain('mimo');
   });
 
+  it('lists a session whose only rows are withdrawn turns, and keeps covered withdrawn spend apart', async () => {
+    const usage = join(home, '.config', 'sonata', 'usage');
+    const day = new Date().toISOString().slice(0, 10);
+    writeFileSync(join(usage, `${day}.jsonl`), [
+      row({ key: 'mimo', session: 's3', project: '/proj/c', withdrawn: true }),
+      row({ key: 'mimo', session: 's3', project: '/proj/c', withdrawn: true, price: { source: 'covered', totalUsd: 2 } }),
+    ].join('\n') + '\n', { flag: 'a' });
+    const s3 = (await sessionRows(deps(), all)).find((r) => r.id === 's3')!;
+    expect(s3).toMatchObject({ project: '/proj/c', requests: 0, costUsd: 0, withdrawnTurns: 2, withdrawnUsd: 0.25, withdrawnCoveredUsd: 2, models: [] });
+  });
+
   it('lists the distinct candidates that served it', async () => {
     const s1 = (await sessionRows(deps(), all)).find((r) => r.id === 's1')!;
     expect(s1.models.sort()).toEqual(['flash', 'terra']);

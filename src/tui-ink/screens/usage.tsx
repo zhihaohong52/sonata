@@ -92,7 +92,7 @@ export function UsageScreen({ cwd, home, by: initialBy = 'model', since: initial
       // Billed, so spend; not served, so not in the total above.
       const w = report.withdrawn;
       notes.push({
-        text: `withdrawn ${w.turns} turn${w.turns === 1 ? '' : 's'}, ${money(w.costUsd)}${w.unpriced > 0 ? `, ${w.unpriced} unpriced` : ''} — retried on the next model; not in the total, counted toward [budget]`,
+        text: `withdrawn ${w.turns} turn${w.turns === 1 ? '' : 's'}, ${money(w.costUsd)}${w.coveredUsd > 0 ? `, ${money(w.coveredUsd)} covered` : ''}${w.unpriced > 0 ? `, ${w.unpriced} unpriced` : ''} — retried on the next model; not in the total, counted toward [budget]`,
         tone: 'MID',
       });
     }

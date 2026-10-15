@@ -103,5 +103,7 @@ describe('the page’s own behaviour, asserted statically', () => {
     expect(html()).toContain('id="t-withdrawn"');
     expect(html()).toMatch(/\$\('t-withdrawn'\)\.textContent = int\(w\.turns\)/);
     expect(html()).toContain('row.withdrawnTurns');
+    expect(html()).toContain('row.withdrawnCoveredUsd');
+    expect(html()).toContain("' covered'");
   });
 });
