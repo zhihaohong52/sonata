@@ -167,7 +167,7 @@ complex = ["m"]
 });
 
 describe('dispatch window', () => {
-  it('defaults to 1500 seconds, inside the 30-minute MCP idle window', () => {
+  it("defaults to 540 seconds, inside Claude Code 600 s Bash tool cap", () => {
     const c = parseConfig(`
 [models.m]
 harness = "opencode"
@@ -176,7 +176,7 @@ id = "p/m"
 [generate.roles]
 code = ["m"]
 `);
-    expect(c.run.dispatchWindowSeconds).toBe(1500);
+    expect(c.run.dispatchWindowSeconds).toBe(540);
   });
 
   it('reads an override from the run table', () => {
@@ -227,7 +227,7 @@ code = ["m"]
 
   it('still defaults every key that is absent', () => {
     expect(parseConfig(base).run).toEqual({
-      tailWindowSeconds: 20, stallTimeoutSeconds: 120, runTimeoutSeconds: 1800, dispatchWindowSeconds: 1500,
+      tailWindowSeconds: 20, stallTimeoutSeconds: 120, runTimeoutSeconds: 1800, dispatchWindowSeconds: 540,
     });
   });
 });

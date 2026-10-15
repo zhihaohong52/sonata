@@ -251,8 +251,11 @@ function interactiveScript(input: PlanInput, invocation: string): string {
     `SESSION="$(tmux display-message -p '#S')"`,
     '(',
     // The report is the harness's own "task over" signal. Until it lands, the
-    // model may still be working or waiting on an approval.
-    `  while [ ! -f ${shellQuote(reportPath)} ]; do sleep 2; done`,
+    // model may still be working or waiting on an approval. The exit sentinel
+    // is the other way out: a run whose harness exits without a report (a
+    // launch failure, a crash) would otherwise leave this watcher looping
+    // forever, leaking the subshell past the run it was watching.
+    `  while [ ! -f ${shellQuote(reportPath)} ] && [ ! -f ${shellQuote(exitPath)} ]; do sleep 2; done`,
     // See reasonix's interactiveScript for why the composer is cleared before
     // each quit attempt and why the exit sentinel acknowledges the quit.
     '  for _ in $(seq 1 20); do',

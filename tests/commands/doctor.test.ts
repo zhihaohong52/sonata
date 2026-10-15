@@ -175,7 +175,7 @@ code = ["a"]
   it('stays quiet on a healthy setup', async () => {
     const { cwd, home } = setup();
     writeFileSync(join(cwd, '.claude', 'agents', 'code-a.md'),
-      `---\nname: code-a\ntools: Bash(sonata dispatch:*), Bash(sonata wait:*), Bash(sonata approve:*)\n---\n${MARKER}`);
+      `---\nname: code-a\ntools: Bash(sonata dispatch:*), Bash(sonata wait:*)\n---\n${MARKER}`);
     const res = await cmdDoctor({ ...NO_CLIENT, cwd, home, packageRoot: '/pkg' });
     for (const name of ['agents', 'agent tools']) {
       expect(res.checks.find((c) => c.name === name)?.ok).toBe(true);
@@ -503,10 +503,66 @@ code = ["m"]
   });
 
   it('passes when every agent names the current tools', async () => {
-    writeAgent('code-new.md', 'Bash(sonata dispatch:*), Bash(sonata wait:*), Bash(sonata approve:*)');
+    writeAgent('code-new.md', 'Bash(sonata dispatch:*), Bash(sonata wait:*)');
 
     const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
     expect(checks.find((c) => c.name === 'agent tools')!.ok).toBe(true);
+  });
+});
+describe('cmdDoctor — tool permissions (approve not allow-listed)', () => {
+  const MIN = `
+[models."a"]
+harness = "codex"
+id = "gpt-5.6-sol"
+
+[generate.roles]
+code = ["a"]
+`;
+
+  const setup = () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-tp-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-tph-'));
+    writeFileSync(join(cwd, 'sonata.toml'), MIN);
+    return { cwd, home };
+  };
+
+  it('fails when approve is still allow-listed, naming the entry', async () => {
+    const { cwd, home } = setup();
+    const { settingsPath, writeSettings } = await import('../../src/settings.js');
+    writeSettings(settingsPath('project', cwd, home), {
+      permissions: { allow: ['Bash(sonata dispatch:*)', 'Bash(sonata wait:*)', 'Bash(sonata approve:*)'] },
+    });
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    const check = checks.find((c) => c.name === 'tool permissions')!;
+    expect(check.ok).toBe(false);
+    expect(check.detail).toContain('Bash(sonata approve:*)');
+    expect(check.detail).toContain('sonata init');
+  });
+
+  it('passes when only dispatch and wait are allow-listed', async () => {
+    const { cwd, home } = setup();
+    const { settingsPath, writeSettings } = await import('../../src/settings.js');
+    writeSettings(settingsPath('project', cwd, home), {
+      permissions: { allow: ['Bash(sonata dispatch:*)', 'Bash(sonata wait:*)'] },
+    });
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    expect(checks.find((c) => c.name === 'tool permissions')!.ok).toBe(true);
+  });
+
+  it('passes when the allow list is split across scopes', async () => {
+    // dispatch in project, wait in global: neither file alone has both, but
+    // the union is complete. The old per-scope min-length comparison
+    // false-failed exactly this shape.
+    const { cwd, home } = setup();
+    const { settingsPath, writeSettings } = await import('../../src/settings.js');
+    writeSettings(settingsPath('project', cwd, home), {
+      permissions: { allow: ['Bash(sonata dispatch:*)'] },
+    });
+    writeSettings(settingsPath('global', cwd, home), {
+      permissions: { allow: ['Bash(sonata wait:*)'] },
+    });
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    expect(checks.find((c) => c.name === 'tool permissions')!.ok).toBe(true);
   });
 });
 

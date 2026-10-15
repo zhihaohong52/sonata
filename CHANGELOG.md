@@ -42,6 +42,37 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   JSON 200 escaped pricing and `[budget]`. It now accumulates an
   `application/json` body, bounded like the other collectors, and reads
   usage from the finished document with the existing JSON reader.
+- **`sonata approve` is no longer allow-listed, so approvals reach a human.**
+  `Bash(sonata approve:*)` sat on the auto-allow list alongside `dispatch` and
+  `wait`, so a dispatched model could answer a codex or reasonix approval card
+  itself with no prompt. Only `dispatch` and `wait` stay allow-listed; every
+  `sonata approve` call now goes through Claude Code's permission prompt. The
+  generated wrapper text says the main thread runs approve itself, `sonata
+  init` removes a stale approve entry when it next rewrites the settings, and
+  `sonata doctor` flags it until then.
+- **Claude Code's `dontAsk` mode no longer dispatches as `default`.**
+  An unrecognised mode used to fall back to `default` silently, and `dontAsk`
+  (auto-deny anything not allow-listed) landed there — handing codex
+  workspace-write, the most permissive end for the most restrictive session
+  mode. `dontAsk` now maps to `plan` (read-only; every adapter already honours
+  it without writing, and write roles under it refuse where a harness cannot
+  honour it), and any other unknown mode refuses with a named error rather
+  than guessing. The capture hook passes the raw value through unchanged.
+- **A dispatch cut off by the caller's tool timeout no longer loses its run
+  id.** `dispatch_window_seconds` defaulted to 1500 s while Claude Code's Bash
+  tool caps at 600 s, and the id was printed only after the blocking wait
+  returned — so a killed caller never learned the id. `sonata dispatch` now
+  prints `dispatched <id> model=<m>` as each candidate launches, before
+  blocking; the default window drops to 540 s; the generated wrapper text tells
+  the agent to pass `timeout: 600000` and to resume a cut-off call with
+  `sonata wait <id>`.
+- **Quit-watcher subshells in the codex and reasonix launch scripts no longer
+  loop past the run they watch.** Both waited on `report.md` alone, so a run
+  whose harness exited without a report leaked the watcher forever. Each now
+  also stops when the `exit` sentinel exists, and reasonix no longer types the
+  task when its 60 s readiness loop falls through without the composer — the
+  run is already over then, and typing blind lands text into whatever the pane
+  holds.
 
 - **Muse Spark 1.3 Contributor no longer refuses every Claude Code request.**
   Its server rejects a tool schema whose pattern uses the `\0` (NUL) escape,

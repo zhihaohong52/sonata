@@ -31,7 +31,6 @@ const ALIASES: Record<string, PermissionMode> = {
 /**
  * Claude Code does not expose the permission mode as an environment variable.
  * A PreToolUse hook writes it to .sonata/session-<id>.json; this reads it back.
- * Falls back to the safest mode when unknown.
  */
 /**
  * `home` mirrors `loadConfig`: it is optional so existing callers keep working,
@@ -59,8 +58,24 @@ export function readPermissionMode(
     const raw = parsed.permissionMode;
     if (!raw) return 'default';
     if (ALIASES[raw]) return ALIASES[raw];
-    return VALID.includes(raw as PermissionMode) ? (raw as PermissionMode) : 'default';
-  } catch {
-    return 'default';
+    // `dontAsk` auto-denies anything not allow-listed — the read-only end of
+    // the spectrum, so it maps to `plan`. Treating it as `default` instead
+    // gave codex workspace-write, which is the most permissive end: exactly
+    // backwards. Every adapter already honours `plan` read-only (a write role
+    // sent there cannot write), so this stays inside the lane's invariant.
+    if (raw === 'dontAsk') return 'plan';
+    if (VALID.includes(raw as PermissionMode)) return raw as PermissionMode;
+    throw new Error(
+      `sonata: unknown permission mode "${raw}" — refusing rather than guessing. ` +
+      `Known modes: ${[...VALID, ...Object.keys(ALIASES), 'dontAsk'].join(', ')}.`,
+    );
+  } catch (err) {
+    // A mode sonata does not recognise must refuse loudly, never guess: an
+    // unknown mode silently read as `default` once gave codex workspace-write.
+    // Only a corrupt or unreadable session file falls back, and there `default`
+    // is itself the guarded path (opencode/pi refuse it for write roles).
+    if (err instanceof SyntaxError) return 'default';
+    if ((err as NodeJS.ErrnoException)?.code !== undefined) return 'default';
+    throw err;
   }
 }

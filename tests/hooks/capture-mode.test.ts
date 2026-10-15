@@ -152,4 +152,15 @@ describe('readPermissionMode — machine-level session file', () => {
     const home = mkdtempSync(join(tmpdir(), 'sonata-home-'));
     expect(readPermissionMode(bare, 'abc', home)).toBe('default');
   });
+
+  it('passes dontAsk through raw, so the reader can map it to plan', async () => {
+    const bare = mkdtempSync(join(tmpdir(), 'sonata-pass-'));
+    const home = mkdtempSync(join(tmpdir(), 'sonata-pass-home-'));
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(join(home, '.config', 'sonata', 'sonata.toml'), '');
+    await invokeIn(bare, home, { session_id: 'sess-raw', permission_mode: 'dontAsk' });
+    const machine = join(home, '.config', 'sonata', 'session-sess-raw.json');
+    expect(JSON.parse(readFileSync(machine, 'utf8')).permissionMode).toBe('dontAsk');
+    expect(readPermissionMode(bare, 'sess-raw', home)).toBe('plan');
+  });
 });

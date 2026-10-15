@@ -379,6 +379,10 @@ export async function main(argv: string[]): Promise<number> {
       task,
       rolesDir: values['roles-dir'] ?? join(packageRoot(), 'roles'),
       sessionId: process.env.CLAUDE_CODE_SESSION_ID,
+      // Printed before blocking, so a caller whose own tool times out first
+      // (Claude Code's Bash cap is 600 s; the window defaults to 540) already
+      // holds the id and resumes with `sonata wait <id>`.
+      onLaunch: (id, modelKey) => console.log(`dispatched ${id} model=${modelKey}`),
     });
     console.log(`${res.state} model=${res.modelKey} id=${res.id}`);
     if (res.report) console.log(`\n${res.report}`);
