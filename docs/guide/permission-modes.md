@@ -110,8 +110,9 @@ never said anything — `sonata doctor` reports that as a blocker, and
 `reasonix config telemetry off` clears it.
 
 **Claude Code** (`claude -p` is headless — there is no TUI to prompt in) passes
-the session's mode through, except for read-only roles, which are forced to
-`plan` and stripped down:
+the session's mode through, except that a read-only role — and any role
+dispatched while the session is in `plan` mode — runs as `plan` and is
+stripped down:
 
 | Claude Code mode | invocation | tools |
 |---|---|---|
@@ -120,7 +121,9 @@ the session's mode through, except for read-only roles, which are forced to
 | `acceptEdits` | `claude -p --permission-mode acceptEdits` | full built-in set |
 | `bypassPermissions` | `claude -p --permission-mode bypassPermissions` | full built-in set |
 
-A read-only role runs as `plan` whatever mode the session is in, and gets
+A read-only role runs as `plan` whatever mode the session is in, and so
+does a write role dispatched in `plan` mode (which is also what `dontAsk`
+maps to); each gets
 `--tools=Read,Grep,Glob` (with `--allowedTools` of the same set) plus
 `--strict-mcp-config` and no `--mcp-config`, which loads no MCP servers at all.
 `--tools` restricts only the built-in set: probed live on Claude Code 2.1.284,

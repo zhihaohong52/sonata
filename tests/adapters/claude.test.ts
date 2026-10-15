@@ -152,6 +152,21 @@ describe('claudeAdapter.plan', () => {
     expect(plan.script).toContain('--permission-mode acceptEdits');
   });
 
+  it('restricts a write role dispatched in plan mode, which cannot write either', () => {
+    // `dontAsk` maps to `plan`, so a write role under plan mode is the shape
+    // the restrictive session modes take. Without the tool restriction it
+    // would run with the full built-in set and every MCP tool.
+    const plan = planClaude(
+      { ...base, role: 'code', mode: 'plan' },
+      { managedMcpFile: join(tmpdir(), 'sonata-no-such-dir', 'managed-mcp.json') },
+    );
+    expect(plan.script).toContain('--permission-mode plan');
+    expect(plan.script).toContain('--tools=Read,Grep,Glob');
+    expect(plan.script).toContain('--allowedTools=Read,Grep,Glob');
+    expect(plan.script).toContain('--strict-mcp-config');
+    expect(plan.canWriteReport).toBe(false);
+  });
+
   it('can write a report for a write-capable role', () => {
     expect(claudeAdapter.plan({ ...base, mode: 'acceptEdits' }).canWriteReport).not.toBe(false);
   });
