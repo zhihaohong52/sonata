@@ -1,7 +1,8 @@
 import { execFileSync } from 'node:child_process';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { NativeGatewayAuth } from '../config.js';
@@ -93,17 +94,44 @@ export async function loginGateway(opts: {
   }
 
   const dir = credentialDir(opts.home, opts.gateway);
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  // The login runs into a fresh temp directory, swapped in only on success.
+  // LiteLLM's authenticator reads whatever token directory it is pointed at
+  // first, so running it against the live directory let a stored — possibly
+  // revoked — token pass as a fresh login, and a failed run still rewrote or
+  // deleted the working credential. A failure now leaves the old login
+  // exactly as it was.
+  const staging = mkdtempSync(join(tmpdir(), `sonata-login-${opts.gateway}-`));
+  chmodSync(staging, 0o700);
 
   // PATH plus the one token-directory variable. No other parent value is
   // forwarded, matching how serve builds childEnv. FAKE_MODE only crosses over
   // when a test-injected interpreter is in play, so production can never leak
   // it through an ambient env var.
   const env: NodeJS.ProcessEnv = process.env.PATH ? { PATH: process.env.PATH } : {};
-  env[tokenDirEnvVar(opts.auth)] = dir;
+  env[tokenDirEnvVar(opts.auth)] = staging;
   if (opts.interpreter && process.env.FAKE_MODE) env.FAKE_MODE = process.env.FAKE_MODE;
 
-  if (opts.signal?.aborted) return { ok: false, problem: 'login cancelled' };
+  if (opts.signal?.aborted) {
+    rmSync(staging, { force: true, recursive: true });
+    return { ok: false, problem: 'login cancelled' };
+  }
+
+  /** Every regular file 0600 and the directory 0700 — LiteLLM writes with the process umask. */
+  const fixPermissions = (target: string): void => {
+    try { chmodSync(target, 0o700); } catch { return; }
+    let names: string[];
+    try {
+      names = readdirSync(target);
+    } catch {
+      return;
+    }
+    for (const name of names) {
+      const full = join(target, name);
+      try {
+        if (statSync(full).isFile()) chmodSync(full, 0o600);
+      } catch { /* replaced under us, or a subdir; skip */ }
+    }
+  };
 
   return await new Promise<LoginResult>((resolve) => {
     let child;
@@ -118,6 +146,8 @@ export async function loginGateway(opts: {
     opts.signal?.addEventListener('abort', onAbort, { once: true });
 
     child.on('error', () => {
+      fixPermissions(staging);
+      rmSync(staging, { force: true, recursive: true });
       resolve({ ok: false, problem: `could not run litellm's interpreter ${interpreter}` });
     });
 
@@ -129,23 +159,40 @@ export async function loginGateway(opts: {
 
     child.on('close', (code: number | null) => {
       opts.signal?.removeEventListener('abort', onAbort);
-      if (cancelled) return resolve({ ok: false, problem: 'login cancelled' });
-      if (code !== 0) return resolve({ ok: false, problem: `litellm's authenticator exited ${code}` });
+      if (cancelled) {
+        fixPermissions(staging);
+        rmSync(staging, { force: true, recursive: true });
+        return resolve({ ok: false, problem: 'login cancelled' });
+      }
+      if (code !== 0) {
+        fixPermissions(staging);
+        rmSync(staging, { force: true, recursive: true });
+        return resolve({ ok: false, problem: `litellm's authenticator exited ${code}` });
+      }
       // An exit code alone is not evidence.
-      const credentialPath = join(dir, credentialFileFor(opts.auth));
+      const credentialPath = join(staging, credentialFileFor(opts.auth));
       if (!existsSync(credentialPath)) {
+        fixPermissions(staging);
+        rmSync(staging, { force: true, recursive: true });
         return resolve({ ok: false, problem: 'the login reported success but wrote no credential' });
       }
-      // LiteLLM writes with the process umask, commonly 0644 - fix it up rather
-      // than trust an interpreter we don't control to have written 0600. Every
-      // regular file, not only the one that proves the login: Copilot's
-      // long-lived GitHub token sits in `access-token` beside `api-key.json`.
-      // And the directory itself, since `mkdirSync`'s mode applies only to a
-      // directory it creates — a re-login into a looser one left it as found.
+      // LiteLLM writes with the process umask, commonly 0644 - fix it up
+      // rather than trust an interpreter we don't control to have written
+      // 0600. Every regular file, not only the one that proves the login:
+      // Copilot's long-lived GitHub token sits in `access-token` beside
+      // `api-key.json`. Fix-up runs on failure paths too, so a cancelled or
+      // failed run's temp files carry no readable secret on their way out.
+      fixPermissions(staging);
+      // The swap-in: the old directory, if any, is replaced wholesale, so a
+      // half-written or partially-deleted failure cannot merge with it.
+      // `renameSync` onto an existing directory fails on POSIX, so the old one
+      // is removed first; what lands is exactly what the login wrote, with
+      // 0600/0700 already fixed up. Parents before the rename, so a missing
+      // credentials dir cannot strand the login in temp.
+      mkdirSync(join(opts.home, '.config', 'sonata', 'credentials'), { recursive: true, mode: 0o700 });
+      rmSync(dir, { force: true, recursive: true });
+      renameSync(staging, dir);
       chmodSync(dir, 0o700);
-      for (const entry of readdirSync(dir, { withFileTypes: true })) {
-        if (entry.isFile()) chmodSync(join(dir, entry.name), 0o600);
-      }
       resolve({ ok: true });
     });
   });
