@@ -80,6 +80,41 @@ describe('an unreadable existing config', () => {
     await expect(cmdInit(base())).rejects.toThrow(/cannot be read/);
     expect(readFileSync(join(cwd, 'sonata.toml'), 'utf8')).toBe(before);
   });
+
+  it('--yes at the healthy scope proceeds when the other scope is broken', async () => {
+    // The refusal is scoped to the file being written: a broken project
+    // config must not block a global init, and vice versa. The broken file
+    // is left untouched, and the healthy scope gets a working config.
+    const brokenProject = 'avoid_gateways = ["ghost"]\n';
+    writeFileSync(join(cwd, 'sonata.toml'), brokenProject);
+    const lines: string[] = [];
+    const res = await cmdInit({ ...base(), configScope: 'global', write: (l: string) => lines.push(l) });
+    expect(res.configPath).toBe(join(home, '.config', 'sonata', 'sonata.toml'));
+    // configPath prefers the project file, which is still broken — so read
+    // the written file directly rather than through loadConfig.
+    const { parseConfig } = await import('../../src/config.js');
+    expect(parseConfig(readFileSync(join(home, '.config', 'sonata', 'sonata.toml'), 'utf8')).tiers?.code.simple)
+      .toEqual(['acme-fast']);
+    // The broken project file is never rewritten.
+    expect(readFileSync(join(cwd, 'sonata.toml'), 'utf8')).toBe(brokenProject);
+    expect(lines.join('\n')).toMatch(/not reading/);
+  });
+
+  it('--yes refuses when the broken file is at the chosen scope', async () => {
+    // Mirror of the above: a broken global config blocks a global init but
+    // not a project one.
+    const { mkdirSync } = await import('node:fs');
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    const brokenGlobal = 'avoid_gateways = ["ghost"]\n';
+    writeFileSync(join(home, '.config', 'sonata', 'sonata.toml'), brokenGlobal);
+    await expect(cmdInit({ ...base(), configScope: 'global' })).rejects.toThrow(/cannot be read/);
+    expect(readFileSync(join(home, '.config', 'sonata', 'sonata.toml'), 'utf8')).toBe(brokenGlobal);
+    // And the project lane still proceeds.
+    const res = await cmdInit(base());
+    expect(res.configPath).toBe(join(cwd, 'sonata.toml'));
+    expect(existsSync(join(cwd, 'sonata.toml'))).toBe(true);
+    expect(readFileSync(join(home, '.config', 'sonata', 'sonata.toml'), 'utf8')).toBe(brokenGlobal);
+  });
 });
 
 describe('front-end parity', () => {
