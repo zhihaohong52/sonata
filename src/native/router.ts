@@ -2984,7 +2984,10 @@ async function routeTierCandidates(
             ? `cooling it for ${Math.round(coolMs / 60_000)} min (repeated: its backend likely has no tool-call parser)`
             : 'cooling it'),
         );
-      }, { alias, candidate: variant, outbound: body }, true);
+      }, { alias, candidate: variant, outbound: body },
+      // One withdrawal per request: later candidates stream through and are
+      // only cooled, so a request waits out at most one hold.
+      withdrawn.length === 0);
       if (isClientGone(recovered)) {
         // The client left while the turn was held. The upstream answered and
         // billed it, so it gets the row a disconnect mid-stream gets: served,

@@ -459,16 +459,29 @@ describe('router — text-form tool calls', () => {
     expect(rows.find((r) => r.withdrawn === true)).toMatchObject({ key: 'flash', complete: true, tokens: { input: 3, output: 2 } });
   });
 
-  it('serves the last withdrawn turn when no candidate serves instead', async () => {
+  it('withdraws once per request: the next candidate streams through and is only cooled', async () => {
     clearCooldowns();
     const rows: LedgerRow[] = [];
-    const { seen, d } = twoCandidates(rows, () => sse(stream(UNPARSED)));
+    const slowTail = (): Response => new Response(new ReadableStream<Uint8Array>({
+      async start(controller) {
+        const all = stream(UNPARSED);
+        const head = all.indexOf('event: content_block_delta');
+        controller.enqueue(new TextEncoder().encode(all.slice(0, head)));
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        controller.enqueue(new TextEncoder().encode(all.slice(head)));
+        controller.close();
+      },
+    }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    const { seen, d } = twoCandidates(rows, (key) => key === 'flash' ? sse(stream(UNPARSED)) : slowTail());
+    const started = Date.now();
     const res = await routeRequest(withTools('sonata-code-simple'), d);
+    // Not held: pro's first bytes come back before its tail arrives.
+    expect(Date.now() - started).toBeLessThan(300);
     expect(res.status).toBe(200);
     expect(await drain(res.body)).toContain('<tool_call>');
     expect(seen).toEqual(['default/flash', 'default/pro']);
-    // The served row is the candidate whose turn was served, never also a
-    // withdrawn row; the other turn is an attempt with a withdrawn row of its own.
+    // The served row is pro's, its unrecovered call counted on it; flash's
+    // turn is an attempt with a withdrawn row of its own.
     expect(rows).toHaveLength(2);
     const served = rows.find((r) => r.withdrawn !== true)!;
     expect(served.key).toBe('pro');
@@ -477,6 +490,10 @@ describe('router — text-form tool calls', () => {
     // Replayed as the stream it was, so its usage is still read.
     expect(served.tokens.output).toBe(5);
     expect(rows.filter((r) => r.withdrawn === true).map((r) => r.key)).toEqual(['flash']);
+    // Both cooled: the next request has nothing left to ask.
+    seen.length = 0;
+    expect((await routeRequest(withTools('sonata-code-simple'), d)).status).toBe(529);
+    expect(seen).toEqual([]);
   });
 
   for (const [what, later] of [
