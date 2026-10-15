@@ -19,18 +19,24 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   exited — or after a short grace period — the loser now joins any healthy
   multi-tenant sonata router already answering the port, instead of waiting
   out the full 60 s. A non-sonata listener, or a pre-multi-tenant router,
-  is still never joined.
+  is still never joined. The join is reported as `joined` rather than with
+  the loser's pid and log, and `sonata restart` never joins: a stop that
+  failed to free the port is an error, not a restart.
 - **The last SubagentStop no longer strips the routing env during another
   session's settle window.** The stop removed the env unconditionally,
   un-routing a session that had written it but might not have read it yet.
   It now checks the session registry first and leaves the env in place for
-  that session's own settle to remove.
+  that session's own settle to remove. The registry stores a registration
+  time per session, so a session that settled long ago but is still live no
+  longer holds the env open; registry writes are atomic (tmp file plus
+  rename) so lock-free readers never see a half-written file.
 - **A failed lazy LiteLLM start no longer orphans a SIGTERM-deaf child.**
   The lazy path sent SIGTERM alone and forgot the pid, so a child stuck in
   a device-code login survived as an orphan. It now escalates to SIGKILL
-  after a bounded wait — the same sequence the eager-failure path and
-  `stop()` use — keeps the pid recorded until the exit is seen, and no
-  longer spawns while a stop is in flight.
+  after a bounded wait and waits once more after SIGKILL before the retry
+  spawns — the same sequence the eager-failure path and `stop()` use —
+  keeps the pid recorded until the exit is seen, and no longer spawns while
+  a stop is in flight.
 - **Muse Spark 1.3 Contributor no longer refuses every Claude Code request.**
   Its server rejects a tool schema whose pattern uses the `\0` (NUL) escape,
   and Claude Code sends every tool on every request, so it failed them all.
