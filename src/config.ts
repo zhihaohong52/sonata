@@ -223,6 +223,54 @@ export const AUTO_ROUTE_DEFAULT_MIN_CONFIDENCE = 0.5;
 /** Where the tier question is asked when `[auto_route]` names no `base_url`. */
 export const DEFAULT_DECISION_BASE_URL = 'https://api.typesafe.ai';
 
+/**
+ * A base URL in the plain form every consumer agrees on: scheme, host (a name
+ * or a bracketed IPv6 address), an optional port, and a path with no `@`, `\`,
+ * `?`, `#`, whitespace, control characters or percent-encoded authority.
+ *
+ * Why the form is this narrow. The URL parsers disagree on the authority.
+ * Probed on 2026-10-15 with `https://openrouter.ai\@evil.example/api/v1`:
+ * Node's `URL` gives host `openrouter.ai` (href `https://openrouter.ai/@evil.example/api/v1`);
+ * httpx, the client LiteLLM sends with (sonata's own venv, httpx 0.28.1), and
+ * Python's urllib both give host `evil.example`. The same split happens for
+ * `https://openrouter.ai@evil.example` and for percent-encoded `%2F`/`%5C`
+ * before the `@`. So the string a config names is checked against this form,
+ * and only the `URL` href of the accepted string is stored.
+ */
+const PLAIN_BASE_URL =
+  /^https?:\/\/(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*)(?::[0-9]{1,5})?(?:\/[A-Za-z0-9\-._~!$&'()*+,;=:%/]*)?$/;
+
+/**
+ * The canonical form of a configured base URL: the `URL` href of a plain URL,
+ * the only string sonata stores and sends. Throws, naming `where`, for anything
+ * outside the plain form, so a repo cannot name one host to the checks and
+ * another to the wire.
+ */
+export function canonicalBaseUrl(raw: unknown, where: string): string {
+  const fail = (): never => {
+    throw new Error(
+      `sonata.toml: ${where} must be an absolute http(s) URL — a host, an optional port and a path, with no ` +
+      'userinfo, backslash, whitespace, control character, query, fragment or percent-encoded host — ' +
+      `got ${JSON.stringify(String(raw))}`,
+    );
+  };
+  if (typeof raw !== 'string' || !PLAIN_BASE_URL.test(raw)) fail();
+  try {
+    return new URL(raw as string).href;
+  } catch {
+    return fail();
+  }
+}
+
+/** `canonicalBaseUrl` for a URL typed at run time: undefined when it is not a plain URL. */
+export function canonicalBaseUrlOrUndefined(raw: unknown): string | undefined {
+  try {
+    return canonicalBaseUrl(raw, 'base_url');
+  } catch {
+    return undefined;
+  }
+}
+
 /** The decision model OpenRouter is asked for when nothing better is selected. */
 export const OPENROUTER_DEFAULT_DECISION_MODEL = '~typesafe/jev-latest';
 
@@ -658,22 +706,13 @@ export function parseConfig(text: string): SonataConfig {
       throw new Error(`sonata.toml: [auto_route] classifier must be "jev", got ${JSON.stringify(section.classifier)}`);
     }
     const rawBase = section.base_url ?? DEFAULT_DECISION_BASE_URL;
-    let baseUrl: string;
-    let parsedBase: URL;
-    try {
-      if (typeof rawBase !== 'string') throw new Error('not a string');
-      parsedBase = new URL(rawBase);
-      if (parsedBase.protocol !== 'http:' && parsedBase.protocol !== 'https:') throw new Error('not http(s)');
-      baseUrl = rawBase.replace(/\/+$/, '');
-    } catch {
-      throw new Error(`sonata.toml: [auto_route] base_url must be an absolute http(s) URL, got ${JSON.stringify(rawBase)}`);
-    }
     // Endpoint suffixes are appended to this string, so a `?…`/`#…` already
     // on it would swallow them — refused rather than requested somewhere
     // other than the server named.
-    if (parsedBase.search !== '' || parsedBase.hash !== '') {
+    if (typeof rawBase === 'string' && /[?#]/.test(rawBase)) {
       throw new Error(`sonata.toml: [auto_route] base_url must not include a query string or fragment, got ${JSON.stringify(rawBase)}`);
     }
+    const baseUrl = canonicalBaseUrl(rawBase, '[auto_route] base_url').replace(/\/+$/, '');
     const model = section.model;
     if (model !== undefined && (typeof model !== 'string' || model.trim() === '')) {
       throw new Error(`sonata.toml: [auto_route] model must be a non-empty string, got ${JSON.stringify(model)}`);
@@ -872,7 +911,10 @@ export function parseConfig(text: string): SonataConfig {
       if (typeof d.base_url !== 'string') {
         throw new Error(`sonata.toml: native gateway "${name}" needs string "base_url"`);
       }
-      gateways[name] = { baseUrl: d.base_url, auth, credentialSource, billing, provider, wireFormat, price, pricingProvider };
+      // The stored URL is the canonical href of the plain URL checked here:
+      // every consumer sends this string, never the raw one (see `canonicalBaseUrl`).
+      const baseUrl = canonicalBaseUrl(d.base_url, `native gateway "${name}" base_url`);
+      gateways[name] = { baseUrl, auth, credentialSource, billing, provider, wireFormat, price, pricingProvider };
     }
 
     // Two distinct gateway names can collapse onto one LiteLLM key variable

@@ -29,7 +29,7 @@ import {
   type CandidateOption,
   type ProviderOption,
 } from './app-state.js';
-import { TIER_NAMES, type NativeGatewayAuth } from '../config.js';
+import { TIER_NAMES, canonicalBaseUrlOrUndefined, type NativeGatewayAuth } from '../config.js';
 import { fetchModels as defaultFetchModels } from '../native/models.js';
 import { ROLE_BLURB } from '../roles.js';
 import type { InitState, TuiResult } from './types.js';
@@ -352,11 +352,17 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       // writes is the pick's provider-screen key wherever one matches, so
       // that screen's later deselect — `applyStep` step 5 — can still undo it.
       const selection = modelsStepSelection(state, candidates);
-      const gatewayBaseUrls = {
+      // Every URL the refresh asks is the canonical href of a plain URL
+      // (`canonicalBaseUrl`), the string the router would send. A URL that is
+      // not plain is not asked at all.
+      const gatewayBaseUrls = Object.fromEntries(Object.entries({
         ...((state.configScope !== undefined ? data.gatewayBaseUrlsByScope?.[state.configScope] : undefined)
           ?? data.gatewayBaseUrls),
         ...addedBaseUrls,
-      };
+      }).flatMap(([gateway, url]) => {
+        const canonical = canonicalBaseUrlOrUndefined(url);
+        return canonical === undefined ? [] : [[gateway, canonical] as const];
+      }));
       const keys = { ...data.storedKeys, ...state.byokKeys };
       const scope = state.configScope ?? 'project';
       const bindings = data.refreshBindings;
