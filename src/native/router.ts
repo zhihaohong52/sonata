@@ -530,8 +530,8 @@ function withUsageRecording(response: RouterResponse, ctx: RecordContext, deps: 
     const collector = createUsageCollector();
     const contentType = response.headers['content-type'] ?? '';
     // A `stream: false` 200 arrives as `application/json`, not SSE, so the
-    // collector above sees no usage frame and the row records 0 tokens —
-    // escaping pricing and `[budget]`. Accumulate the body instead, bounded
+    // collector above would see no usage frame and the row would record 0
+    // tokens — escaping pricing and `[budget]`. Accumulate the body instead, bounded
     // like the other collectors, and read usage from the finished document.
     const isJson = !contentType.includes('text/event-stream') && contentType.includes('application/json');
     const json: Buffer[] = [];
