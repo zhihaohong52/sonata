@@ -644,6 +644,57 @@ describe('router — text-form tool calls', () => {
     expect(cancelled).toBe(true);
   });
 
+  it('waits out a slow first token without counting it as idle', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const late = (): Response => new Response(new ReadableStream<Uint8Array>({
+      async start(controller) {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        controller.enqueue(new TextEncoder().encode(stream(UNPARSED)));
+        controller.close();
+      },
+    }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    const { seen, d } = twoCandidates(rows, (key) => key === 'flash' ? late() : sse(stream('from pro')), {
+      textToolCallHoldLimits: { maxBytes: 1024 * 1024, idleMs: 30, maxMs: 60_000 },
+    });
+    const out = await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
+    // Still withdrawn: the hold did not give up before the first byte.
+    expect(out).toBe(stream('from pro'));
+    expect(seen).toEqual(['default/flash', 'default/pro']);
+  });
+
+  it('stops holding at maxMs even while bytes keep arriving', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    let cancelled = false;
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const trickle = (): Response => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        const enc = new TextEncoder();
+        controller.enqueue(enc.encode([
+          ev('message_start', { message: { id: 'm', role: 'assistant', content: [] } }),
+          ev('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }),
+          ev('content_block_delta', { index: 0, delta: { type: 'text_delta', text: '<tool_call><function=Bash>' } }),
+        ].join('')));
+        // Never idle, never closing the call: only maxMs can end the hold.
+        timer = setInterval(() => controller.enqueue(enc.encode(ev('ping', {}))), 10);
+      },
+      cancel() { cancelled = true; clearInterval(timer); },
+    }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    const { seen, d } = twoCandidates(rows, trickle, {
+      textToolCallHoldLimits: { maxBytes: 1024 * 1024, idleMs: 10_000, maxMs: 100 },
+    });
+    const started = Date.now();
+    const res = await routeRequest(withTools('sonata-code-simple'), d);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(seen).toEqual(['default/flash']);
+    const iterator = (res.body as AsyncIterable<Uint8Array>)[Symbol.asyncIterator]();
+    expect(new TextDecoder().decode((await iterator.next()).value)).toContain('message_start');
+    (res.body as { cancel?: () => void }).cancel?.();
+    clearInterval(timer);
+    expect(cancelled).toBe(true);
+  });
+
   it('gives up a held turn the moment the client leaves, recording it as served and incomplete', async () => {
     clearCooldowns();
     const rows: LedgerRow[] = [];

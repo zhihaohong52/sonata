@@ -26,7 +26,8 @@ import { classifyOpening, insideCode, TOOL_CALL_OPEN } from './text-tool-calls.j
  * - A whitespace-only text block keeps holding: the marker may be in the next.
  *
  * `limits` bound the whole hold: past `maxBytes` of held output, `idleMs`
- * without an upstream byte, or `maxMs` in total, what is held is released and
+ * without an upstream byte once the first has arrived, or `maxMs` in total
+ * (time to first token included), what is held is released and
  * the rest streams as it would have unheld.
  */
 
@@ -145,7 +146,9 @@ export async function holdForTextToolCalls(
 ): Promise<HoldOutcome> {
   const probe = createMarkerProbe();
   const started = Date.now();
-  let lastInput = started;
+  // Idle is measured from the first upstream byte: a model slow to its first
+  // token has sent nothing to release yet. Before then only `maxMs` applies.
+  let lastInput: number | undefined;
   async function* tapped(): AsyncIterable<Uint8Array> {
     for await (const chunk of upstream) {
       lastInput = Date.now();
@@ -179,7 +182,7 @@ export async function holdForTextToolCalls(
     const limit = new Promise<'limit'>((resolve) => {
       const arm = (): void => {
         const nowMs = Date.now();
-        const idleLeft = limits.idleMs - (nowMs - lastInput);
+        const idleLeft = lastInput === undefined ? Infinity : limits.idleMs - (nowMs - lastInput);
         const totalLeft = limits.maxMs - (nowMs - started);
         if (idleLeft <= 0 || totalLeft <= 0) { resolve('limit'); return; }
         timer = setTimeout(arm, Math.min(idleLeft, totalLeft));
