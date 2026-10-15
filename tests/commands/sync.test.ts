@@ -214,7 +214,19 @@ describe('tierAgentMarkdown', () => {
     const body = tierAgentMarkdown({ role: 'code', tier: 'normal' }).split('---')[2] ?? '';
     expect(body).toContain('A large mechanical change is `simple`; a three-line');
     expect(body).toContain('`-normal` — the default. You know what to change, not exactly how.');
-    expect(body).toContain('A task\nthat fails review is re-run one tier up');
+    // Escalation is the caller's rule: it is in the description, not the body.
+    expect(body).not.toContain('fails review');
+  });
+
+  it('tells the caller where a task that fails review goes, in the description only', () => {
+    const description = (tier: 'simple' | 'normal' | 'complex', available?: readonly ('simple' | 'normal' | 'complex')[]) =>
+      tierAgentMarkdown({ role: 'code', tier, ...(available === undefined ? {} : { availableTiers: available }) })
+        .split('\n').find((line) => line.startsWith('description: '))!;
+    expect(description('simple')).toContain('A task that fails review here is re-run on -normal — that task only, never other tasks or reviews.');
+    expect(description('normal')).toContain('re-run on -complex');
+    expect(description('complex')).not.toContain('fails review');
+    // Without a middle rung, simple escalates straight to complex.
+    expect(description('simple', ['simple', 'complex'])).toContain('re-run on -complex');
   });
 
   it('gives a read-only tier agent read and fan-out tools', () => {

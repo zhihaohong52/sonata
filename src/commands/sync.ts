@@ -72,9 +72,11 @@ function tierChoice(available: readonly Tier[]): string {
   const bullets = available.map((tier) => `- ${criterion[tier]}`).join('\n');
   // Without a middle rung there is no default to name, and naming one anyway
   // is what sent 74% of dispatches to `complex`.
+  // What to do after a failed review is the caller's business, so it is in
+  // each tier agent's description (`escalationNote`), not here.
   const pick = available.includes('normal')
-    ? 'Start at the tier the task actually needs rather than a rung higher. A task\nthat fails review is re-run one tier up (that task only — never other tasks or\nreviews), so starting low is cheap to correct and starting high is not cheap\nat all.'
-    : 'Prefer `-simple` whenever the task is specified closely enough to write\nwithout asking a question; a task that fails review is re-run at `-complex`\n(that task only — never other tasks or reviews), so starting low is cheap to\ncorrect and starting high is not cheap at all.';
+    ? 'Start at the tier the task actually needs rather than a rung higher:\nstarting low is cheap to correct, and starting high is not cheap at all.'
+    : 'Prefer `-simple` whenever the task is specified closely enough to write\nwithout asking a question: starting low is cheap to correct, and starting\nhigh is not cheap at all.';
   return `## Choosing a tier
 
 Size is not difficulty. A large mechanical change is \`simple\`; a three-line
@@ -92,6 +94,19 @@ ${pick}`;
  * empty list rendered "pick , and let the frontmatter select the model" — so
  * that case says what is actually true instead, with no tier list at all.
  */
+/**
+ * The caller's escalation rule for a tier agent's description: where a task
+ * that fails review goes next. Absent for the top tier, which has nowhere to
+ * go — a task failing there is stopped and reported.
+ */
+function escalationNote(tier: Tier, available: readonly Tier[]): string {
+  const at = available.indexOf(tier);
+  if (at === -1) return '';
+  const above = available.slice(at + 1);
+  if (above.length === 0) return '';
+  return ` A task that fails review here is re-run on -${above[0]} — that task only, never other tasks or reviews.`;
+}
+
 function modelChoice(available: readonly Tier[]): string {
   if (available.length === 0) {
     return '\nThis role\'s tiers are identical, so there is no tier to choose: the frontmatter selects the model.';
@@ -548,7 +563,7 @@ export function tierAgentMarkdown(spec: {
   const delegating = delegatingForRole(spec.role, spec.planTiers ?? TIER_NAMES, tier, available);
   const description = tier === undefined
     ? `Runs ${blurb} on a ranked list of foreign models, natively inside Claude Code's loop. ${NO_MODEL_ARG} Requires a routed session (sonata route auto, then a new session; or sonata code).`
-    : `Runs ${blurb} on a ranked list of foreign models (${tier} tier), natively inside Claude Code's loop. ${TIER_CRITERION[tier]} Size is not difficulty — a large mechanical change is simple, a three-line change that decides an interface is complex. ${NO_MODEL_ARG} Requires a routed session (sonata route auto, then a new session; or sonata code).`;
+    : `Runs ${blurb} on a ranked list of foreign models (${tier} tier), natively inside Claude Code's loop. ${TIER_CRITERION[tier]} Size is not difficulty — a large mechanical change is simple, a three-line change that decides an interface is complex.${escalationNote(tier, available)} ${NO_MODEL_ARG} Requires a routed session (sonata route auto, then a new session; or sonata code).`;
 
   return `---
 name: ${name}
