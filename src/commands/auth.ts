@@ -28,7 +28,7 @@ export function cmdAuthList(opts: { home: string; gateways: string[] }): { text:
  */
 export function cmdAuthAdd(opts: { home: string; gateway: string; key: string; cwd?: string }): void {
   // The upgrade's seed first: see `seedTrustBeforeKeyWrite`.
-  seedTrustBeforeKeyWrite(opts.home, opts.cwd ?? process.cwd());
+  seedTrustBeforeKeyWrite(opts.home);
   writeSonataKey(opts.home, opts.gateway, opts.key);
 }
 

@@ -2190,7 +2190,7 @@ export async function cmdServe(
     // trust file. A failure is logged and serving goes on: the request path
     // reads the file tolerantly, so nothing is trusted that was not before.
     try {
-      for (const line of seedTrustOnUpgrade(opts.home, registry)) console.error(`sonata serve: ${line}`);
+      for (const line of seedTrustOnUpgrade(opts.home)) console.error(`sonata serve: ${line}`);
     } catch (error) {
       console.error(`sonata serve: could not record the upgrade's trust seed: ${error instanceof Error ? error.message : String(error)}`);
     }

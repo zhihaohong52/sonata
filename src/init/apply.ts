@@ -59,8 +59,8 @@ export async function apply(
   // ---- credentials (first, so a partially-failed run still leaves keys behind) ----
   // Keys typed in the wizard are stored here and nowhere earlier: a cancelled
   // run must leave no credential behind. The gateway is printed, never the key.
-  // The upgrade's seed before the first key lands: see `seedTrustBeforeKeyWrite`.
-  if (plan.keysToStore.length > 0) seedTrustBeforeKeyWrite(home, cwd);
+  // The upgrade's seed before anything is stored: see `seedTrustBeforeKeyWrite`.
+  seedTrustBeforeKeyWrite(home);
   for (const { gateway, key } of plan.keysToStore) {
     writeSonataKey(home, gateway, key);
     io.out(`  ✓ stored the key for ${gateway}`);

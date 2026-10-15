@@ -1444,7 +1444,7 @@ export async function cmdDoctor(
     registry.noteProject(opts.cwd);
     // The same one-time seed serve runs, before the bindings are read below.
     try {
-      const seeded = seedTrustOnUpgrade(home, registry);
+      const seeded = seedTrustOnUpgrade(home);
       if (seeded.length > 0) checks.push({ name: 'trust seed', ok: true, detail: seeded.join('\n  ') });
     } catch (error) {
       checks.push({ name: 'trust seed', ok: false, detail: error instanceof Error ? error.message : String(error) });

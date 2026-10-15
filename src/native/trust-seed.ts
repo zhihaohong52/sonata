@@ -1,11 +1,9 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { GLOBAL_CONFIG_RELATIVE } from '../config.js';
-import { sessionsPath } from '../sessions.js';
-import { sonataKeyStorePath } from './credentials.js';
+import { GLOBAL_CONFIG_RELATIVE, configPath, parseConfig, type NativeConfig } from '../config.js';
+import { readSessions } from '../sessions.js';
 import { seedUpgradeTrust } from './host-bindings.js';
-import { TenantRegistry } from './tenants.js';
 
 /** The running sonata version, recorded in the seed's marker. `unknown` when the manifest is unreadable. */
 function runningVersion(): string {
@@ -18,33 +16,87 @@ function runningVersion(): string {
 }
 
 /**
- * The upgrade's one-time trust seed over every config the router would serve:
- * the machine config, each project in sessions.json, and each noted project.
- * Serve runs it before its first credential check and doctor before its own
- * credential-host check, so both read the same bindings. One line per binding
- * written; an empty list once the marker is there.
+ * When this build was installed, in epoch milliseconds: the change time of the
+ * package's own manifest. npm can carry a tarball's mtime over, but a change
+ * time is set when the file lands on this machine. Unreadable answers 0, so no
+ * project predates the install and none is seeded: fail closed.
  */
-export function seedTrustOnUpgrade(home: string, registry: TenantRegistry): string[] {
-  // A fresh install has no configs that predate it, so nothing is seeded: a
-  // repo cloned into a machine that never ran sonata must not be trusted by
-  // the first run. The marker is still written, so that holds for every
-  // later run too.
-  const predates = [sonataKeyStorePath(home), sessionsPath(home), join(home, GLOBAL_CONFIG_RELATIVE)].some((path) => existsSync(path));
-  return seedUpgradeTrust(
-    home,
-    runningVersion(),
-    predates ? registry.loadable().map(({ configPath, config }) => ({ configPath, gateways: config.native?.gateways ?? {} })) : [],
-  );
+export function buildInstalledAt(): number {
+  try {
+    return statSync(new URL('../../package.json', import.meta.url)).ctimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+/** One config the seed reads: its file, and the gateways it names. */
+type SeedConfig = { configPath: string; gateways: NativeConfig['gateways'] };
+
+/** The machine config, the one config that is trusted by definition. */
+function machineConfigs(home: string): SeedConfig[] {
+  const file = join(home, GLOBAL_CONFIG_RELATIVE);
+  if (!existsSync(file)) return [];
+  try {
+    return [{ configPath: file, gateways: parseConfig(readFileSync(file, 'utf8')).native?.gateways ?? {} }];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The project configs a router already used before this build was installed.
+ * A project counts only when a session in it started before the install (a
+ * session with no readable start time does not count), and its config file
+ * itself was last changed before the install: a config edited since is not the
+ * one the user had. The working directory of the command running now is never
+ * one of these: only what sonata recorded before the upgrade is.
+ */
+function predatingProjectConfigs(home: string, installedAt: number): SeedConfig[] {
+  const { sessions } = readSessions(home);
+  const seen = new Set<string>();
+  const out: SeedConfig[] = [];
+  for (const record of Object.values(sessions)) {
+    const started = Date.parse(record.started);
+    if (!Number.isFinite(started) || started >= installedAt) continue;
+    const file = configPath(record.cwd, home);
+    if (file === null || seen.has(file)) continue;
+    seen.add(file);
+    try {
+      if (statSync(file).mtimeMs >= installedAt) continue;
+      out.push({ configPath: file, gateways: parseConfig(readFileSync(file, 'utf8')).native?.gateways ?? {} });
+    } catch {
+      // Unreadable or unparseable: nothing there to trust.
+    }
+  }
+  return out;
+}
+
+/**
+ * The upgrade's one-time trust seed. It binds the hosts that the machine config
+ * and the projects that predate this install already use, and nothing else:
+ *
+ * - the machine config, always;
+ * - a project only if a session recorded before the install ran in it and its
+ *   config was last changed before the install (`predatingProjectConfigs`).
+ *
+ * Never the working directory of the command running now, and never a project
+ * merely noted or cloned since. The marker is written on the first run after
+ * the upgrade whatever the stores hold, so the seed runs once and a fresh
+ * install, with nothing predating it, seeds nothing. Serve and doctor run it
+ * before their checks; `auth add` and `init` run it before they store a key.
+ */
+export function seedTrustOnUpgrade(home: string, installedAt: number = buildInstalledAt()): string[] {
+  return seedUpgradeTrust(home, runningVersion(), [
+    ...machineConfigs(home),
+    ...predatingProjectConfigs(home, installedAt),
+  ]);
 }
 
 /**
  * The same seed, run by a command about to store a key. A key written before
- * the first serve or doctor run would otherwise make the configs that run
- * finds count as predating the upgrade; running it first records the state
- * as it was, so that a fresh install is never seeded.
+ * the first serve or doctor run must not change which configs count as
+ * predating the install, so it runs first, unconditionally.
  */
-export function seedTrustBeforeKeyWrite(home: string, cwd: string): void {
-  const registry = new TenantRegistry(home);
-  registry.noteProject(cwd);
-  seedTrustOnUpgrade(home, registry);
+export function seedTrustBeforeKeyWrite(home: string): void {
+  seedTrustOnUpgrade(home);
 }

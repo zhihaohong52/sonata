@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { NativeConfig } from '../../src/config.js';
 import { writeSonataKey } from '../../src/native/credentials.js';
+import { sessionsPath } from '../../src/sessions.js';
+import { seedTrustOnUpgrade } from '../../src/native/trust-seed.js';
 import {
   addTrustBinding, readTrustBindings, seedUpgradeTrust, trustedHostsPath,
 } from '../../src/native/host-bindings.js';
@@ -98,21 +100,93 @@ describe('the seed marker name', () => {
   });
 });
 
-describe('seedTrustOnUpgrade', () => {
-  it('seeds nothing on a fresh install, and the marker keeps a later key from being seeded', async () => {
-    const { seedTrustOnUpgrade } = await import('../../src/native/trust-seed.js');
-    const { TenantRegistry } = await import('../../src/native/tenants.js');
+describe('seedTrustOnUpgrade — what predates the install', () => {
+  const INSTALL = Date.parse('2026-01-01T00:00:00.000Z');
+  const BEFORE = '2025-12-01T00:00:00.000Z';
+  const AFTER = '2026-02-01T00:00:00.000Z';
+  const OLD_FILE = new Date('2025-11-30T00:00:00.000Z');
+
+  /** A project directory whose sonata.toml names `url`, its mtime set to `mtime` when given. */
+  const project = (url: string, mtime?: Date): string => {
+    const dir = tmp();
+    const file = join(dir, 'sonata.toml');
+    writeFileSync(file, `[native.gateways.acme]\nbase_url = "${url}"\n`);
+    if (mtime !== undefined) utimesSync(file, mtime, mtime);
+    return dir;
+  };
+  /** sessions.json with the given session records, keyed by session id. */
+  const recordSessions = (home: string, records: Record<string, { cwd: string; started?: string }>): void => {
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    const doc = Object.fromEntries(Object.entries(records).map(([id, record]) => [id, { session: id, ...record }]));
+    writeFileSync(sessionsPath(home), JSON.stringify(doc));
+  };
+
+  it('seeds a project a session recorded before the install ran in, when its config predates it', () => {
     const home = tmp();
-    const cwd = tmp();
-    writeFileSync(join(cwd, 'sonata.toml'), '[native.gateways.acme]\nbase_url = "https://attacker.example/v1"\n');
-    const registry = new TenantRegistry(home);
-    registry.noteProject(cwd);
-    // First run on a fresh machine: no sonata state yet, so nothing predates it.
-    expect(seedTrustOnUpgrade(home, registry)).toEqual([]);
-    // The key and the repo's config arrive afterwards: the marker is already there.
     writeSonataKey(home, 'acme', 'sk-acme');
-    expect(seedTrustOnUpgrade(home, registry)).toEqual([]);
+    const dir = project('https://proxy.example/v1', OLD_FILE);
+    recordSessions(home, { s1: { cwd: dir, started: BEFORE } });
+    expect(seedTrustOnUpgrade(home, INSTALL)).toHaveLength(1);
+    expect(readTrustBindings(home)).toEqual({ acme: ['proxy.example'] });
+  });
+
+  it('does not seed a project first run after the install', () => {
+    const home = tmp();
+    writeSonataKey(home, 'acme', 'sk-acme');
+    const dir = project('https://attacker.example/v1', OLD_FILE);
+    recordSessions(home, { s1: { cwd: dir, started: AFTER } });
+    expect(seedTrustOnUpgrade(home, INSTALL)).toEqual([]);
     expect(readTrustBindings(home)).toEqual({});
+  });
+
+  it('does not seed a config edited since the install, even under a pre-install session', () => {
+    const home = tmp();
+    writeSonataKey(home, 'acme', 'sk-acme');
+    const dir = project('https://attacker.example/v1');
+    recordSessions(home, { s1: { cwd: dir, started: BEFORE } });
+    expect(seedTrustOnUpgrade(home, INSTALL)).toEqual([]);
+    expect(readTrustBindings(home)).toEqual({});
+  });
+
+  it('never seeds a project with no readable session start time', () => {
+    const home = tmp();
+    writeSonataKey(home, 'acme', 'sk-acme');
+    const dir = project('https://proxy.example/v1', OLD_FILE);
+    recordSessions(home, { s1: { cwd: dir } });
+    expect(seedTrustOnUpgrade(home, INSTALL)).toEqual([]);
+  });
+
+  it('never seeds the directory a command runs in, when no session recorded it', () => {
+    const home = tmp();
+    writeSonataKey(home, 'acme', 'sk-acme');
+    project('https://attacker.example/v1', OLD_FILE);
+    expect(seedTrustOnUpgrade(home, INSTALL)).toEqual([]);
+    expect(readTrustBindings(home)).toEqual({});
+  });
+
+  it('seeds the machine config, which is trusted by definition', () => {
+    const home = tmp();
+    writeSonataKey(home, 'acme', 'sk-acme');
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(join(home, '.config', 'sonata', 'sonata.toml'), '[native.gateways.acme]\nbase_url = "https://machine.example/v1"\n');
+    expect(seedTrustOnUpgrade(home, INSTALL)).toHaveLength(1);
+    expect(readTrustBindings(home)).toEqual({ acme: ['machine.example'] });
+  });
+
+  it('writes the marker with no keys stored, so the seed runs exactly once', () => {
+    const home = tmp();
+    expect(seedTrustOnUpgrade(home, INSTALL)).toEqual([]);
     expect(JSON.parse(readFileSync(trustedHostsPath(home), 'utf8'))).toHaveProperty('seeded');
+  });
+
+  it('seeds nothing on a fresh install, and a later install never seeds what it finds', () => {
+    const home = tmp();
+    const dir = project('https://attacker.example/v1', OLD_FILE);
+    expect(seedTrustOnUpgrade(home, INSTALL)).toEqual([]);
+    // A session recorded after the marker is written is never seeded later.
+    writeSonataKey(home, 'acme', 'sk-acme');
+    recordSessions(home, { s1: { cwd: dir, started: BEFORE } });
+    expect(seedTrustOnUpgrade(home, INSTALL)).toEqual([]);
+    expect(readTrustBindings(home)).toEqual({});
   });
 });
