@@ -62,6 +62,25 @@ describe('priceRow', () => {
     expect(priceRow(CONFIG, home, row({ key: 'nope' })).price).toEqual({ source: 'none' });
   });
 
+  // Unknown is never zero: a successful 200 whose usage was never observed
+  // (a JSON body past the recorder's byte cap, or served without an
+  // `application/json` content-type) carries all-zero tokens with
+  // `complete: false`. Pricing it would book $0 under a real source.
+  it('leaves an unobserved successful row unpriced rather than $0', () => {
+    const unobserved = row({ complete: false, tokens: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 } });
+    expect(priceRow(CONFIG, home, unobserved).price).toEqual({ source: 'none' });
+  });
+
+  it('still prices an incomplete row that carries partial tokens', () => {
+    const partial = row({ complete: false, tokens: { input: 1_000_000, output: 0, cacheRead: 0, cacheCreation: 0 } });
+    expect(priceRow(CONFIG, home, partial).price).toMatchObject({ source: 'model', totalUsd: 1 });
+  });
+
+  it('still prices error responses the old way, so they do not swell the unpriced tally', () => {
+    const err = row({ status: 529, complete: false, tokens: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 } });
+    expect(priceRow(CONFIG, home, err).price).toMatchObject({ source: 'model', totalUsd: 0 });
+  });
+
   it('prices by the row timestamp, not by now', () => {
     // Clock pinned to a moment clearly outside the 16:30–00:30 window so the
     // assertion cannot pass coincidentally: a priceRow that wrongly priced by

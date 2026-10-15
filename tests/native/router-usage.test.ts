@@ -243,6 +243,38 @@ describe('router usage recording', () => {
     expect(rows[0]).toMatchObject({ upstream: 'anthropic', alias: 'claude-sonnet-5', complete: true, tokens: { input: 5, output: 6 } });
   });
 
+  it('records tokens from a multi-chunk non-streamed JSON 200', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const json = JSON.stringify({ usage: { input_tokens: 7, output_tokens: 8 } });
+    const mid = Math.ceil(json.length / 2);
+    const res = await routeRequest(req('sonata-code-simple'), deps(rows, () => jsonChunks([json.slice(0, mid), json.slice(mid)])));
+    expect(await drain(res.body)).toBe(json);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ complete: true, tokens: { input: 7, output: 8 } });
+  });
+
+  it('records tokens when the JSON content-type carries a charset', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const json = JSON.stringify({ usage: { input_tokens: 9, output_tokens: 10 } });
+    const res = await routeRequest(req('sonata-code-simple'), deps(rows, () => body200(json, 'application/json; charset=utf-8')));
+    expect(await drain(res.body)).toBe(json);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ complete: true, tokens: { input: 9, output: 10 } });
+  });
+
+  it('records a JSON 200 with no usage key as incomplete with zero tokens', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const json = JSON.stringify({ id: 'm', type: 'message' });
+    const res = await routeRequest(req('sonata-code-simple'), deps(rows, () => body200(json, 'application/json')));
+    expect(await drain(res.body)).toBe(json);
+    expect(rows).toHaveLength(1);
+    // priceRow leaves this shape unpriced (source 'none'), never $0.
+    expect(rows[0]).toMatchObject({ complete: false, tokens: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 } });
+  });
+
   it('records `ts` at request start, not at stream completion', async () => {
     clearCooldowns();
     const rows: LedgerRow[] = [];

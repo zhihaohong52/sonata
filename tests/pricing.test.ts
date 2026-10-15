@@ -533,6 +533,15 @@ pricing_provider = "acme"
     expect(price).toMatchObject({ source: 'models-dev', totalUsd: 2 });
   });
 
+  it('prices cache reads from a scraped table that carries cached_input', () => {
+    const price = resolvePrice(
+      config, 'm',
+      { input: 0, output: 0, cacheRead: 1_000_000, cacheCreation: 0 },
+      at, cache({ input: 2, cachedInput: 0.5 }),
+    );
+    expect(price).toMatchObject({ source: 'models-dev', totalUsd: 0.5 });
+  });
+
   // cacheRead still declines: a scraped table is not a statement of intent,
   // so unlike a hand-written [price] it must not value reads at the input rate.
   it('declines cache-read tokens when cached_input is absent, even with an input rate', () => {
