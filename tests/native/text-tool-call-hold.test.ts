@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { createMarkerProbe, PROBE_NON_WHITESPACE } from '../../src/native/text-tool-call-hold.js';
+import { createMarkerProbe, holdForTextToolCalls, PROBE_NON_WHITESPACE } from '../../src/native/text-tool-call-hold.js';
+import { rewriteTextToolCallStream, type TextToolCallCounts } from '../../src/native/text-tool-calls.js';
 
 const ev = (type: string, data: Record<string, unknown>): string => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
 const bytes = (s: string): Uint8Array => new TextEncoder().encode(s);
@@ -77,5 +78,44 @@ describe('createMarkerProbe', () => {
       probe.push(bytes(all.slice(cut)));
       expect(probe.state, `cut at ${cut}`).toBe('marker');
     }
+  });
+});
+
+describe('holdForTextToolCalls', () => {
+  const tools = new Map([['Bash', { type: 'object', properties: { command: { type: 'string' } } }]]);
+  const LIMITS = { maxBytes: 1024 * 1024, idleMs: 10_000, maxMs: 60_000 };
+
+  it('stops the rewriter and the upstream when the consumer of a released body stops early', async () => {
+    let upstreamClosed = false;
+    let settled: TextToolCallCounts | undefined;
+    async function* upstream(): AsyncIterable<Uint8Array> {
+      try {
+        yield bytes(ev('message_start', { message: {} }) + start(0, 'thinking'));
+        for (;;) {
+          yield bytes(ev('content_block_delta', { index: 0, delta: { type: 'thinking_delta', thinking: 'x' } }));
+          await new Promise((r) => setTimeout(r, 5));
+        }
+      } finally { upstreamClosed = true; }
+    }
+    const outcome = await holdForTextToolCalls(upstream(), (input) => rewriteTextToolCallStream(input, tools, (c) => { settled = c; }), () => 0, LIMITS);
+    expect(outcome.kind).toBe('serve');
+    if (outcome.kind !== 'serve') return;
+    for await (const chunk of outcome.body) { expect(chunk.length).toBeGreaterThan(0); break; }
+    expect(settled).toEqual({ recovered: 0, unparsed: 0 });
+    expect(upstreamClosed).toBe(true);
+  });
+
+  it('releases what it held when the upstream breaks mid-hold, surfacing the break in the body', async () => {
+    async function* upstream(): AsyncIterable<Uint8Array> {
+      yield bytes(ev('message_start', { message: {} }) + start(0, 'text') + text(0, 'hi'));
+      throw new Error('upstream reset');
+    }
+    const outcome = await holdForTextToolCalls(upstream(), (input) => rewriteTextToolCallStream(input, tools, () => undefined), () => 0, LIMITS);
+    expect(outcome.kind).toBe('serve');
+    if (outcome.kind !== 'serve') return;
+    let out = '';
+    await expect((async () => { for await (const chunk of outcome.body) out += new TextDecoder().decode(chunk); })()).rejects.toThrow('upstream reset');
+    expect(out).toContain('message_start');
+    expect(out).toContain('"text":"hi"');
   });
 });
