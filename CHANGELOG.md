@@ -23,8 +23,9 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   chose. Anything else gets no key: `sonata serve` withholds it and answers a
   named 502 with the exact trust command, and `sonata doctor` fails the
   gateway the same way. Hostnames compare exactly (never suffix-matched),
-  https only. Session and OAuth gateways hold no sendable key and are
-  unaffected.
+  https only, except a loopback http host (`localhost`, `127.0.0.0/8`, `::1`),
+  which only an explicit `sonata auth trust` binds: no config binds it by
+  itself. Session and OAuth gateways hold no sendable key and are unaffected.
 - **`keys.json` is no longer read as empty on a parse error.** Writers refused
   nothing and rewrote the file from what parsed, so one torn write deleted
   every other key (`writeSonataKey`) or unlinked the file (`removeSonataKey`).
@@ -51,12 +52,13 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   trust a repo's host for good. It now reports the unbound host, the config
   that set it, and the trust command. `sonata init` binds only the URLs typed
   in its own run, never one read from an existing config.
-- **`[auto_route]` sends the key and the task text only to a bound host.** A
-  project's `base_url` received the decision key and up to 8,000 characters of
-  the task with no host check. TypeSafe and OpenRouter are bound by name; a
-  custom host needs `sonata auth trust auto-route <host>`, or a URL typed in
-  `sonata init`. An unbound host skips the decision, the tier falls back, and
-  the reason is logged and recorded. Decision fetches refuse redirects.
+- **`[auto_route]` sends a stored decision key only to a bound host.** A
+  project's `base_url` received the decision key with no host check. TypeSafe
+  and OpenRouter are bound by name; a custom host with a stored key needs
+  `sonata auth trust auto-route <host>`, or a URL typed in `sonata init`. A
+  keyless local decision server needs no trust. For a keyed unbound host the
+  decision is skipped, the task text is not sent, the tier falls back, and the
+  reason is logged and recorded. Decision fetches refuse redirects.
 - **`sonata init` does not refresh a model list from an unbound host.** The
   wizard sent each stored key to its URL's host to list models. It now checks
   first: an unbound host is not asked, the harness list stands, and the reason

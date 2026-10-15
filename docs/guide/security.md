@@ -32,11 +32,13 @@ your files and your credentials.
   `sonata doctor` fails the gateway the same way, for every project it routes.
   If you did not choose a URL, remove it from that config rather than trusting
   it. Bindings live in a 0600 file beside the key store; hostnames (with a
-  non-default port) compare exactly, never suffix-matched, and https only.
+  non-default port) compare exactly, never suffix-matched, and https only,
+  except a loopback http host (`localhost`, `127.0.0.0/8`, `::1`), which only
+  an explicit `sonata auth trust` binds.
   The first run after an upgrade binds, once, the hosts of the configs already
   in use that have a key; `sonata auth untrust <gateway> <host>` removes any of
   them, and `sonata auth trust-list` shows them.
-- **Auto-routing sends a limited task excerpt to whatever `base_url` names.** When `[auto_route]` is set, the first message of each `-auto` subagent task is sent to that URL — TypeSafe at `api.typesafe.ai` by default, OpenRouter at `openrouter.ai/api`, or a `jev-compatible-server` you run yourself — after `<system-reminder>` blocks are removed and the text is capped at 8,000 characters. Nothing else is sent: no system prompt, tool results or later turns. The key follows the host, and a key is only ever sent to the host it belongs to: the `openrouter` key goes to `openrouter.ai` and nowhere else. A custom host gets the decision only once you trust it (`sonata auth trust auto-route <host>`, or give the URL in `sonata init`); until then the decision is skipped, the task text is not sent, and the tier falls back. The feature is off unless `[auto_route]` is written.
+- **Auto-routing sends a limited task excerpt to whatever `base_url` names.** When `[auto_route]` is set, the first message of each `-auto` subagent task is sent to that URL — TypeSafe at `api.typesafe.ai` by default, OpenRouter at `openrouter.ai/api`, or a `jev-compatible-server` you run yourself — after `<system-reminder>` blocks are removed and the text is capped at 8,000 characters. Nothing else is sent: no system prompt, tool results or later turns. The key follows the host, and a key is only ever sent to the host it belongs to: the `openrouter` key goes to `openrouter.ai` and nowhere else. A custom host gets a stored decision key only once you trust it (`sonata auth trust auto-route <host>`, or give the URL in `sonata init`). With a stored key, an untrusted host gets neither the key nor the task text: the decision is skipped and the tier falls back. With no stored key, a local decision server is sent the task text as any keyless gateway would be, so only point `base_url` at a server you run. The feature is off unless `[auto_route]` is written.
 
 - **Prompt injection is a real risk.** A foreign model reading a hostile
   repository can be steered, and it has no classifier between it and your

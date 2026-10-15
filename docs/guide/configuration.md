@@ -144,7 +144,7 @@ Jev is asked wherever `base_url` points — any http(s) URL speaking its API:
 
 - TypeSafe directly (the default, `https://api.typesafe.ai`). Store the key with `sonata auth add typesafe`.
 - OpenRouter (`base_url = "https://openrouter.ai/api"`), using the key your `openrouter` gateway already uses (`sonata auth add openrouter`, or one opencode holds). No TypeSafe account is needed.
-- A self-hosted `jev-compatible-server`, e.g. `base_url = "https://decide.example:8443"`. A local server usually needs no key; any other host takes one stored with `sonata auth add auto-route` when there is one. Its host must be trusted (`sonata auth trust auto-route <host>`, with the port if it has one), and only an https URL can be trusted, so serve it over https.
+- A self-hosted `jev-compatible-server`, e.g. `base_url = "http://localhost:8000"`. A local server usually needs no key, and then it works as it is. A keyed one needs `sonata auth trust auto-route localhost:8000` (the host with its port), since its key goes only to a host you trusted; any other host takes a key stored with `sonata auth add auto-route`.
 
 The key follows the host and is only ever sent to it: the OpenRouter key goes to `openrouter.ai`, the TypeSafe key to `api.typesafe.ai`. The key is read when each classification is made and is never logged.
 
