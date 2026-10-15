@@ -17,14 +17,24 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   and Claude Code sends every tool on every request, so it failed them all.
   The router now writes that escape as `\x00` — the same character — before
   sending.
-- **Models that cap tool-schema depth serve Claude Code.** Muse Spark 1.3
-  Contributor (and any OpenAI-style validator, which documents the same
-  limit) refuses a tool schema nested more than 10 levels deep, counting
-  `$ref`s inlined — and a single deep MCP tool fails every request, since
-  every tool is sent each time. The router now cuts only those tools to 10
-  levels, keeping each cut parameter's type and description; every other
-  tool goes out unchanged. A model that still refuses a tool schema is now
-  skipped for the next candidate instead of ending the request.
+- **Strict tool-schema validators no longer refuse every request.** Claude
+  Code sends every tool — its own and every MCP server's — on every request,
+  so one schema a model's validator rejects fails them all. On the LiteLLM
+  path the router now rewrites only the tools that would be refused, each
+  case measured against Muse Spark 1.3 Contributor or reported against a real
+  MCP server:
+  - a schema nested more than 10 levels deep, counting `$ref`s inlined, is
+    cut to 10, keeping each cut parameter's type and description (shared
+    definitions stay shared, so the tool does not grow);
+  - a recursive schema — including a recursive definition nothing uses, and
+    `$ref: "#"` — is unrolled to that depth;
+  - each `pattern` is rewritten into the regex subset JavaScript, Python and
+    RE2 all accept (an unescaped `[` inside a class is escaped, a named group
+    becomes plain, an over-1000 repeat bound is opened), or dropped where only
+    a lookaround or backreference would do.
+
+  Every other tool is sent unchanged. A model that still refuses a tool schema
+  is skipped for the next candidate instead of ending the request.
 
 ## [0.16.5] - 2026-10-15
 

@@ -892,11 +892,22 @@ const UNSERVABLE_400_SIGNATURES = ['MissingSessionID'] as const;
  * `\0` rewrite (`rewriteNulEscapes`). Other models on the same gateway take
  * the identical tools. Both are anchored on Muse's exact wording, which names
  * the tool schema (`param: "parameters"`), not the conversation.
+ *
+ * The rest are the same refusal in other validators' words, each reported
+ * against a real MCP server's tools (morluto/rea): Muse's "Recursive JSON
+ * schemas are not currently supported" (#919, reproduced here 2026-10-15),
+ * OpenAI and DeepSeek's "Invalid schema for function '<name>'" (#1282,
+ * #1329), and Moonshot's per-schema size cap (#1484). `limitToolSchemaDepth`
+ * and `portablePattern` prevent the first two; Moonshot's cap is not
+ * prevented, only fallen through.
  */
 const MODEL_UNSERVABLE_400_SIGNATURES = [
   'Model does not support this protocol',
   'JSON schema exceeds the maximum nesting depth',
   'Invalid JSON schema',
+  'Recursive JSON schemas are not currently supported',
+  'Invalid schema for function',
+  'is not a valid moonshot flavored json schema',
 ] as const;
 
 /** Module-level so a cooling-down key stays cool across requests. Test seam: `clearCooldowns()`. */
@@ -1551,9 +1562,85 @@ export function rewriteNulEscapes(pattern: string): string {
 }
 
 /**
- * Strips, from every tool's `input_schema`, each `pattern` that Python's `re`
- * cannot parse — and only those — and rewrites each NUL escape another
- * upstream refuses (`rewriteNulEscapes`).
+ * `pattern` rewritten into the regex subset every schema validator sonata has
+ * met accepts — JavaScript, Python's `re`, RE2/Rust — or undefined when it
+ * needs a construct outside that subset, so the caller drops it.
+ *
+ * Rewrites keep the meaning:
+ * - `\0` → `\x00` (`rewriteNulEscapes`);
+ * - an unescaped `[` inside a character class → `\[` — Muse Spark 1.3
+ *   Contributor refused `^[^\s[\]]+$` with "is not a regex" (probed
+ *   2026-10-15), as do JavaScript's `v` mode and Ruby;
+ * - a named group `(?<n>…)` → `(?:…)`, since Python spells it `(?P<n>…)`;
+ * - a repeat's upper bound over RE2's 1000 → unbounded (`{1,4096}` →
+ *   `{1,}`), which keeps the rest of the constraint; a lower bound over it
+ *   drops the pattern.
+ *
+ * Drops: Unicode property escapes (`usesUnicodePropertyEscape`), lookaround
+ * `(?=` `(?!` `(?<=` `(?<!`, atomic groups `(?>`, and backreferences — RE2 and
+ * Rust's `regex` have none, and a strict validator on one rejected REA's
+ * lookahead patterns (morluto/rea#1282). A pattern JavaScript itself cannot
+ * compile is dropped too. Dropping costs one validation the tool's own
+ * server still performs; keeping it can fail every request.
+ */
+/** RE2's largest repeat count (`{n,m}`); Go refuses `{1,4096}` to compile. */
+const MAX_PORTABLE_REPEAT = 1000;
+
+export function portablePattern(pattern: string): string | undefined {
+  if (usesUnicodePropertyEscape(pattern)) return undefined;
+  let out = '';
+  let inClass = false;
+  for (let i = 0; i < pattern.length; i += 1) {
+    const c = pattern[i]!;
+    if (c === '\\') {
+      const next = pattern[i + 1];
+      if (next === undefined) return undefined;
+      if (!inClass && (/[1-9]/.test(next) || next === 'k')) return undefined;
+      out += next === '0' && !/[0-9]/.test(pattern[i + 2] ?? '') ? '\\x00' : c + next;
+      i += 1;
+      continue;
+    }
+    if (inClass) {
+      if (c === ']') inClass = false;
+      out += c === '[' ? '\\[' : c;
+      continue;
+    }
+    if (c === '[') inClass = true;
+    if (c === '{') {
+      const repeat = /^\{(\d+)(?:(,)(\d*))?\}/.exec(pattern.slice(i));
+      if (repeat !== null) {
+        const [whole, min, , max] = repeat;
+        if (Number(min) > MAX_PORTABLE_REPEAT) return undefined;
+        out += max !== undefined && max !== '' && Number(max) > MAX_PORTABLE_REPEAT ? `{${min},}` : whole;
+        i += whole.length - 1;
+        continue;
+      }
+    }
+    if (c === '(' && pattern[i + 1] === '?') {
+      const rest = pattern.slice(i + 2);
+      if (/^(?:[=!>]|<[=!])/.test(rest)) return undefined;
+      const named = /^<[A-Za-z_$][\w$]*>/.exec(rest);
+      if (named !== null) {
+        out += '(?:';
+        i += 1 + named[0].length;
+        continue;
+      }
+    }
+    out += c;
+  }
+  try {
+    new RegExp(out);
+  } catch {
+    return undefined;
+  }
+  return out;
+}
+
+/**
+ * Rewrites every `pattern` in every tool's `input_schema` into a portable
+ * regex, or strips it where no rewrite keeps its meaning (`portablePattern`).
+ * The case that started this was a Unicode property escape Python's `re`
+ * cannot parse:
  *
  * A tool schema may constrain a string with `\p{Cc}`-style Unicode property
  * classes. JavaScript and Anthropic accept them. An OpenAI-style endpoint
@@ -1605,17 +1692,11 @@ export function sanitizeToolSchemas(body: Buffer): Buffer {
     for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
       // Only a string-valued `pattern` is the regex keyword; a *property*
       // named `pattern` is an object under `properties` and is left alone.
-      if (key === 'pattern' && typeof value === 'string' && usesUnicodePropertyEscape(value)) {
-        changed = true;
-        continue;
-      }
       if (key === 'pattern' && typeof value === 'string') {
-        const rewritten = rewriteNulEscapes(value);
-        if (rewritten !== value) {
-          changed = true;
-          out[key] = rewritten;
-          continue;
-        }
+        const portable = portablePattern(value);
+        if (portable !== value) changed = true;
+        if (portable !== undefined) out[key] = portable;
+        continue;
       }
       out[key] = strip(value);
     }
@@ -1709,14 +1790,93 @@ function isSchema(value: unknown): value is Schema {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-/** The local definition a `#/$defs/x` or `#/definitions/x` ref names, or undefined. */
+/**
+ * The schema a local `$ref` names — `#` for the root, or any JSON pointer
+ * under it (`#/$defs/x`, `#/definitions/x`, `#/properties/a/items`) — or
+ * undefined for a ref that leaves the document or names nothing.
+ */
 function resolveLocalRef(root: Schema, ref: string): Schema | undefined {
-  const match = /^#\/(\$defs|definitions)\/(.+)$/.exec(ref);
+  if (ref === '#') return root;
+  if (!ref.startsWith('#/')) return undefined;
+  let node: unknown = root;
+  for (const raw of ref.slice(2).split('/')) {
+    let token: string;
+    try {
+      token = decodeURIComponent(raw).replace(/~1/g, '/').replace(/~0/g, '~');
+    } catch {
+      return undefined;
+    }
+    if (Array.isArray(node)) node = node[Number(token)];
+    else if (isSchema(node)) node = node[token];
+    else return undefined;
+  }
+  return isSchema(node) ? node : undefined;
+}
+
+/** Every subschema directly under `schema`, local definitions included. */
+function childSchemas(schema: Schema, withDefinitions: boolean): Schema[] {
+  const out: Schema[] = [];
+  for (const key of SUBSCHEMA_KEYS) if (isSchema(schema[key])) out.push(schema[key] as Schema);
+  for (const key of SUBSCHEMA_LIST_KEYS) {
+    if (Array.isArray(schema[key])) for (const item of schema[key] as unknown[]) if (isSchema(item)) out.push(item);
+  }
+  const maps = withDefinitions ? [...SUBSCHEMA_MAP_KEYS, ...DEFINITION_KEYS] : SUBSCHEMA_MAP_KEYS;
+  for (const key of maps) {
+    if (isSchema(schema[key])) for (const child of Object.values(schema[key] as Schema)) if (isSchema(child)) out.push(child);
+  }
+  return out;
+}
+
+/**
+ * Whether any local `$ref` in `root` leads back to a schema it is nested in —
+ * including from a definition nothing references, and `$ref: "#"`.
+ *
+ * Muse Spark 1.3 Contributor refuses all of these with 400 "Recursive JSON
+ * schemas are not currently supported" (probed 2026-10-15: a self-referencing
+ * `$defs` entry no property points at is refused too), and strict OpenAI-style
+ * validators reject recursion outright.
+ */
+function isRecursiveSchema(root: Schema): boolean {
+  return reachesCycle(root, root, true);
+}
+
+/** Whether a cycle of local refs is reachable from `start` within `root`. */
+function reachesCycle(root: Schema, start: Schema, withDefinitions: boolean): boolean {
+  const onPath = new Set<Schema>();
+  const done = new Set<Schema>();
+  const visit = (node: Schema): boolean => {
+    if (done.has(node)) return false;
+    if (onPath.has(node)) return true;
+    onPath.add(node);
+    const target = typeof node.$ref === 'string' ? resolveLocalRef(root, node.$ref) : undefined;
+    const recursive = (target !== undefined && visit(target)) || childSchemas(node, withDefinitions).some(visit);
+    onPath.delete(node);
+    done.add(node);
+    return recursive;
+  };
+  return visit(start);
+}
+
+/** `#/$defs/<name>` or `#/definitions/<name>` as [table, name], else undefined. */
+function definitionRef(ref: string): [string, string] | undefined {
+  const match = /^#\/(\$defs|definitions)\/([^/]+)$/.exec(ref);
   if (match === null) return undefined;
-  const name = match[2]!.replace(/~1/g, '/').replace(/~0/g, '~');
-  const table = root[match[1]!];
-  const hit = isSchema(table) ? table[name] : undefined;
-  return isSchema(hit) ? hit : undefined;
+  try {
+    return [match[1]!, decodeURIComponent(match[2]!).replace(/~1/g, '/').replace(/~0/g, '~')];
+  } catch {
+    return undefined;
+  }
+}
+
+/** Every `$ref` string written inside `node`, not following any. */
+function refsWithin(node: Schema): string[] {
+  const refs: string[] = [];
+  const walk = (n: Schema): void => {
+    if (typeof n.$ref === 'string') refs.push(n.$ref);
+    childSchemas(n, false).forEach(walk);
+  };
+  walk(node);
+  return refs;
 }
 
 /**
@@ -1726,33 +1886,69 @@ function resolveLocalRef(root: Schema, ref: string): Schema | undefined {
  */
 function schemaNesting(schema: Schema, root: Schema, limit: number, seen = 0): number {
   if (seen > limit) return seen;
-  if (typeof schema.$ref === 'string') {
-    const target = resolveLocalRef(root, schema.$ref);
-    return target === undefined ? 0 : schemaNesting(target, root, limit, seen);
+  // A `$ref` counts as its target inlined; sibling keywords (allowed beside it
+  // since draft 2019-09) nest at the same level, so the deeper of the two wins.
+  const target = typeof schema.$ref === 'string' ? resolveLocalRef(root, schema.$ref) : undefined;
+  let deepest = target === undefined ? 0 : schemaNesting(target, root, limit, seen);
+  for (const child of childSchemas(schema, false)) {
+    deepest = Math.max(deepest, 1 + schemaNesting(child, root, limit, seen + 1));
   }
-  let deepest = 0;
-  const visit = (child: unknown): void => {
-    if (isSchema(child)) deepest = Math.max(deepest, 1 + schemaNesting(child, root, limit, seen + 1));
-  };
-  for (const key of SUBSCHEMA_KEYS) visit(schema[key]);
-  for (const key of SUBSCHEMA_LIST_KEYS) if (Array.isArray(schema[key])) (schema[key] as unknown[]).forEach(visit);
-  for (const key of SUBSCHEMA_MAP_KEYS) if (isSchema(schema[key])) Object.values(schema[key] as Schema).forEach(visit);
   return deepest;
 }
 
 /**
- * `schema` with its local refs inlined and every branch cut at `budget` more
- * levels. A cut leaves the schema's own `type` and `description`, so the
- * model still sees a described parameter of the right kind; only validation
- * below the cut is lost, and the tool's own server still validates its input.
+ * Whether `ref` may stay a `$ref` in a rewritten schema: it names a
+ * definition, and every definition it leads to is one too, with no cycle —
+ * so copying those definitions verbatim keeps the ref meaning what it did.
  */
-function limitedSchema(schema: Schema, root: Schema, budget: number): Schema {
+function shareableRef(root: Schema, ref: string, memo: Map<string, boolean>): boolean {
+  const known = memo.get(ref);
+  if (known !== undefined) return known;
+  memo.set(ref, false);
+  const target = definitionRef(ref) === undefined ? undefined : resolveLocalRef(root, ref);
+  const ok = target !== undefined && !reachesCycle(root, target, false)
+    && refsWithin(target).every((inner) => shareableRef(root, inner, memo));
+  memo.set(ref, ok);
+  return ok;
+}
+
+/** What one `limitedRoot` rewrite has decided so far. */
+interface LimitContext {
+  root: Schema;
+  /** Original refs kept as refs; their definitions are copied verbatim. */
+  kept: Set<string>;
+  /** Memo for `shareableRef`. */
+  shareable: Map<string, boolean>;
+  /** `<ref>@<budget>` → the name of that definition's cut copy in `$defs`. */
+  cuts: Map<string, string>;
+  /** The cut copies, by name. */
+  cutDefs: Schema;
+}
+
+/**
+ * `schema` cut at `budget` more levels. A `$ref` to a shareable definition
+ * stays a ref: to the original when it fits in what is left, else to one cut
+ * copy per remaining depth, so a definition used in many places is still
+ * written once. Any other local ref is inlined. A cut leaves the schema's own
+ * `type` and `description`, so the model still sees a described parameter of
+ * the right kind; only validation below the cut is lost, and the tool's own
+ * server still validates its input.
+ */
+function limitedSchema(schema: Schema, budget: number, ctx: LimitContext): Schema {
   let node = schema;
   for (let hops = 0; typeof node.$ref === 'string' && hops < 64; hops += 1) {
-    const target = resolveLocalRef(root, node.$ref);
+    const ref = node.$ref;
+    const target = resolveLocalRef(ctx.root, ref);
     if (target === undefined) break;
-    const { $ref: _ref, ...siblings } = node;
-    node = { ...target, ...siblings };
+    if (Object.keys(node).length === 1 && shareableRef(ctx.root, ref, ctx.shareable)) {
+      if (schemaNesting(target, ctx.root, budget) <= budget) {
+        ctx.kept.add(ref);
+        return node;
+      }
+      if (budget > 0) return { $ref: `#/$defs/${pointerToken(cutCopy(ref, target, budget, ctx))}` };
+    }
+    const { $ref: _ref, ...rest } = node;
+    node = { ...target, ...rest };
   }
   if (budget <= 0) {
     const leaf: Schema = {};
@@ -1760,24 +1956,71 @@ function limitedSchema(schema: Schema, root: Schema, budget: number): Schema {
     if (typeof node.description === 'string') leaf.description = node.description;
     return leaf;
   }
+  const limit = (child: Schema): Schema => limitedSchema(child, budget - 1, ctx);
   const out: Schema = {};
   for (const [key, value] of Object.entries(node)) {
-    if (DEFINITION_KEYS.includes(key) || key === '$ref') continue;
-    if (SUBSCHEMA_KEYS.includes(key) && isSchema(value)) out[key] = limitedSchema(value, root, budget - 1);
+    if (DEFINITION_KEYS.includes(key)) continue;
+    if (SUBSCHEMA_KEYS.includes(key) && isSchema(value)) out[key] = limit(value);
     else if (SUBSCHEMA_LIST_KEYS.includes(key) && Array.isArray(value)) {
-      out[key] = value.map((item) => (isSchema(item) ? limitedSchema(item, root, budget - 1) : item));
+      out[key] = value.map((item) => (isSchema(item) ? limit(item) : item));
     } else if (SUBSCHEMA_MAP_KEYS.includes(key) && isSchema(value)) {
-      out[key] = Object.fromEntries(Object.entries(value).map(([name, child]) =>
-        [name, isSchema(child) ? limitedSchema(child, root, budget - 1) : child]));
+      out[key] = Object.fromEntries(Object.entries(value).map(([name, child]) => [name, isSchema(child) ? limit(child) : child]));
     } else out[key] = value;
   }
   return out;
 }
 
+/** `name` escaped as one JSON-pointer token. */
+function pointerToken(name: string): string {
+  return name.replace(/~/g, '~0').replace(/\//g, '~1');
+}
+
+/** The `$defs` name of `ref`'s definition cut to `budget`, writing it once. */
+function cutCopy(ref: string, target: Schema, budget: number, ctx: LimitContext): string {
+  const key = `${ref}@${budget}`;
+  const existing = ctx.cuts.get(key);
+  if (existing !== undefined) return existing;
+  const taken = (name: string): boolean => name in ctx.cutDefs
+    || DEFINITION_KEYS.some((table) => isSchema(ctx.root[table]) && name in (ctx.root[table] as Schema));
+  const base = `${definitionRef(ref)![1]}__depth${budget}`;
+  let name = base;
+  for (let n = 2; taken(name); n += 1) name = `${base}_${n}`;
+  ctx.cuts.set(key, name);
+  ctx.cutDefs[name] = {};
+  ctx.cutDefs[name] = limitedSchema(target, budget, ctx);
+  return name;
+}
+
 /**
- * Cuts every tool's `input_schema` to `MAX_TOOL_SCHEMA_NESTING` levels — only
- * the tools that exceed it, so every other tool, and every request with none,
- * goes out byte-identical. LiteLLM path only, like `sanitizeToolSchemas`: an
+ * The root schema cut to `max`, carrying exactly the definitions it still
+ * refers to — kept originals copied verbatim with what they reach, plus the
+ * cut copies — so an unreferenced or recursive definition is gone.
+ */
+function limitedRoot(root: Schema, max: number): Schema {
+  const ctx: LimitContext = { root, kept: new Set(), shareable: new Map(), cuts: new Map(), cutDefs: {} };
+  const out = limitedSchema(root, max, ctx);
+  const queue = [...ctx.kept];
+  const seen = new Set<string>();
+  for (let ref = queue.shift(); ref !== undefined; ref = queue.shift()) {
+    if (seen.has(ref)) continue;
+    seen.add(ref);
+    const [table, name] = definitionRef(ref)!;
+    const target = resolveLocalRef(root, ref)!;
+    const defs = (out[table] ??= {}) as Schema;
+    defs[name] = target;
+    queue.push(...refsWithin(target));
+  }
+  if (Object.keys(ctx.cutDefs).length > 0) out.$defs = { ...(out.$defs as Schema | undefined), ...ctx.cutDefs };
+  return out;
+}
+
+/**
+ * Cuts every tool's `input_schema` to `MAX_TOOL_SCHEMA_NESTING` levels, and
+ * unrolls any recursive one to that depth — only the tools that need it, so
+ * every other tool, and every request with none, goes out byte-identical. A
+ * rewritten schema keeps each ref whose definition fits and inlines the rest
+ * (`limitedSchema`), and keeps only the definitions still referenced, which
+ * also removes a recursive definition nothing pointed at. LiteLLM path only, like `sanitizeToolSchemas`: an
  * Anthropic request stays untouched.
  */
 export function limitToolSchemaDepth(body: Buffer, max = MAX_TOOL_SCHEMA_NESTING): Buffer {
@@ -1793,9 +2036,9 @@ export function limitToolSchemaDepth(body: Buffer, max = MAX_TOOL_SCHEMA_NESTING
   const next = tools.map((tool) => {
     if (!isSchema(tool) || !isSchema(tool.input_schema)) return tool;
     const schema = tool.input_schema;
-    if (schemaNesting(schema, schema, max) <= max) return tool;
+    if (!isRecursiveSchema(schema) && schemaNesting(schema, schema, max) <= max) return tool;
     changed = true;
-    return { ...tool, input_schema: limitedSchema(schema, schema, max) };
+    return { ...tool, input_schema: limitedRoot(schema, max) };
   });
   if (!changed) return body;
   return Buffer.from(JSON.stringify({ ...payload, tools: next }));

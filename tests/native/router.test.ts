@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from 'vitest';
-import { routeRequest, sessionCredential, flattenSystemBlocks, sanitizeToolSchemas, usesUnicodePropertyEscape, rewriteNulEscapes, limitToolSchemaDepth, MAX_TOOL_SCHEMA_NESTING, demoteSystemTurns, requestedModel, withModel, clearCooldowns, TIER_CAPABILITY_400_THRESHOLD, TIER_COOLDOWN_MS, conversationKey, stripForeignThinking, repairNamelessToolCalls, withEffort, STICKY_TTL_MS, STICKY_MAX_CONVERSATIONS, stickyConversationCount, createRouterServer, respond, responseBodyForTest, isMessagelessError, litellmModelName, DEFAULT_TENANT } from '../../src/native/router.js';
+import { routeRequest, sessionCredential, flattenSystemBlocks, sanitizeToolSchemas, usesUnicodePropertyEscape, rewriteNulEscapes, limitToolSchemaDepth, MAX_TOOL_SCHEMA_NESTING, portablePattern, demoteSystemTurns, requestedModel, withModel, clearCooldowns, TIER_CAPABILITY_400_THRESHOLD, TIER_COOLDOWN_MS, conversationKey, stripForeignThinking, repairNamelessToolCalls, withEffort, STICKY_TTL_MS, STICKY_MAX_CONVERSATIONS, stickyConversationCount, createRouterServer, respond, responseBodyForTest, isMessagelessError, litellmModelName, DEFAULT_TENANT } from '../../src/native/router.js';
 import type { RouterTenant } from '../../src/native/router.js';
 import { TenantError, SONATA_PROJECT_HEADER } from '../../src/native/tenants.js';
 import { SONATA_TOKEN_HEADER } from '../../src/native/router-token.js';
@@ -1816,6 +1816,40 @@ describe('rewriteNulEscapes', () => {
   });
 });
 
+describe('portablePattern', () => {
+  it.each([
+    // Muse refused the first ("is not a regex", probed 2026-10-15), as do JS v-mode and Ruby.
+    ['^[^\\s[\\]]+$', '^[^\\s\\[\\]]+$'],
+    ['^[^\\0]*$', '^[^\\x00]*$'],
+    ['^(?<name>a)b$', '^(?:a)b$'],
+    ['^[A-Za-z0-9_=-]{1,4096}$', '^[A-Za-z0-9_=-]{1,}$'],
+    ['x\\01', 'x\\01'],
+    ['^[a-z]{2,3}$', '^[a-z]{2,3}$'],
+    ['[{]x{2}', '[{]x{2}'],
+  ])('rewrites %s to %s', (pattern, portable) => {
+    expect(portablePattern(pattern)).toBe(portable);
+  });
+
+  it.each(['\\p{L}+', '^(?!x)a', '(?<=a)b', '(?<!a)b', '(a)\\1', '(?<n>a)\\k<n>', 'a{2000}', '(unclosed'])(
+    'drops %s, which a strict validator cannot compile', (pattern) => {
+      expect(portablePattern(pattern)).toBeUndefined();
+    });
+
+  // Every distinct pattern from a real session's 456 tools (Claude Code's own
+  // and several MCP servers'), captured 2026-10-15. The rewrites were checked
+  // there against Python's re and Go's RE2 as well.
+  it('returns, for every captured pattern, one JavaScript compiles and maps to itself', async () => {
+    const { readFileSync } = await import('node:fs');
+    const patterns = JSON.parse(readFileSync(new URL('../fixtures/schemas/mcp-tool-patterns.json', import.meta.url), 'utf8')) as string[];
+    for (const pattern of patterns) {
+      const portable = portablePattern(pattern);
+      if (portable === undefined) continue;
+      expect(() => new RegExp(portable)).not.toThrow();
+      expect(portablePattern(portable)).toBe(portable);
+    }
+  });
+});
+
 describe('limitToolSchemaDepth', () => {
   // Muse Spark 1.3 Contributor refuses a schema nested deeper than 10 levels,
   // counting $refs inlined (probed 2026-10-15: 11 nested objects accepted, 12
@@ -1844,11 +1878,60 @@ describe('limitToolSchemaDepth', () => {
     expect(node).toEqual({ type: 'object', description: 'level 11' });
   });
 
-  it('counts a $ref as its definition inlined, and drops the definitions it inlines', () => {
+  // Nesting the way the validator counts it: each local $ref as its target
+  // inlined. Throws on a cycle, which the validator refuses outright.
+  const inlinedDepth = (node: unknown, root: Record<string, unknown>, path: unknown[] = []): number => {
+    if (node === null || typeof node !== 'object') return 0;
+    if (path.includes(node)) throw new Error('recursive');
+    const n = node as Record<string, unknown>;
+    const at = [...path, node];
+    let depth = 0;
+    if (typeof n.$ref === 'string') {
+      const target = n.$ref === '#' ? root : n.$ref.slice(2).split('/').reduce<unknown>((o, k) => (o as Record<string, unknown>)[k], root);
+      depth = inlinedDepth(target, root, at);
+    }
+    const kids = [
+      ...['items', 'additionalProperties'].map((k) => n[k]),
+      ...['anyOf', 'oneOf', 'allOf'].flatMap((k) => (Array.isArray(n[k]) ? (n[k] as unknown[]) : [])),
+      ...Object.values((n.properties ?? {}) as Record<string, unknown>),
+    ].filter((k) => k !== null && typeof k === 'object');
+    for (const kid of kids) depth = Math.max(depth, 1 + inlinedDepth(kid, root, at));
+    return depth;
+  };
+  const definitionsRecursive = (root: Record<string, unknown>): boolean =>
+    Object.values((root.$defs ?? {}) as Record<string, unknown>).some((d) => {
+      try { inlinedDepth(d, root); return false; } catch { return true; }
+    });
+
+  it('counts a $ref as its definition inlined', () => {
     const schema = { type: 'object', properties: { x: { $ref: '#/$defs/D' } }, $defs: { D: nested(11) } };
     const out = parse(limitToolSchemaDepth(body(schema))).tools[0].input_schema;
-    expect(out.$defs).toBeUndefined();
-    expect(depthOf(out)).toBe(MAX_TOOL_SCHEMA_NESTING);
+    expect(inlinedDepth(out, out)).toBe(MAX_TOOL_SCHEMA_NESTING);
+    expect(out.$defs.D).toBeUndefined();
+  });
+
+  it('counts keywords beside a $ref at the same level as its target', () => {
+    const schema = { type: 'object', properties: { x: { $ref: '#/$defs/S', properties: { deep: nested(10) } } },
+      $defs: { S: { type: 'object' } } };
+    const out = parse(limitToolSchemaDepth(body(schema))).tools[0].input_schema;
+    expect(inlinedDepth(out, out)).toBe(MAX_TOOL_SCHEMA_NESTING);
+  });
+
+  it('keeps a shared definition that fits as one $ref, and writes one cut copy per depth for one that does not', () => {
+    const shared = nested(3);
+    const deep = nested(9);
+    const schema = { type: 'object', properties: {
+      a: { $ref: '#/$defs/Shared' }, b: { $ref: '#/$defs/Shared' },
+      c: { type: 'object', properties: { d: { $ref: '#/$defs/Deep' }, e: { $ref: '#/$defs/Deep' } } },
+      f: nested(10),
+    }, $defs: { Shared: shared, Deep: deep, Unused: nested(2) } };
+    const out = parse(limitToolSchemaDepth(body(schema))).tools[0].input_schema;
+    expect(out.properties.a).toEqual({ $ref: '#/$defs/Shared' });
+    expect(out.properties.b).toEqual({ $ref: '#/$defs/Shared' });
+    expect(out.$defs.Shared).toEqual(shared);
+    expect(out.properties.c.properties.d).toEqual(out.properties.c.properties.e);
+    expect(Object.keys(out.$defs).sort()).toEqual(['Deep__depth8', 'Shared']);
+    expect(inlinedDepth(out, out)).toBe(MAX_TOOL_SCHEMA_NESTING);
   });
 
   it('leaves every tool within the limit, and the whole body, byte-identical', () => {
@@ -1858,11 +1941,35 @@ describe('limitToolSchemaDepth', () => {
     expect(mixed.tools[0].input_schema).toEqual(nested(3));
   });
 
-  it('terminates on a recursive definition', () => {
+  // Muse refuses all three with "Recursive JSON schemas are not currently
+  // supported" (probed 2026-10-15), however shallow the schema.
+  it('unrolls a recursive definition to the limit', () => {
     const schema = { type: 'object', properties: { node: { $ref: '#/$defs/N' } },
       $defs: { N: { type: 'object', properties: { child: { $ref: '#/$defs/N' } } } } };
     const out = parse(limitToolSchemaDepth(body(schema))).tools[0].input_schema;
-    expect(depthOf(out)).toBe(MAX_TOOL_SCHEMA_NESTING);
+    expect(inlinedDepth(out, out)).toBe(MAX_TOOL_SCHEMA_NESTING);
+    expect(definitionsRecursive(out)).toBe(false);
+  });
+
+  it('drops a recursive definition nothing refers to, leaving the rest of the tool as written', () => {
+    const schema = { type: 'object', properties: { a: { type: 'string' } },
+      $defs: { N: { type: 'object', properties: { c: { $ref: '#/$defs/N' } } } } };
+    const out = parse(limitToolSchemaDepth(body(schema))).tools[0].input_schema;
+    expect(out).toEqual({ type: 'object', properties: { a: { type: 'string' } } });
+  });
+
+  it('unrolls a $ref to the root', () => {
+    const schema = { type: 'object', description: 'tree', properties: { child: { $ref: '#' } } };
+    const out = parse(limitToolSchemaDepth(body(schema))).tools[0].input_schema;
+    expect(inlinedDepth(out, out)).toBe(MAX_TOOL_SCHEMA_NESTING);
+    expect(JSON.stringify(out)).not.toContain('$ref');
+  });
+
+  it('is idempotent', () => {
+    const schema = { type: 'object', properties: { node: { $ref: '#/$defs/N' }, d: { $ref: '#/$defs/D' } },
+      $defs: { N: { type: 'object', properties: { child: { $ref: '#/$defs/N' } } }, D: nested(12) } };
+    const once = limitToolSchemaDepth(body(schema));
+    expect(limitToolSchemaDepth(once).equals(once)).toBe(true);
   });
 });
 
@@ -3152,7 +3259,13 @@ describe('routeRequest — a model refusing a tool schema', () => {
   });
   beforeEach(() => clearCooldowns());
 
-  for (const message of ['JSON schema exceeds the maximum nesting depth of 10 levels', 'Invalid JSON schema: \\"x\\" is not a \\"regex\\"']) {
+  for (const message of [
+    'JSON schema exceeds the maximum nesting depth of 10 levels',
+    'Invalid JSON schema: \\"x\\" is not a \\"regex\\"',
+    'Recursive JSON schemas are not currently supported',
+    "Invalid schema for function 'mcp__x__y': x is not a 'regex'",
+    'tools.function.parameters is not a valid moonshot flavored json schema',
+  ]) {
     it(`falls through at once and cools only that model on "${message.slice(0, 40)}"`, async () => {
       const seen: string[] = [];
       const deps = {
