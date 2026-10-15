@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import type { NativeGatewayAuth } from '../config.js';
@@ -199,12 +199,23 @@ export async function loginGateway(opts: {
       try {
         if (existsSync(dir)) {
           fixPermissions(dir);
-          renameSync(dir, backup);
+          setAside(dir, backup);
           backedUp = true;
         }
         renameSync(staging, dir);
       } catch {
-        if (backedUp) renameSync(backup, dir);
+        if (backedUp) {
+          // The rollback is itself a rename, and it can fail too: then the
+          // previous credential is named, where it still is, rather than lost.
+          try {
+            renameSync(backup, dir);
+          } catch {
+            return finish({
+              ok: false,
+              problem: `could not install the new login, and the previous credential could not be put back — it is at ${backup}`,
+            });
+          }
+        }
         return finish({ ok: false, problem: 'could not install the new login; the previous credential was kept' });
       }
       if (backedUp) rmSync(backup, { force: true, recursive: true });
@@ -218,11 +229,31 @@ export async function loginGateway(opts: {
 const STALE_LOGIN_BACKUP_MS = 10 * 60_000;
 
 /**
- * Removes the backups a crashed login left beside its destination. A login
- * renames the previous credential to `<staging>-old` and deletes it once the
- * new one is installed; one that survives is a credential nothing reads. Only
- * backups older than ten minutes go, so a login still in its swap window is
- * never swept — its backup is its rollback.
+ * How old a leftover staging directory must be before a later login removes
+ * it. A device login can wait a long time for the user, so a staging directory
+ * is only swept once it is a day old. That is the cost of not knowing whether
+ * its login is still running; a crashed one may hold its token that long.
+ */
+const STALE_LOGIN_STAGING_MS = 24 * 60 * 60_000;
+
+/**
+ * Moves the previous credential aside as the rollback copy, and stamps the
+ * copy's mtime with now. A rename keeps the old credential's mtime, which can
+ * be months old, so without the stamp a fresh rollback copy would already look
+ * stale to a concurrent sweep. The sweep ages a backup from this stamp.
+ */
+export function setAside(dir: string, backup: string): void {
+  renameSync(dir, backup);
+  const now = new Date();
+  utimesSync(backup, now, now);
+}
+
+/**
+ * Removes what a crashed login left beside its destination: a rollback copy
+ * (`<staging>-old`, the previous credential) older than ten minutes, and a
+ * staging directory (`<staging>`, the new credential) older than a day. A
+ * rollback copy is aged from when it was set aside (`setAside`), so a login in
+ * its swap window keeps its rollback. Only names this module makes are touched.
  */
 export function sweepStaleLoginBackups(parent: string, now: number = Date.now()): void {
   let names: string[];
@@ -232,10 +263,13 @@ export function sweepStaleLoginBackups(parent: string, now: number = Date.now())
     return;
   }
   for (const name of names) {
-    if (!/^\.login-.+-old$/.test(name)) continue;
+    let limit: number;
+    if (/^\.login-[A-Za-z0-9]+-old$/.test(name)) limit = STALE_LOGIN_BACKUP_MS;
+    else if (/^\.login-[A-Za-z0-9]+$/.test(name)) limit = STALE_LOGIN_STAGING_MS;
+    else continue;
     const path = join(parent, name);
     try {
-      if (now - statSync(path).mtimeMs >= STALE_LOGIN_BACKUP_MS) rmSync(path, { force: true, recursive: true });
+      if (now - statSync(path).mtimeMs >= limit) rmSync(path, { force: true, recursive: true });
     } catch {
       // Gone already, or not ours to read: nothing to sweep.
     }
