@@ -494,6 +494,11 @@ interface RecordContext {
   incomplete?: true;
   /** When the turn ended, for a row written later than that (a withdrawn turn's). */
   endedAt?: number;
+  /**
+   * Where `ms` is measured from, when not the request's start: a withdrawn
+   * turn's own candidate. `ts` stays the request's start, which prices it.
+   */
+  measuredFrom?: number;
 }
 
 function headerNumber(headers: Record<string, string>, name: string): number | undefined {
@@ -520,7 +525,7 @@ function withUsageRecording(response: RouterResponse, ctx: RecordContext, deps: 
           // crosses a price-window boundary must keep the rate it started
           // under. `ms` is the genuine duration and stays tied to `endedAt`.
           ts: new Date(ctx.startedAt).toISOString(),
-          ms: endedAt - ctx.startedAt,
+          ms: endedAt - (ctx.measuredFrom ?? ctx.startedAt),
           session: ctx.session,
           project: ctx.project,
           tenant: ctx.tenant,
@@ -2739,6 +2744,10 @@ async function routeTierCandidates(
     // fields for different reasons, and the strip must see the original.
     const body = withEffort(withModel(prepared, direct ? route.native!.id : cool), direct ? undefined : route.effort);
     const variant = joinCandidate(route.key, route.effort);
+    // When this candidate was asked, for a withdrawn turn's own duration.
+    // Until something has been tried, that is when the request started (one
+    // clock read fewer on the common path).
+    const candidateStartedAt = attempts.length === 0 ? startedAt : now();
     const response = direct
       ? await forwardDirect(
         body,
@@ -3049,6 +3058,7 @@ async function routeTierCandidates(
             textToolCalls: { ...textToolCalls },
             // Its row is written once routing ends; its duration is its own.
             endedAt: now(),
+            measuredFrom: candidateStartedAt,
           },
         };
         withdrawn.push(turn);

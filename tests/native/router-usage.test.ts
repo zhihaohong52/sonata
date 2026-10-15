@@ -477,6 +477,31 @@ describe('router — text-form tool calls', () => {
     expect(rows.find((r) => r.withdrawn !== true)!.ms).toBe(5_000);
   });
 
+  it('times a withdrawn turn from its own candidate\'s start, not the request\'s', async () => {
+    clearCooldowns();
+    let clock = 1_000;
+    const rows: LedgerRow[] = [];
+    const d: RouterDeps = {
+      ...deps(rows, () => sse(stream('plain'))),
+      now: () => clock,
+      fetch: (async (_url: string, init: { body: string }) => {
+        const model = String(JSON.parse(init.body).model);
+        if (model.endsWith('/slow')) { clock += 3_000; return new Response('{}', { status: 503 }); }
+        if (model.endsWith('/flash')) { clock += 2_000; return sse(stream(UNPARSED)); }
+        return sse(stream('from pro'));
+      }) as unknown as typeof fetch,
+      resolveTier: (alias) => alias === 'sonata-code-simple'
+        ? { role: 'code', tier: 'simple', routes: ['slow', 'flash', 'pro'].map((key) => ({ key, native: { gateway: 'acme', id: key } })) }
+        : undefined,
+    };
+    await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
+    const withdrawn = rows.find((r) => r.withdrawn === true)!;
+    expect(withdrawn.key).toBe('flash');
+    expect(withdrawn.ms).toBe(2_000);
+    // Priced by when the request ran, as every row is.
+    expect(withdrawn.ts).toBe(new Date(1_000).toISOString());
+  });
+
   it('withdraws a non-streamed reply with an unrecoverable call', async () => {
     clearCooldowns();
     const rows: LedgerRow[] = [];
