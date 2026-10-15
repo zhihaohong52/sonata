@@ -343,7 +343,9 @@ function yamlImplicitlyTyped(text: string): boolean {
  *
  * Generated only for a config with no `[tiers]`: a tiered config skips this
  * path entirely. The agent is a forwarding wrapper, not a worker — it runs on
- * `haiku`, holds only the three `sonata dispatch` Bash permissions, and its
+ * `haiku`, holds only the two `sonata dispatch`/`sonata wait` Bash
+ * permissions (`approve` is deliberately not granted: approvals reach a
+ * human through the permission prompt), and its
  * whole job is to launch the run and return the report. The body is mostly
  * shell-quoting procedure because the task must reach the model as a file or
  * on stdin: a task carrying backticks or `$(...)` spliced into a command line
