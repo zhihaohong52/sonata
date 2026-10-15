@@ -224,42 +224,55 @@ export const AUTO_ROUTE_DEFAULT_MIN_CONFIDENCE = 0.5;
 export const DEFAULT_DECISION_BASE_URL = 'https://api.typesafe.ai';
 
 /**
- * A base URL in the plain form every consumer agrees on: scheme, host (a name
- * or a bracketed IPv6 address), an optional port, and a path with no `@`, `\`,
- * `?`, `#`, whitespace, control characters or percent-encoded authority.
- *
- * Why the form is this narrow. The URL parsers disagree on the authority.
- * Probed on 2026-10-15 with `https://openrouter.ai\@evil.example/api/v1`:
- * Node's `URL` gives host `openrouter.ai` (href `https://openrouter.ai/@evil.example/api/v1`);
- * httpx, the client LiteLLM sends with (sonata's own venv, httpx 0.28.1), and
- * Python's urllib both give host `evil.example`. The same split happens for
- * `https://openrouter.ai@evil.example` and for percent-encoded `%2F`/`%5C`
- * before the `@`. So the string a config names is checked against this form,
- * and only the `URL` href of the accepted string is stored.
+ * The canonical form of a base URL: the URL href of a string that carries no
+ * authority-confusion shape. Probed 2026-10-15 with
+ * `https://openrouter.ai\@evil.example/api/v1`: Node's `URL` gives host
+ * `openrouter.ai`, while httpx (the client LiteLLM sends with, sonata's own
+ * venv, 0.28.1) and urllib give `evil.example`. So the refused shapes are the
+ * ones where parsers can disagree about where the authority ends: a backslash,
+ * `@` (userinfo), a `%` in the authority, a query, a fragment, whitespace or a
+ * control character inside the URL. Everything else is accepted and normalised
+ * by `URL`: an uppercase scheme, a punycode or IDN host, an underscore host
+ * (docker-compose names such as `ollama_server`), a default port, and whitespace
+ * around the whole string. Probe, same venv: httpx's `raw_host` (the bytes
+ * sent) equals Node's href for `http://ollama_server:11434/v1` and for
+ * `https://bücher.example/v1`, which both become `xn--bcher-kva.example`.
+ * Only the href is stored, so every consumer sends what was checked.
  */
-const PLAIN_BASE_URL =
-  /^https?:\/\/(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*)(?::[0-9]{1,5})?(?:\/[A-Za-z0-9\-._~!$&'()*+,;=:%/]*)?$/;
 
 /**
- * The canonical form of a configured base URL: the `URL` href of a plain URL,
- * the only string sonata stores and sends. Throws, naming `where`, for anything
- * outside the plain form, so a repo cannot name one host to the checks and
- * another to the wire.
+ * The canonical form of a configured base URL: the `URL` href of a URL that
+ * carries no authority-confusion shape (see above). Throws, naming `where`,
+ * for anything refused.
  */
 export function canonicalBaseUrl(raw: unknown, where: string): string {
-  const fail = (): never => {
+  const fail = (why: string): never => {
     throw new Error(
-      `sonata.toml: ${where} must be an absolute http(s) URL — a host, an optional port and a path, with no ` +
-      'userinfo, backslash, whitespace, control character, query, fragment or percent-encoded host — ' +
-      `got ${JSON.stringify(String(raw))}`,
+      `sonata.toml: ${where} must be an absolute http(s) URL — ${why} — got ${JSON.stringify(String(raw))}. ` +
+      'Write a plain URL: a scheme, a host, an optional port, and a path.',
     );
   };
-  if (typeof raw !== 'string' || !PLAIN_BASE_URL.test(raw)) fail();
+  if (typeof raw !== 'string') return fail('it is not a string');
+  const text = (raw as string).trim();
+  if (text === '') return fail('it is empty');
+  if (/[\\@]/.test(text)) fail('a backslash or @ is not allowed');
+  if (/[\x00-\x20\x7f]/.test(text)) fail('no whitespace or control character is allowed inside the URL');
+  if (text.includes('?') || text.includes('#')) fail('a query string or fragment is not allowed');
+  const scheme = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.exec(text);
+  if (scheme === null) return fail('it needs a scheme, http:// or https://');
+  const authority = text.slice(scheme[0].length).split('/')[0] ?? '';
+  if (authority.includes('%')) fail('a percent-encoded character is not allowed in the host');
+  let url: URL;
   try {
-    return new URL(raw as string).href;
+    url = new URL(text);
   } catch {
-    return fail();
+    return fail('it does not parse as a URL');
   }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') fail('the scheme must be http or https');
+  if (url.username !== '' || url.password !== '') fail('userinfo is not allowed');
+  // A bare origin gets a trailing slash from `URL`, which the stored form does
+  // not carry (sonata appends its own path to the base).
+  return url.pathname === '/' ? url.href.slice(0, -1) : url.href;
 }
 
 /** `canonicalBaseUrl` for a URL typed at run time: undefined when it is not a plain URL. */
