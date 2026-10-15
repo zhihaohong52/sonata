@@ -10,6 +10,30 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Breaking
+
+- **A `base_url` that carries an authority-confusion shape is refused at load.**
+  This applies to `[native.gateways]` and `[auto_route]` `base_url`. Refused
+  forms: userinfo (`https://user:pw@host`, `https://host@other`); a backslash
+  anywhere (`https://openrouter.ai\@evil.example`); an `@` anywhere; a `%` in
+  the host (`https://evil%2Eexample`); a query string or fragment (`?` or `#`);
+  whitespace or a control character inside the URL; a scheme other than http or
+  https; and a string that does not parse as a URL. These are refused because
+  two URL parsers, Node's and the one LiteLLM's HTTP client uses, read the host
+  of such a string differently, so a repo could pass the host check while its
+  key went elsewhere. **Remedy:** write the plain URL, a scheme, a host, an
+  optional port and a path. `https://openrouter.ai\@evil.example/api/v1` becomes
+  `https://openrouter.ai/api/v1`; `https://host/v1?x=1` becomes `https://host/v1`;
+  `https://user:pw@host` becomes `https://host`. Everything else is accepted and
+  normalised: an uppercase scheme, an underscore host such as
+  `http://ollama_server:11434`, an IDN host, a default port and surrounding
+  whitespace.
+- **A gateway may not be named `seeded`, the empty string, or a JavaScript object
+  property name such as `constructor`, `toString` or `__proto__`.** Any other name,
+  spaces included, is accepted. **Remedy:** rename the gateway. A name with a
+  space now maps to a key variable of underscores (`SONATA_KEY_BAD_NAME` for
+  `bad name`), so a rename changes nothing else.
+
 ### Security
 
 - **A stored key is now sent only to a host bound to its gateway name.**
