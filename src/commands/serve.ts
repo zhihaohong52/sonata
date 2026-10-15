@@ -2313,7 +2313,10 @@ export async function cmdServe(
     // regardless, a credential missing at startup was never retried unless a
     // config or a watched store happened to change.
     const startupInputs = gatewayPlanInputs();
-    const startupSettled = startup.failures.length === 0 && startup.transient.length === 0 && !startupTorn;
+    // A host refusal is settled, not retried: it is deterministic, and the trust
+    // file, the configs and the keys all move the fingerprint when it changes.
+    const startupSettled = startup.failures.every((f) => f.hostUnbound === true)
+      && startup.transient.length === 0 && !startupTorn;
     let planFingerprint: string | undefined = startupSettled ? startupInputs : undefined;
     /** The fingerprint whose rebuild last failed; a retry of it merges quietly, since its drops were already logged. */
     let failedFingerprint: string | undefined = startupSettled ? undefined : startupInputs;
@@ -2349,7 +2352,7 @@ export async function cmdServe(
       // gateway's identity included, which is a drop and not a failure):
       // nothing on disk may change when its window lapses, so a committed
       // fingerprint would keep the refusal forever.
-      if (failures.length > 0 || transient.length > 0 || readTorn(tornBefore)) {
+      if (!failures.every((f) => f.hostUnbound === true) || transient.length > 0 || readTorn(tornBefore)) {
         failedFingerprint = now;
         // And the last committed fingerprint is forgotten: inputs that return
         // to it — opencode.db's rows are hashed, not stat'd, so a row removed
