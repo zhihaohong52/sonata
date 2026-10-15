@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { cmdAuthAdd, cmdAuthList, cmdAuthLogin, cmdAuthRemove } from '../../src/commands/auth.js';
+import { cmdAuthAdd, cmdAuthList, cmdAuthLogin, cmdAuthRemove, cmdAuthTrust, cmdAuthTrustList, cmdAuthUntrust } from '../../src/commands/auth.js';
+import { readTrustBindings } from '../../src/native/host-bindings.js';
 
 let home: string;
 
@@ -39,6 +40,39 @@ describe('native auth commands', () => {
     expect(result.text.includes(key)).toBe(false);
     expect(result.text).toContain('gateway-a: key from sonata');
     expect(result.text).toContain('gateway-b: no key');
+  });
+});
+
+describe('auth trust', () => {
+  it('trusts a host, lists it, and untrusts it again', () => {
+    expect(cmdAuthTrust({ home, gateway: 'acme', host: 'proxy.example' }).text).toContain('proxy.example');
+    expect(readTrustBindings(home)).toEqual({ acme: ['proxy.example'] });
+    expect(cmdAuthTrustList({ home, gateways: ['acme', 'other'] }).text).toBe(
+      'acme: proxy.example\nother: no trusted hosts',
+    );
+    expect(cmdAuthUntrust({ home, gateway: 'acme', host: 'proxy.example' }).text).toContain('no longer');
+    expect(readTrustBindings(home)).toEqual({});
+  });
+
+  it('trusting twice is idempotent, and names are lowercased', () => {
+    cmdAuthTrust({ home, gateway: 'acme', host: 'Proxy.Example' });
+    cmdAuthTrust({ home, gateway: 'acme', host: 'proxy.example' });
+    expect(readTrustBindings(home)).toEqual({ acme: ['proxy.example'] });
+  });
+
+  it('refuses a non-https host and an untrust with nothing stored', () => {
+    expect(() => cmdAuthTrust({ home, gateway: 'acme', host: 'http://proxy.example/' })).toThrow(/only https/);
+    expect(() => cmdAuthUntrust({ home, gateway: 'acme', host: 'proxy.example' })).toThrow(/no trusted host/);
+  });
+
+  it('auth add records the configured base_url host beside the key', () => {
+    cmdAuthAdd({ home, gateway: 'acme', key: 'k', baseUrl: 'https://proxy.example/v1' });
+    expect(readTrustBindings(home)).toEqual({ acme: ['proxy.example'] });
+  });
+
+  it('auth add with no configured URL records no binding', () => {
+    cmdAuthAdd({ home, gateway: 'acme', key: 'k' });
+    expect(readTrustBindings(home)).toEqual({});
   });
 });
 
