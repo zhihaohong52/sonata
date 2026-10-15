@@ -164,9 +164,12 @@ export async function holdForTextToolCalls(
 
   const release = (pending?: Promise<IteratorResult<Uint8Array>>): HoldOutcome => {
     async function* chunks(): AsyncIterable<Uint8Array> {
+      // A read of the rewriter started by the hold and not yet awaited here.
+      let inFlight = pending !== undefined;
       try {
         for (const chunk of held) yield chunk;
         let next = await (pending ?? iterator.next());
+        inFlight = false;
         while (next.done !== true) {
           yield next.value;
           next = await iterator.next();
@@ -174,8 +177,15 @@ export async function holdForTextToolCalls(
       } finally {
         // A consumer that stops early stops the rewriter too, so its own
         // cleanup (settling counts, releasing the upstream) still runs.
-        // Harmless once the rewriter has finished.
-        try { await iterator.return?.(); } catch { /* already surfaced, or nothing to tell */ }
+        // Harmless once the rewriter has finished. A read still in flight
+        // would queue `return` behind it, possibly forever: the upstream is
+        // cancelled first so that read settles, and nothing waits on it here.
+        if (inFlight) {
+          rewritten.cancel();
+          iterator.return?.().catch(() => { /* nothing to tell */ });
+        } else {
+          try { await iterator.return?.(); } catch { /* already surfaced, or nothing to tell */ }
+        }
       }
     }
     return { kind: 'serve', body: Object.assign(chunks(), { cancel: () => rewritten.cancel() }) };
