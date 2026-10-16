@@ -8,6 +8,8 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+## [0.16.6] - 2026-10-16
+
 ### Breaking
 
 - **A `base_url` that carries an authority-confusion shape is refused at load.**
