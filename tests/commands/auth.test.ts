@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { cmdAuthAdd, cmdAuthList, cmdAuthLogin, cmdAuthRemove, cmdAuthTrust, cmdAuthTrustList, cmdAuthUntrust, unboundConfigUrlNotice } from '../../src/commands/auth.js';
-import { readTrustBindings } from '../../src/native/host-bindings.js';
+import { readTrustBindings, unboundMessage } from '../../src/native/host-bindings.js';
 
 let home: string;
 
@@ -75,7 +75,7 @@ base_url = "https://proxy.example/v1"
     cmdAuthAdd({ home, gateway: 'acme', key: 'k' });
     expect(readTrustBindings(home)).toEqual({});
     const notice = unboundConfigUrlNotice(home, cwd, 'acme');
-    expect(notice).toContain(join(cwd, 'sonata.toml'));
+    expect(notice).toBe(unboundMessage('acme', 'proxy.example', join(cwd, 'sonata.toml')));
     expect(notice).toContain('sonata auth trust acme proxy.example');
     expect(notice).toContain('do not trust it');
   });

@@ -8,9 +8,11 @@ import {
   normalizeTrustHost,
   readTrustBindings,
   removeTrustBinding,
+  unboundMessage,
 } from '../native/host-bindings.js';
 import { configPath, GLOBAL_CONFIG_RELATIVE, isOauthGatewayAuth, loadConfig, parseConfig } from '../config.js';
 import { seedTrustBeforeKeyWrite } from '../native/trust-seed.js';
+import { canonicalConfigPath } from '../native/tenants.js';
 import { credentialDir, loginGateway } from '../native/oauth-login.js';
 
 export function cmdAuthList(opts: { home: string; gateways: string[] }): { text: string } {
@@ -50,7 +52,7 @@ export function unboundConfigUrlNotice(home: string, cwd: string, gateway: strin
   if (baseUrl === undefined) return undefined;
   let machineGateways: Record<string, { baseUrl: string }> = {};
   const machineFile = join(home, GLOBAL_CONFIG_RELATIVE);
-  if (file === machineFile) {
+  if (canonicalConfigPath(file) === canonicalConfigPath(machineFile)) {
     machineGateways = config.native?.gateways ?? {};
   } else if (existsSync(machineFile)) {
     try {
@@ -61,9 +63,7 @@ export function unboundConfigUrlNotice(home: string, cwd: string, gateway: strin
   }
   const binding = gatewayTrustFor(home, gateway, baseUrl, machineGateways);
   if (binding === undefined || binding.bound) return undefined;
-  return `gateway "${gateway}": if you did not choose this URL (set in ${file}, for host "${binding.host}"), ` +
-    `remove it from ${file} — do not trust it. If you did, run \`sonata auth trust ${gateway} ${binding.host}\`; ` +
-    'until then serve withholds the key from that host.';
+  return unboundMessage(gateway, binding.host, file);
 }
 
 export function cmdAuthRemove(opts: { home: string; gateway: string }): void {
