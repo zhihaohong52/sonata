@@ -23,6 +23,13 @@ describe('addedGatewayNames', () => {
     })).toEqual(['mylab']);
   });
 
+  it('names a BYOK provider selected with a key already stored', () => {
+    // Picked on the providers step with a stored (or opencode-held) key, so no
+    // key was typed — but no harness lists its models either.
+    expect(addedGatewayNames({ providerKeys: ['byok/mistral', 'opencode/opencode'] })).toEqual(['mistral']);
+    expect(addedGatewayNames({ byokKeys: { mistral: 'sk-x' }, providerKeys: ['byok/mistral'] })).toEqual(['mistral']);
+  });
+
   it('is empty for a run that added nothing', () => {
     expect(addedGatewayNames({})).toEqual([]);
   });

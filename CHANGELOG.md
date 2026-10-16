@@ -10,6 +10,21 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ### Fixed
 
+- **`sonata init` lists models for every provider you select.** A provider
+  picked without typing a key — its key already stored by sonata or held by
+  opencode, as Mistral, Google and OpenRouter usually are — has no models in
+  any harness's catalogue, and the models step only asked providers that did
+  (or whose key was typed this run) what they serve. Their models were missing
+  from the picker. Every selected provider with a key is now asked, at its
+  well-known URL when no config names one, and the models picked are written
+  with that URL.
+- **`-free` models are ranked again.** A free route such as OpenCode Zen's
+  `kimi-k3-free` or `muse-spark-1.3-contributor-free` carries the same weights
+  as its paid name, but Artificial Analysis scores only the paid name, so the
+  free one matched nothing and was never ranked. It is now scored as its paid
+  equivalent — the way OpenRouter's `:free` already was — unless the catalog
+  has a row under the `-free` name itself. A `-contributor-free` model takes
+  the derived contributor row, not the standard model's.
 - **`sonata init` no longer writes a config that will not load.** Re-running
   init after deselecting every model of an avoided gateway wrote the saved
   `avoid_gateways` entry back verbatim, and `parseConfig` refuses an unknown

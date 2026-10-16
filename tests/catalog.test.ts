@@ -1011,6 +1011,14 @@ describe('aaLookupNames', () => {
     expect(aaLookupNames('glm-5.2')).toEqual(['glm-5.2']);
   });
 
+  it('offers the paid name for a -free model, right after the full name', () => {
+    expect(aaLookupNames('muse-spark-1.3-contributor-free').slice(0, 2))
+      .toEqual(['muse-spark-1.3-contributor-free', 'muse-spark-1.3-contributor']);
+    expect(aaLookupNames('kimi-k3-free').slice(0, 2)).toEqual(['kimi-k3-free', 'kimi-k3']);
+    // A name that is only the suffix has no paid name.
+    expect(aaLookupNames('free')).toEqual(['free']);
+  });
+
   it('refuses a candidate carrying no version digit', () => {
     // `flash-lite` is a family another vendor might also publish under; a bare
     // model name keeps its version, so requiring a digit is what separates them.
@@ -1038,6 +1046,30 @@ describe('lookupModel — namespaced OpenRouter refs', () => {
       },
     };
     expect(lookupModel('openrouter-z-ai-glm-5.2', aa).source).toBe('aa');
+  });
+
+  it('scores a -free model as its paid equivalent', () => {
+    const aa: AaCatalog = {
+      fetchedAt: '2026-09-01T00:00:00Z',
+      models: { 'kimi-k3': { codingIndex: 55, blendedPriceUsd: 1.0, costPerTask: 0.5 } },
+    };
+    const free = lookupModel('opencode-kimi-k3-free', aa);
+    expect(free.source).toBe('aa');
+    // Without the paid row there is nothing to borrow: unscored, as before.
+    expect(lookupModel('opencode-kimi-k3-free', { ...aa, models: {} }).source).not.toBe('aa');
+  });
+
+  it('scores a -contributor-free model as the derived contributor row', () => {
+    const base: AaCatalog = {
+      fetchedAt: '2026-09-01T00:00:00Z',
+      models: { 'muse-spark-1-3': { codingIndex: 50, blendedPriceUsd: 2.0, costPerTask: 1.0 } },
+    };
+    const aa = withContributorEntries(base, {
+      providers: { 'opencode-go': { 'muse-spark-1.3-contributor': { input: 0.1, output: 0.2 } } },
+    });
+    expect(lookupModel('opencode-muse-spark-1.3-contributor-free', aa).source).toBe('aa');
+    // It joins the contributor row, never the standard model's.
+    expect(lookupModel('opencode-muse-spark-1.3-contributor-free', base).source).not.toBe('aa');
   });
 
   it('strips an OpenRouter serving variant', () => {

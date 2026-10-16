@@ -202,7 +202,13 @@ export async function interactiveState(
     byokUrls.set(provider.name, provider.url);
   }
   addByokCandidates(nativeByKey, byokUrls, result.state.byokModels ?? {}, result.state.customWireFormats, env.gatewayAuth);
-  addLiveCandidates(env, nativeByKey, result.state.liveModels ?? {}, env.providerBaseUrlsByScope?.[configScope]);
+  // The URL the models step queried: the scope's, else a BYOK provider's
+  // well-known one — without it a selected BYOK provider's live models had no
+  // URL to be written with and were dropped.
+  addLiveCandidates(env, nativeByKey, result.state.liveModels ?? {}, {
+    ...Object.fromEntries(byokUrls),
+    ...(env.providerBaseUrlsByScope?.[configScope] ?? env.providerBaseUrls),
+  });
   applyScopeBaseUrls(nativeByKey, scopeQueryUrls(env, configScope, result.state.customProviders));
   rewriteOauthToApiKey(nativeByKey, result.state.byokKeys ?? {});
   const credentialSources = result.state.credentialSources ?? {};

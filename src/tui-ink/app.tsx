@@ -346,6 +346,8 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
         candidates={candidates}
         addedGateways={addedGateways}
         gatewayBaseUrls={{
+          // A BYOK provider's well-known URL, under any URL a config sets.
+          ...Object.fromEntries(data.byokProviders.map((provider) => [provider.name, provider.url])),
           ...((state.configScope !== undefined ? data.gatewayBaseUrlsByScope?.[state.configScope] : undefined)
             ?? data.gatewayBaseUrls),
           ...addedBaseUrls,

@@ -167,13 +167,27 @@ export function providersForHarnesses(providers: ProviderOption[], harnesses: st
  * Named from state rather than inferred from the stored-key map, which also
  * holds keys for gateways the user did not select this run. A gateway that is
  * both a known BYOK provider and a custom one appears once.
+ *
+ * A BYOK provider selected this run counts even when its key was not typed:
+ * one whose key is already stored — sonata's own, or one held by opencode —
+ * is picked without a key screen, and no harness lists its models, so it has
+ * no startup candidates either. Left out, the models step never asked it what
+ * it serves and its models were simply missing from the picker.
  */
 export function addedGatewayNames(
-  state: { byokKeys?: Record<string, string>; customProviders?: { name: string; url: string }[] },
+  state: {
+    byokKeys?: Record<string, string>;
+    customProviders?: { name: string; url: string }[];
+    providerKeys?: string[];
+  },
 ): string[] {
   return [...new Set([
     ...Object.keys(state.byokKeys ?? {}),
     ...(state.customProviders ?? []).map((provider) => provider.name),
+    ...(state.providerKeys ?? []).flatMap((key) => {
+      const name = byokProviderName(key);
+      return name === undefined ? [] : [name];
+    }),
   ])];
 }
 
