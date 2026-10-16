@@ -56,6 +56,16 @@ describe('[auto_route] base_url — the same rule', () => {
     expect(() => parseConfig(decision('https://api.typesafe.ai@evil.example'))).toThrow(/absolute http\(s\) URL/);
   });
 
+  it('does not echo userinfo or a query into the error', () => {
+    for (const url of ['https://user:s3cret@evil.example/v1', 'https://u:p/ss@evil.example/v1', 'https://evil.example/v1?key=s3cret', 'user:s3cret@evil.example']) {
+      let message = '';
+      try { parseConfig(decision(url)); } catch (error) { message = (error as Error).message; }
+      expect(message).toMatch(/absolute http\(s\) URL|query string or fragment/);
+      expect(message).not.toContain('s3cret');
+      expect(message).not.toContain('ss@');
+    }
+  });
+
   it('stores a plain URL without its trailing slash', () => {
     expect(parseConfig(decision('https://decide.example/')).autoRoute?.baseUrl).toBe('https://decide.example');
   });

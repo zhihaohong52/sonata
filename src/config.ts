@@ -11,7 +11,7 @@ import { configUpstreamFor } from './pricing.js';
 import { envVarForGateway } from './native/gateway-env.js';
 import { assertGatewayName } from './native/gateway-name.js';
 import { ownEntry } from './native/own-entry.js';
-import { canonicalBaseUrl, canonicalBaseUrlOrUndefined } from './native/base-url.js';
+import { canonicalBaseUrl, canonicalBaseUrlOrUndefined, redactRawUrl } from './native/base-url.js';
 
 export { assertGatewayName, canonicalBaseUrl, canonicalBaseUrlOrUndefined };
 
@@ -667,7 +667,7 @@ export function parseConfig(text: string): SonataConfig {
     // on it would swallow them — refused rather than requested somewhere
     // other than the server named.
     if (typeof rawBase === 'string' && /[?#]/.test(rawBase)) {
-      throw new Error(`sonata.toml: [auto_route] base_url must not include a query string or fragment, got ${JSON.stringify(rawBase)}`);
+      throw new Error(`sonata.toml: [auto_route] base_url must not include a query string or fragment, got ${JSON.stringify(redactRawUrl(rawBase))}`);
     }
     const baseUrl = canonicalBaseUrl(rawBase, '[auto_route] base_url').replace(/\/+$/, '');
     const model = section.model;

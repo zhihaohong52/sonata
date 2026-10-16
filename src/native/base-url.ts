@@ -45,6 +45,17 @@ export function checkBaseUrl(raw: unknown): BaseUrlCheck {
 }
 
 /**
+ * A rejected URL as it may appear in an error: userinfo and any query or
+ * fragment removed, so a secret typed into the URL is not echoed into a log.
+ */
+export function redactRawUrl(raw: unknown): string {
+  const text = String(raw)
+    .replace(/^((?:[A-Za-z][A-Za-z0-9+.-]*:\/\/)?)[^@]*@/, '$1***@')
+    .replace(/[?#][\s\S]*$/, '?…');
+  return text.length > 200 ? `${text.slice(0, 200)}…` : text;
+}
+
+/**
  * The canonical form of a configured base URL: the href `checkBaseUrl` gives.
  * Throws, naming `where`, for anything refused.
  */
@@ -52,7 +63,7 @@ export function canonicalBaseUrl(raw: unknown, where: string): string {
   const check = checkBaseUrl(raw);
   if ('problem' in check) {
     throw new Error(
-      `sonata.toml: ${where} must be an absolute http(s) URL — ${check.problem} — got ${JSON.stringify(String(raw))}. ` +
+      `sonata.toml: ${where} must be an absolute http(s) URL — ${check.problem} — got ${JSON.stringify(redactRawUrl(raw))}. ` +
       'Write a plain URL: a scheme, a host, an optional port, and a path.',
     );
   }
