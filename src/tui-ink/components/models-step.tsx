@@ -35,6 +35,11 @@ export interface ModelsStepProps {
    */
   picked?: ReadonlySet<string>;
   fetchModels?: typeof defaultFetchModels;
+  /**
+   * Gateways whose refresh is skipped, with the reason: their host may not
+   * receive the stored key (`refreshHostReasons`). Their harness list stands.
+   */
+  hostReasons?: Record<string, string>;
   /** Selected keys, what each gateway's own /models endpoint reported, and the rows actually offered. */
   onSubmit: (keys: string[], live: Record<string, string[]>, offered: CandidateOption[]) => void;
   onBack: () => void;
@@ -92,9 +97,11 @@ export function ModelsStep(props: ModelsStepProps): React.ReactElement {
   const palette = usePalette();
   const {
     candidates, addedGateways = [], gatewayBaseUrls, gatewayAuth, keys, initialSelected,
-    aa, gatewayNames = [], upstreamForCandidate, picked, fetchModels = defaultFetchModels, onSubmit, onBack, onCancel,
+    aa, gatewayNames = [], upstreamForCandidate, picked, fetchModels = defaultFetchModels, hostReasons = {}, onSubmit, onBack, onCancel,
   } = props;
-  const targets = refreshableGateways(candidates, gatewayBaseUrls, gatewayAuth, keys, addedGateways);
+  const refreshable = refreshableGateways(candidates, gatewayBaseUrls, gatewayAuth, keys, addedGateways);
+  const targets = refreshable.filter((gateway) => hostReasons[gateway] === undefined);
+  const skipped = refreshable.filter((gateway) => hostReasons[gateway] !== undefined);
   const [live, setLive] = useState<Record<string, string[]> | undefined>(
     targets.length === 0 ? {} : undefined,
   );
@@ -191,6 +198,11 @@ export function ModelsStep(props: ModelsStepProps): React.ReactElement {
       {failed.length > 0 && (
         <Text color={palette.MUTED}>{failed.join(', ')} did not answer — showing the harness catalogue</Text>
       )}
+      {skipped.map((gateway) => (
+        <Text key={`skipped-${gateway}`} color={palette.MUTED}>
+          not asked — {hostReasons[gateway]}
+        </Text>
+      ))}
       <MultiSelect
         key="models"
         title="Models"

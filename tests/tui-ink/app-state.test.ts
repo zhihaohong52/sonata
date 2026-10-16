@@ -478,12 +478,12 @@ describe('validateProviderUrl', () => {
     expect(validateProviderUrl('')).toMatch(/required/);
   });
 
-  it('rejects a non-URL string', () => {
-    expect(validateProviderUrl('not a url')).toMatch(/https:\/\//);
+  it('rejects a non-URL string, with the parser\'s reason', () => {
+    expect(validateProviderUrl('not a url')).toMatch(/This URL is refused: no whitespace/);
   });
 
-  it('rejects a non-http(s) scheme', () => {
-    expect(validateProviderUrl('ftp://example.com')).toMatch(/http:\/\/ or https:\/\//);
+  it('rejects a non-http(s) scheme, with the parser\'s reason', () => {
+    expect(validateProviderUrl('ftp://example.com')).toMatch(/the scheme must be http or https/);
   });
 
   it('accepts a well-formed https URL', () => {

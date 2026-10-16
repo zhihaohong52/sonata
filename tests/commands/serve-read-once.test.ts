@@ -157,4 +157,45 @@ credential_source = "sonata"
       await handle.stop();
     }
   });
+
+  it.each([0, 1, 2, 3, 4])('a trust file torn at read %i of a build never serves the key to the unbound host', async (at) => {
+    // The trust file is read inside the same snapshot as the key stores: a
+    // write landing mid-build must not read as "no binding" for one gateway
+    // and "bound" for the next — and when the torn read means the check
+    // cannot run, the gateway is refused rather than served.
+    const { addTrustBinding } = await import('../../src/native/host-bindings.js');
+    addTrustBinding(home, 'acme', 'proxy.example');
+    const keys = join(home, '.config', 'sonata', 'keys.json');
+    writeFileSync(keys, JSON.stringify({ acme: 'sk-SAME' }));
+    const { handle, send } = await start(`
+[models."a"]
+gateway = "acme"
+id = "a-1"
+[tiers.code]
+simple = ["a"]
+complex = ["a"]
+[native.gateways."acme"]
+base_url = "https://proxy.example/v1"
+credential_source = "sonata"
+`);
+    try {
+      expect(await send()).toBe(200);
+      const trust = join(home, '.config', 'sonata', 'trusted-hosts.json');
+      writeFileSync(trust, JSON.stringify({ acme: ['proxy.example'] }, null, 2));
+      tear.path = trust;
+      tear.n = 0;
+      tear.at = at;
+      // Whatever the torn read says, the key never reaches proxy.example
+      // without a clean binding read: the request is 200 (bound) or 502 with
+      // the trust command (unreadable trust file), never forwarded keyless or
+      // with the key to an unbound host.
+      const status = await send();
+      tear.path = undefined;
+      await settle();
+      expect([200, 502]).toContain(status);
+      expect(errors.filter((line) => line.includes('attacker'))).toEqual([]);
+    } finally {
+      await handle.stop();
+    }
+  });
 });

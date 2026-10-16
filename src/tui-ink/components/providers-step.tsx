@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { MultiSelect } from './multi-select.js';
 import { TextInput } from './text-input.js';
+import { canonicalBaseUrlOrUndefined } from '../../native/base-url.js';
 import { SearchSelect } from './search-select.js';
 import { LoginScreen } from './login-screen.js';
 import { ByokStep } from './byok-step.js';
@@ -510,7 +511,7 @@ export function ProvidersStep(props: ProvidersStepProps): React.ReactElement {
         title={`Base URL for ${screen.name}`}
         hint="e.g. https://api.example.com/v1"
         validate={validateProviderUrl}
-        onSubmit={(value) => setScreen({ kind: 'custom-format', name: screen.name, url: value.trim() })}
+        onSubmit={(value) => setScreen({ kind: 'custom-format', name: screen.name, url: canonicalBaseUrlOrUndefined(value) ?? value.trim() })}
         onBack={() => setScreen({ kind: 'custom-name' })}
         onCancel={onCancel}
       />

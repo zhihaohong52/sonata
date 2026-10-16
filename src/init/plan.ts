@@ -15,6 +15,7 @@ import { nativeTomlFor } from './toml.js';
 import { reconcilePerRoleModels, reconcileTierList, gatewayNamesOf, avoidedKeysOf, gatewayRankOf } from './helpers.js';
 import { configPathFor, agentsDirFor } from './helpers.js';
 import { resolveKeyFromSource, keyReport } from '../native/credentials.js';
+import { isLoopbackHostname } from '../native/host-bindings.js';
 import { credentialDir, credentialFileFor } from '../native/oauth-login.js';
 import { readChatGptOAuth } from '../native/codex-auth.js';
 import { GLOBAL_CONFIG_RELATIVE } from '../config.js';
@@ -39,6 +40,12 @@ export interface InitPlan {
   configPath: string;
   configToml: string;
   keysToStore: Array<{ gateway: string; key: string }>;
+  /**
+   * Host bindings `apply` records beside the keys: gateways whose URL the
+   * user chose this run, so serve sends the stored key there. A name maps to
+   * the host init wrote into the config — `auth add` reads it back off the
+   * file it writes, but init knows both halves before either is written.
+   */
   hook: { scope: 'project' | 'global' | 'skip'; settingsPath?: string; allowListScope?: 'project' | 'global' | 'skip' };
   skillPath: string;
   /**
@@ -53,6 +60,8 @@ export interface InitPlan {
   syncCwd: string;
   agentsDir: string;
   chosenNative: NativeCandidate[];
+  /** Gateway → https host `apply` trusts beside storing its key (see `keysToStore`). */
+  hostsToTrust: Array<{ gateway: string; host: string }>;
   roles: string[];
   /**
    * Whether the config this plan is about to write routes anything through
@@ -77,6 +86,20 @@ export interface InitPlan {
  * so a flag honoured by only one of them would make them write different
  * configs from one command.
  */
+/**
+ * Throws, naming the cause, when a planned sonata.toml would not load. Called by
+ * `plan` before it returns and by `apply` before its first write, so a refused
+ * config leaves no key and no trust binding behind.
+ */
+export function assertPlannedConfigParses(configToml: string): void {
+  try {
+    parseConfig(configToml);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`sonata init: the sonata.toml it would write does not load — ${reason}. Nothing was written; fix the value named above and run init again.`);
+  }
+}
+
 export function plan(
   env: InitEnvironment,
   state: InitState,
@@ -445,6 +468,9 @@ export function plan(
 
   // ---- routing ----
   const routing = state.routing ?? 'project';
+  // Refused here, before anything is stored: a planned config the parser would
+  // refuse must not be written, and no key or trust binding goes with it.
+  assertPlannedConfigParses(configToml);
 
   return {
     configScope,
@@ -456,6 +482,9 @@ export function plan(
       ...Object.entries(state.byokKeys ?? {}).map(([gateway, key]) => ({ gateway, key })),
       ...(state.decisionKey ? [{ gateway: state.decisionKey.gateway, key: state.decisionKey.key }] : []),
     ],
+    // Bind each stored key to the URL init is about to write for its gateway:
+    // the user chose that URL in this run, on the screens that asked for it.
+    hostsToTrust: typedHostsToTrust(state, savedAutoRoute?.baseUrl),
     hook,
     skillPath,
     guidance,
@@ -492,4 +521,40 @@ export function fsCredentialProbe(home: string, copilotUsable: boolean): Credent
     },
     copilotUsable,
   };
+}
+/**
+ * The hosts this run's own typed URLs name, each bound to the gateway name its
+ * key is stored under. Only URLs typed in this wizard run count: a URL read
+ * from an existing config is never bound here, because a repo's own config is
+ * the case the trust rule exists for — doctor names those instead. A typed
+ * auto-route URL counts only when it differs from the one the config already
+ * held, since the wizard offers that one back as a default.
+ */
+function typedHostsToTrust(
+  state: InitState,
+  savedAutoRouteBaseUrl: string | undefined,
+): Array<{ gateway: string; host: string }> {
+  const hostOf = (url: string): string | undefined => {
+    try {
+      const parsed = new URL(url);
+      // A typed loopback http URL is the user's own choice, so it is bound too.
+      const loopbackHttp = parsed.protocol === 'http:' && isLoopbackHostname(parsed.hostname);
+      return (parsed.protocol === 'https:' || loopbackHttp) && parsed.hostname !== ''
+        ? parsed.host.toLowerCase() : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const out = new Map<string, string>();
+  for (const gateway of Object.keys(state.byokKeys ?? {})) {
+    const typed = state.customProviders?.find((provider) => provider.name === gateway);
+    const host = typed === undefined ? undefined : hostOf(typed.url);
+    if (host !== undefined) out.set(gateway, host);
+  }
+  const autoRoute = state.autoRoute ?? undefined;
+  if (state.decisionKey !== undefined && autoRoute !== undefined && autoRoute.baseUrl !== savedAutoRouteBaseUrl) {
+    const host = hostOf(autoRoute.baseUrl);
+    if (host !== undefined) out.set(state.decisionKey.gateway, host);
+  }
+  return [...out].map(([gateway, host]) => ({ gateway, host }));
 }

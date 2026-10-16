@@ -139,6 +139,7 @@ export class ModelListCache {
     try {
       const res = await this.fetchFn(`${baseUrl}/v1/models`, {
         headers: key === undefined ? {} : { authorization: `Bearer ${key}` },
+        redirect: 'error',
         signal: signal === undefined ? AbortSignal.timeout(this.timeoutMs) : AbortSignal.any([signal, AbortSignal.timeout(this.timeoutMs)]),
       });
       listed = res.ok ? parseModelListing(await res.json()) : undefined;

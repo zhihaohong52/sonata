@@ -9,6 +9,11 @@ import { assertEffortsPinned, loadAaCatalog } from './catalog.js';
 import { loadModelsDev } from './modelsdev.js';
 import { configUpstreamFor } from './pricing.js';
 import { envVarForGateway } from './native/gateway-env.js';
+import { assertGatewayName } from './native/gateway-name.js';
+import { ownEntry } from './native/own-entry.js';
+import { canonicalBaseUrl, canonicalBaseUrlOrUndefined, redactRawUrl } from './native/base-url.js';
+
+export { assertGatewayName, canonicalBaseUrl, canonicalBaseUrlOrUndefined };
 
 export const KNOWN_HARNESSES = ['opencode', 'codex', 'pi', 'reasonix', 'claude'] as const;
 export const KNOWN_ROLES = ['review', 'code', 'explore', 'plan'] as const;
@@ -658,22 +663,13 @@ export function parseConfig(text: string): SonataConfig {
       throw new Error(`sonata.toml: [auto_route] classifier must be "jev", got ${JSON.stringify(section.classifier)}`);
     }
     const rawBase = section.base_url ?? DEFAULT_DECISION_BASE_URL;
-    let baseUrl: string;
-    let parsedBase: URL;
-    try {
-      if (typeof rawBase !== 'string') throw new Error('not a string');
-      parsedBase = new URL(rawBase);
-      if (parsedBase.protocol !== 'http:' && parsedBase.protocol !== 'https:') throw new Error('not http(s)');
-      baseUrl = rawBase.replace(/\/+$/, '');
-    } catch {
-      throw new Error(`sonata.toml: [auto_route] base_url must be an absolute http(s) URL, got ${JSON.stringify(rawBase)}`);
-    }
     // Endpoint suffixes are appended to this string, so a `?…`/`#…` already
     // on it would swallow them — refused rather than requested somewhere
     // other than the server named.
-    if (parsedBase.search !== '' || parsedBase.hash !== '') {
-      throw new Error(`sonata.toml: [auto_route] base_url must not include a query string or fragment, got ${JSON.stringify(rawBase)}`);
+    if (typeof rawBase === 'string' && /[?#]/.test(rawBase)) {
+      throw new Error(`sonata.toml: [auto_route] base_url must not include a query string or fragment, got ${JSON.stringify(redactRawUrl(rawBase))}`);
     }
+    const baseUrl = canonicalBaseUrl(rawBase, '[auto_route] base_url').replace(/\/+$/, '');
     const model = section.model;
     if (model !== undefined && (typeof model !== 'string' || model.trim() === '')) {
       throw new Error(`sonata.toml: [auto_route] model must be a non-empty string, got ${JSON.stringify(model)}`);
@@ -727,6 +723,7 @@ export function parseConfig(text: string): SonataConfig {
     const rawNative = raw.native as Record<string, unknown>;
     const gateways: Record<string, NativeGatewayConfig> = {};
     for (const [name, def] of Object.entries((rawNative.gateways ?? {}) as Record<string, unknown>)) {
+      assertGatewayName(name);
       const d = def as Record<string, unknown>;
       const rawAuth = d.auth ?? 'api-key';
       if (typeof rawAuth !== 'string' || !NATIVE_GATEWAY_AUTHS.includes(rawAuth as NativeGatewayAuth)) {
@@ -872,7 +869,10 @@ export function parseConfig(text: string): SonataConfig {
       if (typeof d.base_url !== 'string') {
         throw new Error(`sonata.toml: native gateway "${name}" needs string "base_url"`);
       }
-      gateways[name] = { baseUrl: d.base_url, auth, credentialSource, billing, provider, wireFormat, price, pricingProvider };
+      // The stored URL is the canonical href of the plain URL checked here:
+      // every consumer sends this string, never the raw one (see `canonicalBaseUrl`).
+      const baseUrl = canonicalBaseUrl(d.base_url, `native gateway "${name}" base_url`);
+      gateways[name] = { baseUrl, auth, credentialSource, billing, provider, wireFormat, price, pricingProvider };
     }
 
     // Two distinct gateway names can collapse onto one LiteLLM key variable
@@ -909,7 +909,7 @@ export function parseConfig(text: string): SonataConfig {
           `sonata.toml: native model "${name}" needs string "gateway", string "id" and number "context_window"`,
         );
       }
-      if (!gateways[d.gateway]) {
+      if (ownEntry(gateways, d.gateway) === undefined) {
         throw new Error(
           `sonata.toml: native model "${name}" references unknown gateway "${d.gateway}". ` +
           `Define [native.gateways."${d.gateway}"] first.`,
@@ -958,7 +958,7 @@ export function parseConfig(text: string): SonataConfig {
   // gateway here reaches litellmModelEntry via the native projection below
   // and crashes on `gateways[gateway].auth` being undefined.
   for (const [name, model] of Object.entries(unifiedModels)) {
-    if (model.gateway !== undefined && !native?.gateways[model.gateway]) {
+    if (model.gateway !== undefined && ownEntry(native?.gateways ?? {}, model.gateway) === undefined) {
       throw new Error(
         `sonata.toml: model "${name}" references unknown gateway "${model.gateway}". ` +
         `Define [native.gateways."${model.gateway}"] first.`,

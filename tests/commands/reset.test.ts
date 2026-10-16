@@ -27,6 +27,7 @@ const planFor = (): InitPlan => ({
     '[tiers.code]', 'simple = ["acme-fast"]', 'complex = ["acme-fast"]', '',
   ].join('\n'),
   keysToStore: [],
+  hostsToTrust: [],
   hook: { scope: 'project', allowListScope: 'project' },
   skillPath: join(cwd, '.claude', 'skills', 'sonata-loop', 'SKILL.md'),
   guidance: { scope: 'project', path: join(cwd, 'CLAUDE.md') },

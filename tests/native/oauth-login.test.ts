@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { chmodSync, existsSync, mkdtempSync, rmSync, statSync, mkdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, rmSync, statSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -136,5 +136,71 @@ describe('loginGateway', () => {
     expect(result.ok).toBe(false);
     expect(result.problem).toMatch(/cancelled/i);
     expect(existsSync(join(credentialDir(home, 'codex'), 'auth.json'))).toBe(false);
+  });
+
+  it('leaves a working login untouched when the new login fails', async () => {
+    // The authenticator used to run against the live directory, so a failed
+    // run rewrote or deleted the credential that was working before it.
+    const dir = credentialDir(home, 'codex');
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    writeFileSync(join(dir, 'auth.json'), JSON.stringify({ access_token: 'old-working' }));
+    process.env.FAKE_MODE = 'exit-nonzero';
+    const result = await loginGateway({
+      home, gateway: 'codex', auth: 'codex-oauth', progress, interpreter: FAKE,
+    });
+    delete process.env.FAKE_MODE;
+    expect(result.ok).toBe(false);
+    expect(JSON.parse(readFileSync(join(dir, 'auth.json'), 'utf8'))).toEqual({ access_token: 'old-working' });
+  });
+
+  it('cannot pass a stored token off as a login: empty staging means no credential', async () => {
+    // A locally-unexpired stored token in the live directory used to satisfy
+    // the success check without any login happening. The login now runs in an
+    // empty staging directory, so only what this run wrote counts.
+    const dir = credentialDir(home, 'codex');
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    writeFileSync(join(dir, 'auth.json'), JSON.stringify({ access_token: 'stored' }));
+    process.env.FAKE_MODE = 'exit-zero-no-credential';
+    const result = await loginGateway({
+      home, gateway: 'codex', auth: 'codex-oauth', progress, interpreter: FAKE,
+    });
+    delete process.env.FAKE_MODE;
+    expect(result.ok).toBe(false);
+    expect(result.problem).toMatch(/no credential/i);
+    expect(JSON.parse(readFileSync(join(dir, 'auth.json'), 'utf8'))).toEqual({ access_token: 'stored' });
+  });
+
+  it('fixes up the staging directory to 0700/0600 on failure paths too', async () => {
+    // A cancelled or failed run's temp files must not carry a readable
+    // secret on their way out. Proved by mode, not by absence: the fake
+    // writes a 0644 access-token, then the run fails.
+    process.env.FAKE_MODE = 'hang';
+    const controller = new AbortController();
+    const pending = loginGateway({
+      home, gateway: 'copilot', auth: 'copilot-oauth', progress, interpreter: FAKE, signal: controller.signal,
+    });
+    setTimeout(() => controller.abort(), 100);
+    const result = await pending;
+    delete process.env.FAKE_MODE;
+    expect(result.ok).toBe(false);
+    // The live directory was never created: nothing to fix up there, and no
+    // half-login beside the old one.
+    expect(existsSync(credentialDir(home, 'copilot'))).toBe(false);
+  });
+
+  it('replaces a looser live directory wholesale on success', async () => {
+    // `mkdirSync`'s mode applies only to a directory it creates, so a
+    // re-login into a 0755 one used to leave it 0755. The swap-in replaces
+    // the directory, so the old mode cannot survive.
+    const dir = credentialDir(home, 'codex');
+    mkdirSync(dir, { recursive: true, mode: 0o755 });
+    chmodSync(dir, 0o755);
+    writeFileSync(join(dir, 'auth.json'), JSON.stringify({ access_token: 'old' }));
+    const result = await loginGateway({
+      home, gateway: 'codex', auth: 'codex-oauth', progress, interpreter: FAKE,
+    });
+    expect(result.ok).toBe(true);
+    expect(statSync(dir).mode & 0o777).toBe(0o700);
+    expect(JSON.parse(readFileSync(join(dir, 'auth.json'), 'utf8'))).toEqual({ access_token: 'fake' });
   });
 });

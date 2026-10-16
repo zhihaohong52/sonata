@@ -166,6 +166,40 @@ export function acquireLock(lock: string, token: string): boolean {
   return readToken(lock) === token;
 }
 
+/**
+ * `withSessionLock` for a synchronous read-modify-write of a small file: the
+ * same lock directory, so it excludes the async holders too. It waits by
+ * sleeping the thread, and the critical section cannot be interrupted, so it
+ * needs no renew timer.
+ */
+export function withSessionLockSync<T>(
+  file: string,
+  fn: () => T,
+  opts: { timeoutMs?: number } = {},
+): T {
+  const lock = `${file}.lock`;
+  mkdirSync(dirname(file), { recursive: true });
+  const deadline = Date.now() + (opts.timeoutMs ?? 2000);
+  const token = randomUUID();
+  const pause = new Int32Array(new SharedArrayBuffer(4));
+  for (;;) {
+    if (acquireLock(lock, token)) break;
+    const seen = observeLock(lock);
+    if (seen !== undefined && Date.now() - seen.mtimeMs > STALE_MS) reclaimStaleLock(lock, seen);
+    if (Date.now() > deadline) {
+      throw new Error(`sonata: timed out waiting for lock on ${file}`);
+    }
+    Atomics.wait(pause, 0, 0, 25);
+  }
+  try {
+    return fn();
+  } finally {
+    try {
+      if (readToken(lock) === token) rmSync(lock, { recursive: true, force: true });
+    } catch { /* already gone */ }
+  }
+}
+
 export async function withSessionLock<T>(
   file: string,
   /** `waited` is true when another holder had the lock as this call arrived. */

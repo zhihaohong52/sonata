@@ -36,8 +36,17 @@ have not set routing up.
   the background if it is down. No settings are written; that session loses
   Remote Control.
 - `sonata auth` — manages per-gateway keys that the router forwards to LiteLLM;
-  keys live in the store and are never logged or put in a conversation
-- `sonata auth login <gateway>` — starts LiteLLM's device login for an OAuth gateway
+  keys live in the store and are never logged or put in a conversation.
+  A stored key is only ever sent to a host bound to its gateway name — the
+  provider's own endpoint, a host you confirmed with
+  `sonata auth trust <gateway> <host>`, or the machine config's own URL for
+  that name — so a project config pointing the name elsewhere gets no key and
+  a named 502 naming the config that set the URL and the trust command,
+  instead of your credential. `sonata auth add` binds nothing from a config;
+  init binds the URLs typed in its own run
+- `sonata auth login <gateway>` — starts LiteLLM's device login for an OAuth gateway.
+  The login runs into a fresh directory that replaces the old one only on
+  success, so a failed login never damages the working credential
 
 The `claude` harness adapter completes the picture: it dispatches a
 foreign-on-Claude-loop session through `sonata dispatch`, running headless

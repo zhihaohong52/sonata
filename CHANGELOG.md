@@ -8,6 +8,169 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Breaking
+
+- **A `base_url` that carries an authority-confusion shape is refused at load.**
+  This applies to `[native.gateways]` and `[auto_route]` `base_url`. Refused
+  forms: userinfo (`https://user:pw@host`, `https://host@other`); a backslash
+  anywhere (`https://openrouter.ai\@evil.example`); an `@` anywhere; a `%` in
+  the host (`https://evil%2Eexample`); a query string or fragment (`?` or `#`);
+  whitespace or a control character inside the URL; a scheme other than http or
+  https; and a string that does not parse as a URL. These are refused because
+  two URL parsers, Node's and the one LiteLLM's HTTP client uses, read the host
+  of such a string differently, so a repo could pass the host check while its
+  key went elsewhere. **Remedy:** write the plain URL, a scheme, a host, an
+  optional port and a path. `https://openrouter.ai\@evil.example/api/v1` becomes
+  `https://openrouter.ai/api/v1`; `https://host/v1?x=1` becomes `https://host/v1`;
+  `https://user:pw@host` becomes `https://host`. Everything else is accepted and
+  normalised: an uppercase scheme, an underscore host such as
+  `http://ollama_server:11434`, an IDN host, a default port and surrounding
+  whitespace.
+- **A gateway may not be named `seeded`, the empty string, or a JavaScript object
+  property name such as `constructor`, `toString` or `__proto__`.** Any other name,
+  spaces included, is accepted. **Remedy:** rename the gateway. A name with a
+  space now maps to a key variable of underscores (`SONATA_KEY_BAD_NAME` for
+  `bad name`), so a rename changes nothing else.
+
+### Security
+
+- **A refused key host no longer tells the model how to trust it.** The router's
+  error for a gateway whose host is not trusted for its key names the config
+  file and points the user at `sonata doctor`; the runnable `sonata auth trust`
+  command stays in serve's log and in `sonata doctor`, with the gateway and host
+  shell-quoted. `sonata auth trust` now needs an interactive terminal and a typed
+  `y`/`yes` (default no); it refuses when stdin is not a TTY. It also runs the
+  upgrade seed first, as `auth untrust` does, so trusting one host first no longer
+  forfeits the seed for the others.
+- **Plain-http gateways off loopback are told to use https.** A keyed
+  `http://192.168.1.5:8000/v1` (or an `[auto_route]` URL like it) can never be
+  bound, so the message now says https is required and suggests no trust, and
+  `sonata auth trust` refuses that host rather than reporting a binding that
+  changes nothing.
+- A rejected `base_url` no longer echoes its userinfo or query into the error.
+
+- **A stored key is now sent only to a host bound to its gateway name.**
+  Keys are looked up by gateway name, but the `base_url` they are sent to
+  comes from a config — including a cloned repo's project config pointing the
+  name at an attacker's host — so the name alone no longer decides where a key
+  goes. A host is bound when it is the provider's own endpoint, you confirmed
+  it with the new `sonata auth trust <gateway> <host>` (`untrust` removes it,
+  `trust-list` lists), or it is the machine config's own URL for that name;
+  `sonata auth add` and `sonata init` record the binding for the URL you
+  chose. Anything else gets no key: `sonata serve` withholds it and answers a
+  named 502 with the exact trust command, and `sonata doctor` fails the
+  gateway the same way. Hostnames compare exactly (never suffix-matched),
+  https only, except a loopback http host (`localhost`, `127.0.0.0/8`, `::1`).
+  That is bound by the machine config's own URL (trusted by definition), by the
+  upgrade seed, or by an explicit `sonata auth trust`; in a project config it
+  needs the explicit trust. Non-loopback plain http is never bindable. Session
+  and OAuth gateways hold no sendable key and are unaffected.
+- **`keys.json` is no longer read as empty on a parse error.** Writers refused
+  nothing and rewrote the file from what parsed, so one torn write deleted
+  every other key (`writeSonataKey`) or unlinked the file (`removeSonataKey`).
+  Writers now refuse with a clear error naming the file when it exists but
+  cannot be read or parsed, and all writes are atomic (temp file plus rename,
+  0600).
+- **`sonata auth login` can no longer report success without logging in.**
+  The login ran LiteLLM's authenticator against the live token directory,
+  which returns a stored — possibly revoked — token as locally unexpired. It
+  now runs into a fresh temp directory swapped in only on success, so a
+  failed login leaves the working credential untouched. Permission fix-up
+  (0700/0600) runs on failure paths too.
+- **Withholding a key is per tenant, not machine-wide.** One routed request
+  from a cloned repo whose `base_url` host was unbound used to 502 that gateway
+  for every project. Each project's own gateways are checked now: only the
+  project whose host is unbound loses that gateway (its LiteLLM models and its
+  direct requests), and a project that binds the same name keeps its key.
+- **Unbound-host messages name the config that set the URL.** The 502 and
+  `sonata doctor` say to remove a URL you did not choose rather than trust it,
+  and to run `sonata auth trust <gateway> <host>` only if you chose it. Doctor
+  checks every routed config, not only the one in the current directory.
+- **`sonata auth add` binds nothing from a config.** It read the gateway URL
+  off the config in effect, which a cloned repo can carry, so `auth add` could
+  trust a repo's host for good. It now reports the unbound host, the config
+  that set it, and the trust command. `sonata init` binds only the URLs typed
+  in its own run, never one read from an existing config.
+- **`[auto_route]` sends a stored decision key only to a bound host.** A
+  project's `base_url` received the decision key with no host check. TypeSafe
+  and OpenRouter are bound by name; a custom host with a stored key needs
+  `sonata auth trust auto-route <host>`, or a URL typed in `sonata init`; the
+  machine config's own `[auto_route]` URL is trusted like its gateways. A
+  keyless local decision server needs no trust. For a keyed unbound host the
+  decision is skipped, the task text is not sent, the tier falls back, and the
+  reason is logged and recorded. Decision fetches refuse redirects.
+- **`sonata init` does not refresh a model list from an unbound host.** The
+  wizard sent each stored key to its URL's host to list models. It now checks
+  first: an unbound host is not asked, the harness list stands, and the reason
+  is shown. A URL typed in the same run counts as bound.
+- **Trust-file writers refuse a corrupt file.** `addTrustBinding` read the file
+  tolerantly, so one corrupt `trusted-hosts.json` was wiped by the next `trust`,
+  and every confirmed binding with it. Writers now refuse, naming the file, and
+  the read-modify-write of the trust file and of `keys.json` runs under the
+  existing session lock, so concurrent `auth add`, `auth trust` and `init` runs
+  cannot drop each other's changes.
+- **Upstream requests refuse redirects.** A gateway's 3xx would have carried the
+  key and the conversation to whatever host it named. Upstream fetches now fail
+  on a redirect instead of following it.
+- **Host bindings compare the port.** A host bound on one port was bound on
+  every port. A non-default port is part of the host now; the https default
+  port is the same as none.
+- **Upgrade: existing configs are trusted once, and only the ones that predate the upgrade.**
+  On the first run after upgrading, `sonata serve`, `sonata doctor`, `sonata auth
+  add` and `sonata init` bind, once, the host of every https (or loopback http)
+  api-key gateway that has a stored or opencode-sourced key, in the machine config
+  and in each project a session recorded before the install ran in whose
+  `sonata.toml` was last changed before the install (the later of its mtime and
+  change time). Residual: a config brought into a project that was already in use
+  before the upgrade is seeded too, if it was in place before the install. The install time is the change
+  time of the package's manifest. A project opened or cloned after the upgrade is
+  never seeded, and neither is the directory a command happens to run in. Each
+  binding is reported by `sonata serve` and `sonata doctor`, and
+  `sonata auth untrust <gateway> <host>` removes one. A marker in
+  `trusted-hosts.json` is written on the first post-upgrade run whether or not any
+  key is stored, so the seed runs once; a fresh install seeds nothing. The gateway
+  name `seeded` is reserved for the marker.
+- **`sonata auth login` leftover backups are swept.** A login that crashed while
+  swapping in its new credential left the previous one beside it; a later
+  successful login now removes such a backup once it is ten minutes old, so a
+  login in progress keeps its rollback copy. The swap is brief: for the moment
+  between the two renames the previous credential sits in a `.login-*-old`
+  backup beside the live one, and a crash in that window leaves it there until
+  the next successful login.
+
+- **A base URL is accepted only in its plain form, and only its href is sent.**
+  Node's `URL` and httpx (LiteLLM's client) disagree on the authority of
+  `https://openrouter.ai\@evil.example/api/v1`: Node reads `openrouter.ai`,
+  httpx reads `evil.example`, so a repo could pass the well-known check while its
+  key went elsewhere. A gateway or `[auto_route]` `base_url` now parses only as
+  scheme, host, optional port and path, with no userinfo, backslash, whitespace,
+  control character, query, fragment or percent-encoded authority, and it is
+  stored as its `URL` href. The probe is recorded in the code.
+- **A gateway name cannot be an Object.prototype property, and `seeded` is
+  refused.** A name such as `constructor` read an inherited value from the plain
+  maps keyed by name, which could make the seed throw and abort `auth add` and
+  `init`. A gateway name that is empty, has a control character, or is an
+  Object.prototype name is refused. The name lookups in the config parser, the
+  provider and LiteLLM tables, plan detection, the key stores and the trust file
+  read own properties only.
+- **Doctor never lists decision models at an unbound host with its stored key.**
+- **A decision and the send that follows it use one config.** The unbound-host check
+  for a tenant is computed from the config the request carries, for both the LiteLLM
+  config and the direct path, rather than from the last build.
+- **TypeSafe and OpenRouter decision hosts match with their port.** A port other
+  than the default is a different server and gets no well-known key.
+- **Unbound-URL messages lead with the remove instruction.** "If you did not choose
+  this URL, remove it from <file>" comes first, then the trust command.
+- **The init refresh's binding check is required, not optional.**
+- **A rollback copy of a login is aged from when it was set aside, and a failed
+  rollback names where the previous credential is.** A crashed login's staging
+  directory is swept once a day old.
+- **Residual: LiteLLM's own client follows redirects.** Sonata's fetches refuse
+  them, but a gateway served through LiteLLM can answer with a redirect that
+  LiteLLM follows. LiteLLM strips `Authorization` on a cross-host redirect but not
+  `x-api-key` or `x-goog-api-key`, so a key sent under those headers can reach the
+  redirect's host. Use a gateway that does not redirect, or serve it directly.
+
 ### Fixed
 
 - **Codex (ChatGPT) prompt cache now hits across a conversation's turns.**

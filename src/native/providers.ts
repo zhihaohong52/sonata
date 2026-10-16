@@ -1,4 +1,5 @@
 import type { NativeGatewayAuth, NativeGatewayConfig, SonataConfig } from '../config.js';
+import { ownEntry } from './own-entry.js';
 
 /**
  * Which LiteLLM provider a gateway speaks, and what that implies about how
@@ -44,7 +45,7 @@ export const PROVIDER_FOR_GATEWAY: Record<string, LitellmProvider> = {
 
 /** `openai` is the fallback for the unknown, never the default for a known vendor. */
 export function providerForBaseUrl(gateway: string): LitellmProvider {
-  return PROVIDER_FOR_GATEWAY[gateway] ?? 'openai';
+  return ownEntry(PROVIDER_FOR_GATEWAY, gateway) ?? 'openai';
 }
 
 /**
@@ -129,7 +130,7 @@ export function litellmRequired(config: SonataConfig): boolean {
   }
   for (const model of Object.values(config.native?.models ?? {})) names.add(model.gateway);
   for (const name of names) {
-    const gw = gateways[name];
+    const gw = ownEntry(gateways, name);
     if (gw !== undefined && transportFor(gw, name) === 'litellm') return true;
   }
   return false;

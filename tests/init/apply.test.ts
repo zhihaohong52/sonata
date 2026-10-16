@@ -22,6 +22,7 @@ const planFor = (): InitPlan => ({
     '[tiers.code]', 'simple = ["acme-fast"]', 'complex = ["acme-fast"]', '',
   ].join('\n'),
   keysToStore: [],
+  hostsToTrust: [],
   installLitellm: false,
   hook: { scope: 'skip' },
   skillPath: join(cwd, '.claude', 'skills', 'sonata-loop', 'SKILL.md'),
@@ -47,7 +48,7 @@ describe('apply', () => {
     // credential for a config that was never written.
     const bad = { ...planFor(), configToml: 'avoid_gateways = ["ghost"]\n' };
     await expect(apply(bad, { cwd, home, packageRoot: resolve('.') }, { out: () => {}, prune: false }))
-      .rejects.toThrow(/does not parse/);
+      .rejects.toThrow(/does not load/);
     expect(existsSync(join(cwd, 'sonata.toml'))).toBe(false);
   });
 
@@ -208,6 +209,7 @@ describe('apply — settings go through the settings lock', () => {
       configPath: join(cwd, 'sonata.toml'),
       configToml: '[models."acme-fast"]\ngateway = "acme"\nid = "fast"\n\n[native.gateways."acme"]\nbase_url = "https://acme.example/v1"\n\n[tiers.code]\nsimple = ["acme-fast"]\ncomplex = ["acme-fast"]\n',
       keysToStore: [],
+      hostsToTrust: [],
       hook: { scope: 'project', allowListScope: 'project' },
       skillPath: join(cwd, '.claude', 'skills', 'sonata-loop', 'SKILL.md'),
       guidance: { scope: 'skip' },

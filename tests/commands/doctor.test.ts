@@ -1,11 +1,12 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
-import { chmodSync, mkdtempSync, writeFileSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { chmodSync, mkdtempSync, realpathSync, writeFileSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { checkVersion, cmdDoctor, staleMcpRegistration, routingFailureDetail, loopPanelCheck } from '../../src/commands/doctor.js';
 import { planRouteAuto } from '../../src/commands/route.js';
 import type { Settings } from '../../src/settings.js';
 import { writeSonataKey } from '../../src/native/credentials.js';
+import { addTrustBinding, seedUpgradeTrust } from '../../src/native/host-bindings.js';
 import { opencodeDbPath } from '../../src/native/opencode-store.js';
 import { sqliteAvailable, writeOpencodeCredDb } from '../opencode-db-fixture.js';
 import { credentialDir } from '../../src/native/oauth-login.js';
@@ -14,6 +15,7 @@ import { nativeAgentMarkdown, plannedAgents } from '../../src/commands/sync.js';
 import { parseConfig } from '../../src/config.js';
 import { appendRow, type LedgerRow } from '../../src/ledger.js';
 import { projectTenant } from '../../src/commands/status.js';
+import { recordSession } from '../../src/sessions.js';
 
 vi.mock('../../src/native/litellm.js', async (importOriginal) => ({
   // The rest is real: doctor merges gateways through serve's own function,
@@ -1092,6 +1094,178 @@ credential_source = "opencode"
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+
+  it('fails a gateway whose base_url host its key is not bound to, naming the trust command', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-host-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-host-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.acme]
+base_url = "https://attacker.example/v1"
+`);
+    writeSonataKey(home, 'acme', 'sk-acme');
+    // Upgraded already: the one-time seed has run, so this config is not seeded.
+    seedUpgradeTrust(home, 'test', []);
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    const check = checks.find((c) => c.name === 'credential host: acme');
+    expect(check?.ok).toBe(false);
+    expect(check?.detail).toContain('sonata auth trust acme attacker.example');
+  });
+
+  it('checks every routed project, not only this one, naming the config that sets each URL', async () => {
+    // A session routed from another project is served too: its unbound host
+    // is the one serve withholds the key from, so doctor must name it.
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-union-cwd-'));
+    const other = mkdtempSync(join(tmpdir(), 'doc-union-other-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-union-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.openrouter]
+base_url = "https://openrouter.ai/api/v1"
+`);
+    writeFileSync(join(other, 'sonata.toml'), `
+[native.gateways.acme]
+base_url = "https://attacker.example/v1"
+`);
+    writeSonataKey(home, 'acme', 'sk-acme');
+    seedUpgradeTrust(home, 'test', []);
+    await recordSession(home, { session: 'union-1', cwd: other, started: new Date().toISOString() });
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    const check = checks.find((c) => c.name === 'credential host: acme');
+    expect(check?.ok).toBe(false);
+    expect(check?.detail).toContain(join(realpathSync(other), 'sonata.toml'));
+    expect(check?.detail).toContain('do not trust it');
+  });
+
+  it('fails an auto-route URL on a host nobody bound, naming the config and the trust command', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-auto-unbound-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-auto-unbound-home-'));
+    // A stored decision key is what an unbound host would receive, so the key is what fails it.
+    writeSonataKey(home, 'auto-route', 'sk-decide');
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[auto_route]
+classifier = "jev"
+base_url = "https://decide.example"
+
+[models."m-flash"]
+gateway = "acme"
+id = "m-flash"
+
+[native.gateways.acme]
+base_url = "https://gateway.example/v1"
+
+[tiers.code]
+simple = ["m-flash"]
+complex = ["m-flash"]
+`);
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    const check = checks.find((c) => c.name === 'auto route' && c.ok === false);
+    expect(check?.detail).toContain('decide.example');
+    expect(check?.detail).toContain(join(cwd, 'sonata.toml'));
+    expect(check?.detail).toContain('sonata auth trust auto-route decide.example');
+  });
+
+  it('never lists models at an unbound decision host with its stored key', async () => {
+    // The listing is a request carrying the key, so it must not reach a host
+    // the key may not go to. The failure is still reported.
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-auto-list-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-auto-list-home-'));
+    writeSonataKey(home, 'auto-route', 'sk-decide');
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[auto_route]
+classifier = "jev"
+base_url = "https://decide.example"
+
+[models."m-flash"]
+gateway = "acme"
+id = "m-flash"
+
+[native.gateways.acme]
+base_url = "https://gateway.example/v1"
+
+[tiers.code]
+simple = ["m-flash"]
+complex = ["m-flash"]
+`);
+    const requested: string[] = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url: string | URL | Request) => {
+      requested.push(String(url));
+      throw new Error('down');
+    };
+    try {
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+      expect(requested.filter((url) => url.includes('decide.example'))).toEqual([]);
+      expect(checks.find((c) => c.name === 'auto route' && c.ok === false)?.detail).toContain('decide.example');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('passes a keyless auto-route URL on an unbound host: no key would be sent there', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-auto-keyless-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-auto-keyless-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[auto_route]
+classifier = "jev"
+base_url = "http://localhost:8000"
+
+[models."m-flash"]
+gateway = "acme"
+id = "m-flash"
+
+[native.gateways.acme]
+base_url = "https://gateway.example/v1"
+
+[tiers.code]
+simple = ["m-flash"]
+complex = ["m-flash"]
+`);
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    expect(checks.find((c) => c.name === 'auto route' && c.ok === false)).toBeUndefined();
+  });
+
+  it('passes a gateway whose host is bound by trust, and by the well-known URL', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-host-ok-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-host-ok-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.acme]
+base_url = "https://proxy.example/v1"
+[native.gateways.openrouter]
+base_url = "https://openrouter.ai/api/v1"
+`);
+    addTrustBinding(home, 'acme', 'proxy.example');
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    expect(checks.find((c) => c.name === 'credential host: acme')).toBeUndefined();
+    expect(checks.find((c) => c.name === 'credential host: openrouter')).toBeUndefined();
+  });
+
+  it('passes a gateway whose host is the machine config host for the same name', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-host-machine-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-host-machine-home-'));
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(join(home, '.config', 'sonata', 'sonata.toml'), `
+[native.gateways.acme]
+base_url = "https://proxy.example/v1"
+`);
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.acme]
+base_url = "https://proxy.example/v1"
+`);
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    expect(checks.find((c) => c.name === 'credential host: acme')).toBeUndefined();
+  });
+
+  it('skips the host check for session and OAuth gateways', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-host-skip-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-host-skip-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), `
+[native.gateways.claude]
+auth = "session"
+[native.gateways.codex]
+auth = "codex-oauth"
+`);
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    expect(checks.some((c) => c.name.startsWith('credential host:'))).toBe(false);
   });
 
   it.skipIf(!sqliteAvailable())('reports an api key supplied by opencode.db', async () => {

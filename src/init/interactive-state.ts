@@ -23,6 +23,8 @@ import {
   KNOWN_ROLES, configPath,
 } from '../config.js';
 import { resolveDecisionKey, resolveKeys } from '../native/credentials.js';
+import { seedTrustOnUpgrade } from '../native/trust-seed.js';
+import { readTrustBindings } from '../native/host-bindings.js';
 import { credentialAvailabilityFor, nativeLabel, deriveInitState, configPathFor, type NativeCandidate } from './helpers.js';
 import { runInitTui } from '../tui-ink/run.js';
 import type { InitState } from '../tui-ink/types.js';
@@ -51,6 +53,8 @@ export async function interactiveState(
   },
   log: InitLog,
 ): Promise<{ state: InitState; nativeByKey: Map<string, NativeCandidate>; cancelled: boolean }> {
+  // The wizard snapshots trust before apply writes keys; seed it before that read.
+  seedTrustOnUpgrade(opts.home);
   const byokUrls = new Map(env.byokProviders.map((provider) => [provider.name, provider.url]));
   const nativeByKey = new Map(env.allNativeCandidates.map((c) => [c.key, c]));
   const existingConfigPath = configPath(opts.cwd, opts.home);
@@ -170,6 +174,16 @@ export async function interactiveState(
     // Per scope, because the URL written back is that scope's config's: a
     // global init must ask the global URL what it serves, not the project's.
     gatewayBaseUrlsByScope: env.providerBaseUrlsByScope,
+    // What the model refresh checks each URL's host against, before it sends
+    // a stored key: the user's trust, and the machine config's own gateways.
+    refreshBindings: {
+      trusted: readTrustBindings(opts.home),
+      machineGateways: env.configsByScope.global?.native?.gateways ?? {},
+      configFileByScope: {
+        project: configPathFor('project', opts.cwd, opts.home),
+        global: configPathFor('global', opts.cwd, opts.home),
+      },
+    },
     avoidGateways: env.configsByScope[resolvedScope]?.avoidGateways ?? [],
     declaredGatewayNames: declaredGatewayNamesByScope,
     declaredPricingProviders: declaredPricingProvidersByScope,

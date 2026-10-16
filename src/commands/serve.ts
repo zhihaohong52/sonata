@@ -11,6 +11,8 @@ import { GLOBAL_CONFIG_RELATIVE, loadConfig, nativeRouteFor, oauthCredentialIden
 import { appendRow, LEDGER_RETENTION_DAYS, pruneLedger, type LedgerRow } from '../ledger.js';
 import { pruneSessions } from '../sessions.js';
 import { resolveDecisionKey, resolveKeyDetail, resolveKeys, sonataKeyStorePath } from '../native/credentials.js';
+import { trustedHostsPath, unboundKeyHosts } from '../native/host-bindings.js';
+import { seedTrustOnUpgrade } from '../native/trust-seed.js';
 import {
   boundUnreadable, boundUnreadableDb, fileStoreRead, jsonStoreRead, newUnreadableMemory, opencodeDbRead,
   UNREADABLE_SKIP_RULE, type StoreRead, type UnreadableMemory,
@@ -24,7 +26,10 @@ import { envVarForGateway, litellmConfigForTenants, litellmConfigYamlForTenants 
 import { litellmRequired, transportFor } from '../native/providers.js';
 import { litellmStatus, managedLitellmPath } from '../native/litellm-venv.js';
 import type { UiDeps } from '../native/ui.js';
-import { decisionClassifier, decisionKeyFor, type TierClassifier } from '../native/auto-route.js';
+import {
+  decisionClassifier, decisionKeyFor, refusedClassifier, type TierClassifier,
+} from '../native/auto-route.js';
+import { decisionKeyBinding, decisionUnboundMessage } from '../native/decision-binding.js';
 import { ModelListCache, chooseDecisionModel } from '../native/decision-models.js';
 import { loadDecisionCatalog } from '../decision-catalog.js';
 import { createRouterServer, type RouterTenant } from '../native/router.js';
@@ -677,6 +682,7 @@ function defaultSpawnLitellm(
 interface CredentialFailure {
   gateway: string;
   message: string;
+  hostUnbound?: true;
   /**
    * Set when nothing was resolved because a store in the gateway's lookup
    * could not be read and there was no earlier resolution to keep. Answered
@@ -741,12 +747,22 @@ interface ChildEnvResolution {
    */
   seeds: { chatgpt?: ChatGptSeed; copilot?: string };
   /**
+   * Per tenant (by id), the gateways whose key that tenant's own `base_url`
+   * host may not receive. Only that tenant's models on those gateways are
+   * kept out of LiteLLM's config, and only its direct requests are refused;
+   * another tenant naming the same gateway keeps its key. Only a name that
+   * no tenant binds is withheld from the child env itself.
+   */
+  unboundByTenant: Map<string, Map<string, string>>;
+  /**
    * The ChatGPT stores (`resolvedOauthIdentity`'s spelling) a harness-sourced
    * codex-oauth gateway read this build and found positively holding no
    * login — neither unreadable nor a tentative empty read. How serve tells a
    * login has ended, by the login and not by the gateway's name.
    */
   chatgptGone: string[];
+  /** The gateway names this build resolved a stored key for: what `unboundKeyHosts` checks. */
+  keyed: ReadonlySet<string>;
 }
 
 /**
@@ -881,6 +897,10 @@ interface ResolveChildEnvOptions {
   now?: () => number;
   /** Where a store skipped for being steadily unreadable is reported, once. */
   warn?: (line: string) => void;
+  /** The machine config's own gateways: their hosts are trusted for their names. */
+  machineGateways: NativeConfig['gateways'];
+  /** Every loadable tenant's own gateways, checked one by one — the merge keeps one `base_url` per name. */
+  tenantGateways: { id: string; configPath: string; gateways: NativeConfig['gateways'] }[];
 }
 
 /**
@@ -895,7 +915,7 @@ function resolveChildEnv(
   native: NativeConfig,
   home: string,
   tempDir: string,
-  opts: ResolveChildEnvOptions = {},
+  opts: ResolveChildEnvOptions,
 ): ChildEnvResolution {
   return withReadSnapshot(() => resolveChildEnvFromSnapshot(native, home, tempDir, opts));
 }
@@ -1070,11 +1090,78 @@ function resolveChildEnvFromSnapshot(
   };
 
   // A session gateway has no key to find: its credential is the session's own.
+  // OAuth gateways likewise hold no sendable key: nothing here is withheld
+  // from them, whatever host they name.
+  //
+  // A stored key is looked up by gateway NAME, but the `base_url` it would be
+  // sent to comes from the configs — including a cloned repo's project config
+  // pointing the name at an attacker's host. So a key is sent only to a host
+  // bound to its gateway name (well-known, user-confirmed, or the machine
+  // config's own). Checked against EVERY tenant's gateways, not the merged
+  // one: the merge keeps one `base_url` per name, and the tenant whose URL
+  // survived could be bound while another tenant's is not — the key still
+  // reaches the unbound one, so any unbound tenant withholds the name. A
+  // gateway with no stored key gets no failure — withholding means omitting
+  // an env entry, and with no key there is nothing to omit — so this runs
+  // after the lookups, per gateway that actually resolved one (a last-good
+  // key kept through an unreadable store counts as having one).
   const automaticallyResolved = Object.entries(native.gateways)
     .filter(([, gateway]) => gateway.auth !== 'session'
       && (gateway.auth !== 'api-key' || gateway.credentialSource === undefined));
   const found = new Map(resolveKeys(automaticallyResolved.map(([name]) => name), home).map((hit) => [hit.gateway, hit]));
+  const sourcedHits = new Map<string, { key: string; source: string }>();
+  for (const [name, gateway] of Object.entries(native.gateways)) {
+    const source = gateway.credentialSource;
+    if (gateway.auth !== 'api-key' || (source !== 'sonata' && source !== 'opencode')) continue;
+    const hit = resolveKeyDetail(name, home, source);
+    if (hit !== undefined) sourcedHits.set(name, hit);
+  }
+  const keyed = new Set<string>([...found.keys(), ...sourcedHits.keys()]);
+  // Last-good keys can survive an unreadable store; they need the same host
+  // check as a key resolved on this read, before settle can reuse them.
+  for (const [name, gateway] of Object.entries(native.gateways)) {
+    if (memory.lastGood.has(lineageKey(name, gateway)) || memory.lastGood.has(`${lineageKey(name, gateway)}|key`)) keyed.add(name);
+  }
+  // Every tenant is checked against its own gateways. A name is withheld
+  // from the child env, and its merged resolution dropped, only when every
+  // tenant that holds an api-key gateway under that name is unbound: while
+  // one is bound the key stays, and the unbound tenant is kept off it by its
+  // own drop set (`unboundByTenant`), not by the env. Every unbound tenant's
+  // message is recorded, each naming the config that set its URL.
+  const unboundByTenant = new Map<string, Map<string, string>>();
+  for (const { id, configPath, gateways } of opts.tenantGateways) {
+    const perTenant = unboundKeyHosts(gateways, opts.machineGateways, keyed, home, configPath);
+    if (perTenant.size === 0) continue;
+    unboundByTenant.set(id, perTenant);
+    for (const [name, message] of perTenant) failures.push({ gateway: name, message, hostUnbound: true });
+  }
+  const unboundHosts = new Set<string>();
+  for (const name of keyed) {
+    const holders = opts.tenantGateways.filter(({ gateways }) => {
+      const gateway = gateways[name];
+      return gateway !== undefined && (gateway.auth ?? 'api-key') === 'api-key';
+    });
+    if (holders.length === 0) continue;
+    if (holders.every(({ id }) => unboundByTenant.get(id)?.has(name) === true)) unboundHosts.add(name);
+  }
+  for (const name of unboundHosts) {
+    const gateway = native.gateways[name];
+    if (gateway === undefined) continue;
+    memory.lastGood.delete(`${lineageKey(name, gateway)}|key`);
+    memory.lastGood.delete(lineageKey(name, gateway));
+    for (const stale of [...memory.lastGoodSource.keys()]) {
+      if (stale === `${lineageKey(name, gateway)}|key` || stale === lineageKey(name, gateway)) {
+        memory.lastGoodSource.delete(stale);
+      }
+    }
+    memory.seeds.delete(`${lineageKey(name, gateway)}|key`);
+    memory.seeds.delete(lineageKey(name, gateway));
+    found.delete(name);
+    sourcedHits.delete(name);
+  }
+  const unbound = unboundHosts;
   for (const [name, gateway] of automaticallyResolved) {
+    if (unbound.has(name)) continue;
     const hit = found.get(name);
     // No failure when nothing is found: a default-sourced gateway may need
     // no key at all, which is how it has always been served.
@@ -1089,7 +1176,9 @@ function resolveChildEnvFromSnapshot(
   for (const [name, gateway] of Object.entries(native.gateways)) {
     const source = gateway.credentialSource;
     if (gateway.auth !== 'api-key' || (source !== 'sonata' && source !== 'opencode')) continue;
-    const hit = resolveKeyDetail(name, home, source);
+    if (unbound.has(name)) continue;
+    // Looked up above, so one read per build; `settle` still decides.
+    const hit = sourcedHits.get(name);
     const entries = settle(
       name, lineageKey(name, gateway),
       hit === undefined ? undefined : { [envVarForGateway(name)]: hit.key },
@@ -1198,7 +1287,7 @@ function resolveChildEnvFromSnapshot(
   for (const lineage of [...memory.seeds.keys()]) {
     if (!live.has(lineage)) memory.seeds.delete(lineage);
   }
-  return { env: childEnv, failures, transient, seeds, chatgptGone };
+  return { env: childEnv, failures, transient, seeds, chatgptGone, unboundByTenant, keyed };
 }
 
 /** Default bound on how long a model-registry restart waits for the old litellm child to exit (see `litellmExitTimeoutMs`). */
@@ -1781,6 +1870,13 @@ export async function cmdServe(
    * leaving them in keeps its failure from restarting LiteLLM.
    */
   let litellmCredentialFailures = new Set<string>();
+  /**
+   * The gateway names the last build resolved a stored key for. Which hosts a
+   * tenant may not receive is decided per request from that tenant's config
+   * object (`hostUnboundFor`), not from the last build's answer, so a decision
+   * and the send that follows it are made from the same config.
+   */
+  let keyedGateways: ReadonlySet<string> = new Set<string>();
   /** Each gateway's last good credential, across child-env builds; see `resolveChildEnv`. */
   const credentialMemory = newCredentialMemory();
   /** A credential store skipped for staying unreadable, reported once per stretch by `boundUnreadable`. */
@@ -1854,15 +1950,37 @@ export async function cmdServe(
    * does hold — for an OAuth kind, another project's account, or a blocking
    * device-code login.
    */
+  /**
+   * The gateways a tenant's own `base_url` host may not receive a stored key
+   * at, with the message for each. Computed from the config object passed in,
+   * so whatever is written from it (LiteLLM's `api_base`) and whatever is
+   * sent from it (the direct path) are decided by the same URLs.
+   */
+  const hostUnboundFor = (tenant: { configPath?: string; config?: SonataConfig }): Map<string, string> => {
+    const gateways = tenant.config?.native?.gateways;
+    if (gateways === undefined) return new Map();
+    return unboundKeyHosts(
+      gateways,
+      machineConfig()?.native?.gateways ?? {},
+      keyedGateways,
+      opts.home,
+      tenant.configPath ?? 'the config',
+      // This answer becomes the router's error body, i.e. the model's context:
+      // no runnable trust command. The full one is logged at the credential check.
+      'model',
+    );
+  };
   const servableTenants = (loaded: ReturnType<TenantRegistry['loadable']> = registry.loadable()) => {
     mergeGateways(() => { /* logged by mergedNative */ }, loaded);
     const dropped = droppedGateways;
     const unresolved = litellmCredentialFailures;
     return loaded.map((tenant) => {
       const native = tenant.config.native;
+      const hostUnbound = hostUnboundFor(tenant);
       const keep = <T extends { gateway?: string }>(models: Record<string, T>) =>
         Object.fromEntries(Object.entries(models).filter(([, model]) =>
-          model.gateway === undefined || (!dropped.has(model.gateway) && !unresolved.has(model.gateway))));
+          model.gateway === undefined || (!dropped.has(model.gateway) && !unresolved.has(model.gateway)
+            && !hostUnbound?.has(model.gateway))));
       return {
         ...tenant,
         config: {
@@ -1914,6 +2032,7 @@ export async function cmdServe(
     registry.fingerprint(),
     `codex:${statSignal(codexAuthPath(opts.home))}`,
     `keys:${statSignal(sonataKeyStorePath(opts.home))}`,
+    `trust:${statSignal(trustedHostsPath(opts.home))}`,
     `opencode:${statSignal(opencodeAuthPath(opts.home))}`,
     `opencode.db:${opencodeDbSignal()}`,
   ].join('\n');
@@ -1992,12 +2111,15 @@ export async function cmdServe(
      * the child env goes through this, so the sets always describe the env
      * that was just built.
      */
-    const applyCredentialFailures = (failures: CredentialFailure[], cfg: NativeConfig): void => {
+    const applyCredentialFailures = (built: ChildEnvResolution, cfg: NativeConfig): void => {
       const all = new Map<string, string>();
       const litellm = new Set<string>();
-      for (const { gateway, message, tentative } of failures) {
+      for (const { gateway, message, tentative, hostUnbound } of built.failures) {
         const gw = cfg.gateways[gateway];
         if (gw === undefined) continue;
+        // A host the tenant's own base_url may not receive is kept off per
+        // tenant (`hostUnboundFor`), never machine-wide.
+        if (hostUnbound === true) continue;
         all.set(gateway, message);
         // A tentative failure keeps its models in LiteLLM's config: the
         // router refuses them, and a gap that closes restarts nothing.
@@ -2005,6 +2127,7 @@ export async function cmdServe(
       }
       credentialFailures = all;
       litellmCredentialFailures = litellm;
+      keyedGateways = built.keyed;
     };
 
     // Startup fails outright only for the machine config's own gateways — the
@@ -2088,6 +2211,10 @@ export async function cmdServe(
         chatgptTokenDir: chatgptSeeded?.dir ?? chatgptDirFor(1),
         now: clock,
         warn: warnSkipped,
+        machineGateways: machineConfig()?.native?.gateways ?? {},
+        tenantGateways: registry.loadable().map(({ id, configPath, config }) => ({
+          id, configPath, gateways: config.native?.gateways ?? {},
+        })),
       });
       seeds = built.seeds;
       const held = chatgptSeeded;
@@ -2111,6 +2238,14 @@ export async function cmdServe(
       return built;
     };
 
+    // The upgrade's one-time trust seed, before any credential check reads the
+    // trust file. A failure is logged and serving goes on: the request path
+    // reads the file tolerantly, so nothing is trusted that was not before.
+    try {
+      for (const line of seedTrustOnUpgrade(opts.home)) console.error(`sonata serve: ${line}`);
+    } catch (error) {
+      console.error(`sonata serve: could not record the upgrade's trust seed: ${error instanceof Error ? error.message : String(error)}`);
+    }
     const tornAtStart = credentialMemory.unreadable.torn;
     // The merge and the build read the stores once, together (`withReadSnapshot`).
     const { startupNative, startup } = withReadSnapshot(() => {
@@ -2121,8 +2256,8 @@ export async function cmdServe(
     const readTorn = (before: number): boolean => credentialMemory.unreadable.torn !== before;
     const startupTorn = readTorn(tornAtStart);
     const machineGateways = machineConfig()?.native?.gateways ?? {};
-    const fatal = startup.failures.find(({ gateway, unreadable }) =>
-      unreadable === undefined && Object.hasOwn(machineGateways, gateway));
+    const fatal = startup.failures.find(({ gateway, unreadable, hostUnbound }) =>
+      hostUnbound !== true && unreadable === undefined && Object.hasOwn(machineGateways, gateway));
     if (fatal !== undefined) throw new Error(`sonata serve: ${fatal.message}`);
     let childEnv = startup.env;
     /**
@@ -2176,7 +2311,7 @@ export async function cmdServe(
       });
       return `${registry.unionSnapshot(loaded)}\n${JSON.stringify(litellmConfigForTenants(tenants, ''))}\n${env.join(',')}`;
     };
-    applyCredentialFailures(startup.failures, startupNative);
+    applyCredentialFailures(startup, startupNative);
     writeFileSync(configPath, litellmConfigYamlForTenants(servableTenants(), masterKey), { mode: 0o600 });
     const needsLitellmAtStart = unionNeedsLitellm();
 
@@ -2230,7 +2365,10 @@ export async function cmdServe(
     // regardless, a credential missing at startup was never retried unless a
     // config or a watched store happened to change.
     const startupInputs = gatewayPlanInputs();
-    const startupSettled = startup.failures.length === 0 && startup.transient.length === 0 && !startupTorn;
+    // A host refusal is settled, not retried: it is deterministic, and the trust
+    // file, the configs and the keys all move the fingerprint when it changes.
+    const startupSettled = startup.failures.every((f) => f.hostUnbound === true)
+      && startup.transient.length === 0 && !startupTorn;
     let planFingerprint: string | undefined = startupSettled ? startupInputs : undefined;
     /** The fingerprint whose rebuild last failed; a retry of it merges quietly, since its drops were already logged. */
     let failedFingerprint: string | undefined = startupSettled ? undefined : startupInputs;
@@ -2257,7 +2395,7 @@ export async function cmdServe(
       // with a 502 naming the missing credential without being forwarded.
       const { env, failures, transient } = built;
       childEnv = env;
-      applyCredentialFailures(failures, cfg);
+      applyCredentialFailures(built, cfg);
       reportCredentialFailures([...failures, ...transient]);
       refreshGatewayKeys(cfg);
       // A store that could not be read is retried on the next request too,
@@ -2266,7 +2404,7 @@ export async function cmdServe(
       // gateway's identity included, which is a drop and not a failure):
       // nothing on disk may change when its window lapses, so a committed
       // fingerprint would keep the refusal forever.
-      if (failures.length > 0 || transient.length > 0 || readTorn(tornBefore)) {
+      if (!failures.every((f) => f.hostUnbound === true) || transient.length > 0 || readTorn(tornBefore)) {
         failedFingerprint = now;
         // And the last committed fingerprint is forgotten: inputs that return
         // to it — opencode.db's rows are hashed, not stat'd, so a row removed
@@ -2496,7 +2634,7 @@ export async function cmdServe(
       });
       const { env, failures, transient } = built;
       childEnv = env;
-      applyCredentialFailures(failures, cfg);
+      applyCredentialFailures(built, cfg);
       reportCredentialFailures([...failures, ...transient]);
       refreshGatewayKeys(cfg);
     };
@@ -2719,6 +2857,8 @@ export async function cmdServe(
     // carrying 0 fails every request's Host check.
     uiDeps = { home: opts.home, port: ports.router, tenants: () => registry.summary() };
     const decisionClassifiers = new Map<string, TierClassifier>();
+    /** Decision refusals already logged, so a refused host is reported once per distinct message. */
+    const loggedDecisionRefusals = new Set<string>();
     const modelLists = new ModelListCache(fetch);
     router = createRouterServer({
       fetch,
@@ -2745,15 +2885,28 @@ export async function cmdServe(
       // One classifier per URL + pin; the model is chosen per call from the
       // URL's listed decision models and the cached JevBench scores, so a
       // `sonata catalog update` or a new model at the URL needs no restart.
-      classifierFor: (settings) => {
+      classifierFor: (settings, tenant) => {
+        const credential = () => decisionKeyFor(settings.baseUrl, {
+          openrouter: () => resolveDecisionKey('openrouter', opts.home)?.key,
+          typesafe: () => resolveDecisionKey('typesafe', opts.home)?.key,
+          other: () => resolveDecisionKey('auto-route', opts.home)?.key,
+        });
+        // A stored decision key goes to the URL's host, so that host must be
+        // bound first; with no key there is nothing to protect. Checked per
+        // request, not cached: a trust change takes effect at once, and an
+        // unbound host is never handed the classifier that would send the key.
+        const binding = decisionKeyBinding(settings.baseUrl, credential().key, opts.home, machineConfig()?.autoRoute?.baseUrl);
+        if (binding !== undefined && !binding.bound) {
+          const message = decisionUnboundMessage(settings.baseUrl, binding.host, tenant.configPath ?? 'the config', { insecure: binding.insecure });
+          if (!loggedDecisionRefusals.has(message)) {
+            loggedDecisionRefusals.add(message);
+            console.error(`sonata serve: ${message}`);
+          }
+          return refusedClassifier(decisionUnboundMessage(settings.baseUrl, binding.host, tenant.configPath ?? 'the config', { insecure: binding.insecure, command: false }));
+        }
         const id = `${settings.baseUrl}|${settings.model ?? ''}`;
         let classifier = decisionClassifiers.get(id);
         if (classifier === undefined) {
-          const credential = () => decisionKeyFor(settings.baseUrl, {
-            openrouter: () => resolveDecisionKey('openrouter', opts.home)?.key,
-            typesafe: () => resolveDecisionKey('typesafe', opts.home)?.key,
-            other: () => resolveDecisionKey('auto-route', opts.home)?.key,
-          });
           classifier = decisionClassifier(settings, {
             fetch,
             key: () => credential().key,
@@ -2770,6 +2923,7 @@ export async function cmdServe(
       },
       resolveGateway: (key, tenant) => tenant.config?.unifiedModels[key]?.gateway,
       gatewayUnavailable: (tenant, gateway) => droppedGateways.get(gateway) ?? credentialFailures.get(gateway) ??
+        hostUnboundFor(tenant).get(gateway) ??
         (tenant.config?.native?.gateways[gateway]?.auth === 'codex-oauth'
           ? (chatgptLoginRefused === undefined ? undefined
             : ((why) => (why === undefined ? (refusedToken(), chatgptLoginRefused?.message) : `${why}; retry`))(chatgptReseedDue()))
@@ -2807,8 +2961,9 @@ export async function cmdServe(
       },
       gatewayKeys: (tenant) => {
         const out: Record<string, string> = {};
+        const hostUnbound = hostUnboundFor(tenant);
         for (const [name, gateway] of Object.entries(tenant.config?.native?.gateways ?? {})) {
-          if (transportFor(gateway, name) !== 'direct') continue;
+          if (transportFor(gateway, name) !== 'direct' || hostUnbound?.has(name)) continue;
           const key = childEnv[envVarForGateway(name)];
           if (key !== undefined && key !== '') out[name] = key;
         }

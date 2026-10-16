@@ -80,7 +80,7 @@ export interface RouterDeps {
    * and decision model are per project, while one router serves them all.
    * Preferred over `classifier` when present.
    */
-  classifierFor?: (settings: AutoRouteConfig) => TierClassifier | undefined;
+  classifierFor?: (settings: AutoRouteConfig, tenant: RouterTenant) => TierClassifier | undefined;
   /**
    * Resolves a direct `--model <key>` request's key to its gateway name, so a
    * direct-model row carries `gateway` and can be priced (pricing's step 2
@@ -2364,7 +2364,10 @@ async function forwardToLitellm(
     const served = chatgpt ? deps.chatgptTokenDir?.() : undefined;
     const response = await deps.fetch(
       targetUrl(deps.litellmBase, req.url),
-      { method: req.method, headers, body: body.length > 0 ? body as unknown as BodyInit : undefined, signal: req.signal },
+      // A redirect is refused, not followed: a followed one would carry the
+      // key (and the conversation) to a host nothing checked. It surfaces as
+      // the transport failure it is.
+      { method: req.method, headers, body: body.length > 0 ? body as unknown as BodyInit : undefined, signal: req.signal, redirect: 'error' },
     );
     // LiteLLM returns 500 when ChatGPT's Codex endpoint yields output:[]. That
     // usually means the upstream was overloaded and returned an empty completion
@@ -2498,7 +2501,7 @@ function withSessionHeader(
  */
 async function forwardDirect(
   body: Buffer,
-  gw: { baseUrl: string; key: string; authHeader?: string; auth?: NativeGatewayAuth },
+  gw: { baseUrl: string; key: string; auth?: NativeGatewayAuth },
   req: RouterRequest,
   deps: RouterDeps,
 ): Promise<RouterResponse> {
@@ -2507,8 +2510,7 @@ async function forwardDirect(
     for (const name of Object.keys(headers)) {
       if (name.toLowerCase() === 'authorization' || name.toLowerCase() === 'x-api-key') delete headers[name];
     }
-    if ((gw.authHeader ?? 'authorization').toLowerCase() === 'x-api-key') headers['x-api-key'] = gw.key;
-    else headers.authorization = `Bearer ${gw.key}`;
+    headers.authorization = `Bearer ${gw.key}`;
   }
 
   // A gateway's configured `base_url` already ends in `/v1` (the same
@@ -2521,7 +2523,10 @@ async function forwardDirect(
   try {
     const response = await deps.fetch(
       targetUrl(base, req.url),
-      { method: req.method, headers, body: body.length > 0 ? body as unknown as BodyInit : undefined, signal: req.signal },
+      // A redirect is refused, not followed: a followed one would carry the
+      // key (and the conversation) to a host nothing checked. It surfaces as
+      // the transport failure it is.
+      { method: req.method, headers, body: body.length > 0 ? body as unknown as BodyInit : undefined, signal: req.signal, redirect: 'error' },
     );
     return {
       status: response.status,
@@ -2878,8 +2883,9 @@ async function routeTierCandidates(
     // sonata's own `[budget]` cap, which refuses before forwarding and never
     // reaches this branch.
     //
-    // Only >= 400 is considered: a 3xx never arrives (fetch follows
-    // redirects) and a 2xx that is not 200 — 204, say — is a success.
+    // Only >= 400 is considered: a 3xx never arrives, because every upstream
+    // fetch refuses redirects (`redirect: 'error'`) and a refused redirect is
+    // a transport failure. A 2xx that is not 200 — 204, say — is a success.
     if (response.status >= 400 && !TERMINAL_STATUSES.has(response.status)) {
       await drainBody(response.body, deps);
       attempts.push({ key: route.key, status: response.status });
@@ -3412,7 +3418,7 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
     const tiers = TIER_NAMES.filter((tier) => lists[tier] !== undefined);
     const conversation = conversationKey(req.body, tenant.id, alias);
     const make = () => decideTier({
-      classifier: deps.classifierFor?.(settings) ?? deps.classifier, role: auto, body: req.body, tiers,
+      classifier: deps.classifierFor?.(settings, tenant) ?? deps.classifier, role: auto, body: req.body, tiers,
       minConfidence: settings.minConfidence, now: deps.now,
     });
     // Never cache a no-task decision: the key hashes messages[0] while `cleanTask` reads the first user message, so a taskless request can share it with a later one that has a task.
@@ -3574,7 +3580,10 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
   try {
     const response = await deps.fetch(
       targetUrl(deps.anthropicBase ?? 'https://api.anthropic.com', req.url),
-      { method: req.method, headers, body: body.length > 0 ? body as unknown as BodyInit : undefined, signal: req.signal },
+      // A redirect is refused, not followed: a followed one would carry the
+      // key (and the conversation) to a host nothing checked. It surfaces as
+      // the transport failure it is.
+      { method: req.method, headers, body: body.length > 0 ? body as unknown as BodyInit : undefined, signal: req.signal, redirect: 'error' },
     );
     return withUsageRecording({
       status: response.status,

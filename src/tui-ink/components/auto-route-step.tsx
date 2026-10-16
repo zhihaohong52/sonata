@@ -3,6 +3,7 @@ import { Box, Text, useInput } from 'ink';
 import { TextInput } from './text-input.js';
 import { DEFAULT_DECISION_BASE_URL } from '../../config.js';
 import { decisionGatewayFor, isLoopbackUrl } from '../../native/auto-route.js';
+import { canonicalBaseUrlOrUndefined, checkBaseUrl } from '../../native/base-url.js';
 import type { InitState } from '../types.js';
 import { usePalette } from '../theme-context.js';
 
@@ -227,7 +228,7 @@ export function AutoRouteStep({
       title="Decision server URL"
       initial={initial}
       validate={(value) => decisionUrlError(value)}
-      onSubmit={(value) => afterUrl(value.trim().replace(/\/+$/, ''), 'url')}
+      onSubmit={(value) => afterUrl((canonicalBaseUrlOrUndefined(value) ?? value.trim()).replace(/\/+$/, ''), 'url')}
       onBack={() => setScreen({ kind: 'choose' })}
       onCancel={onCancel}
     />;
@@ -265,13 +266,7 @@ export function AutoRouteStep({
  * string, so a `?…`/`#…` would swallow them.
  */
 function decisionUrlError(value: string): string | undefined {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    return 'Enter an absolute http(s) URL';
-  }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') return 'Enter an absolute http(s) URL';
-  if (url.search !== '' || url.hash !== '') return 'Enter a URL without a query string or fragment';
-  return undefined;
+  // The config parser's own check, so a URL accepted here loads.
+  const check = checkBaseUrl(value);
+  return 'href' in check ? undefined : `This URL is refused: ${check.problem}.`;
 }

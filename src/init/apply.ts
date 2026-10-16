@@ -8,9 +8,11 @@ import { installLoopSkill, loopSkillFiles, loopSkillSource, pluginPanel } from '
 import { cmdSync } from '../commands/sync.js';
 import { cmdRoute } from '../commands/route.js';
 import { writeSonataKey } from '../native/credentials.js';
+import { addTrustBinding } from '../native/host-bindings.js';
+import { seedTrustBeforeKeyWrite } from '../native/trust-seed.js';
 import { litellmStatus } from '../native/litellm-venv.js';
 import { guidanceBlock, mergeGuidance } from './guidance.js';
-import { parseConfig } from '../config.js';
+import { assertPlannedConfigParses } from './plan.js';
 import type { InitPlan } from './plan.js';
 import type { InitOptions } from './helpers.js';
 
@@ -58,24 +60,23 @@ export async function apply(
   // The last line before anything touches the disk: the planned TOML parses.
   // `plan` already proved this when it built the plan, but apply is also
   // called with hand-built plans (and a plan built by an older plan is still
-  // a string by the time it arrives here). A refusal names the file that
-  // would have been written and writes nothing — in particular no keys are
-  // stored, since those go first below.
-  try {
-    parseConfig(plan.configToml);
-  } catch (err) {
-    throw new Error(
-      `sonata init would write ${plan.configPath} a config that does not parse: ` +
-      `${err instanceof Error ? err.message : String(err)} — nothing written.`,
-    );
-  }
+  // a string by the time it arrives here). A refusal writes nothing — in
+  // particular no key and no trust binding, since those go first below.
+  assertPlannedConfigParses(plan.configToml);
 
   // ---- credentials (first, so a partially-failed run still leaves keys behind) ----
   // Keys typed in the wizard are stored here and nowhere earlier: a cancelled
   // run must leave no credential behind. The gateway is printed, never the key.
+  // The upgrade's seed before anything is stored: see `seedTrustBeforeKeyWrite`.
+  seedTrustBeforeKeyWrite(home);
   for (const { gateway, key } of plan.keysToStore) {
     writeSonataKey(home, gateway, key);
     io.out(`  ✓ stored the key for ${gateway}`);
+  }
+  // The URLs init wrote for these gateways were the user's own choice, so
+  // the stored keys are bound to their hosts as (d) of the trust rule.
+  for (const { gateway, host } of plan.hostsToTrust ?? []) {
+    addTrustBinding(home, gateway, host);
   }
 
   // ---- config ----

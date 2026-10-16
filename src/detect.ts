@@ -18,6 +18,8 @@ import { parsePiRefs } from './adapters/pi.js';
 import { parseCodexModels, codexModelList } from './adapters/codex.js';
 import { parseReasonixRefs, reasonixDoctorJson } from './adapters/reasonix.js';
 import { readOpencodeCredentials } from './native/opencode-store.js';
+import { checkBaseUrl } from './native/base-url.js';
+import { gatewayNameProblem } from './native/gateway-name.js';
 import type { ModelRef, ProviderHarness } from './types.js';
 
 const run = promisify(execFile);
@@ -159,7 +161,7 @@ export const WELL_KNOWN_PROVIDER_URLS: Record<string, string> = {
   'kuae-cloud-coding-plan': 'https://coding-plan-endpoint.kuaecloud.net/v1',
 };
 
-export function parseOpenCodeProviderBaseUrls(text: string): Record<string, string> {
+export function parseOpenCodeProviderBaseUrls(text: string, refused: string[] = []): Record<string, string> {
   // Start with well-known defaults — opencode's built-in providers are not
   // listed in the config file at all, so iterating config entries alone misses
   // every standard provider.
@@ -170,11 +172,22 @@ export function parseOpenCodeProviderBaseUrls(text: string): Record<string, stri
   } catch {
     return out;
   }
+  // A provider or URL the config would refuse is skipped, and named in `refused`
+  // for the caller to report: the wizard must not offer what the parser rejects.
   for (const [provider, def] of Object.entries<any>(parsed?.provider ?? {})) {
     const baseUrl = def?.options?.baseURL;
-    if (typeof baseUrl === 'string' && baseUrl.trim() !== '') {
-      out[provider] = baseUrl;
+    if (typeof baseUrl !== 'string' || baseUrl.trim() === '') continue;
+    const nameProblem = gatewayNameProblem(provider);
+    if (nameProblem !== undefined) {
+      refused.push(`opencode.json provider ${JSON.stringify(provider)} is skipped: ${nameProblem}`);
+      continue;
     }
+    const check = checkBaseUrl(baseUrl);
+    if ('problem' in check) {
+      refused.push(`opencode.json baseURL for ${JSON.stringify(provider)} is skipped: ${check.problem}`);
+      continue;
+    }
+    out[provider] = check.href;
   }
   return out;
 }
@@ -505,7 +518,9 @@ export async function detectOpenCode(env: DetectEnv): Promise<HarnessStatus> {
   for (const ref of refs) {
     ref.name = named.find((m) => m.provider === ref.provider && m.id === ref.id)?.name;
   }
-  const providerBaseUrls = parseOpenCodeProviderBaseUrls(configText);
+  const refusedProviderUrls: string[] = [];
+  const providerBaseUrls = parseOpenCodeProviderBaseUrls(configText, refusedProviderUrls);
+  for (const message of refusedProviderUrls) problems.push({ severity: 'warn', message });
 
   // Authenticated providers come from both of opencode's credential stores —
   // v2's `credential` table overlaid on v1's `auth.json`. Reading only
