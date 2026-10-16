@@ -88,7 +88,7 @@ describe('[auto_route] base_url and model', () => {
     ['a fragment', 'https://decisions.example.com/v1#frag'],
   ])('refuses base_url with %s', (_label, url) => {
     expect(() => parseConfig(`[auto_route]\nclassifier = "jev"\nbase_url = "${url}"\n${BASE}`))
-      .toThrow(`sonata.toml: [auto_route] base_url must not include a query string or fragment, got ${JSON.stringify(url)}`);
+      .toThrow(`sonata.toml: [auto_route] base_url must not include a query string or fragment, got ${JSON.stringify(url.replace(/[?#].*/, '?…'))}`);
   });
 
   const candidate = { key: 'g-m', gateway: 'g', id: 'm-1', contextWindow: 128000, baseUrl: 'https://g.example/v1', auth: 'api-key' as const };

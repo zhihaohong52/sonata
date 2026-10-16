@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 
 import { envVarForGateway } from './gateway-env.js';
+import { ownEntry } from './own-entry.js';
 import { providerForBaseUrl, requiresSessionHeader } from './providers.js';
 import type { ModelApi, NativeConfig, UnifiedModelConfig, SonataConfig } from '../config.js';
 
@@ -37,6 +38,13 @@ export interface LiteLLMConfig {
 
 export { envVarForGateway } from './gateway-env.js';
 
+/** The gateway a model names, which parsing has already checked exists: an own entry, or a refusal. */
+function gatewayOf(gateways: Readonly<Record<string, NativeConfig['gateways'][string]>>, gateway: string): NativeConfig['gateways'][string] {
+  const entry = ownEntry(gateways, gateway);
+  if (entry === undefined) throw new Error(`no gateway "${gateway}" in the config`);
+  return entry;
+}
+
 function litellmModelEntry(
   modelName: string,
   gateway: string,
@@ -47,7 +55,7 @@ function litellmModelEntry(
   // An OAuth gateway is served by one of LiteLLM's own providers, which
   // supplies the base URL, the bearer and any refresh or token exchange.
   // Passing api_base or api_key here would override that and break it.
-  const auth = gateways[gateway].auth;
+  const auth = gatewayOf(gateways, gateway).auth;
   if (auth === 'codex-oauth') {
     return {
       model_name: modelName,
@@ -93,8 +101,9 @@ function litellmModelEntry(
   // otherwise silently lose the dialect it declared and fall through to the
   // `openai` fallback — which is exactly the confident-wrong-dialect failure
   // this table exists to prevent.
-  const provider = gateways[gateway].provider
-    ?? gateways[gateway].wireFormat
+  const entry = gatewayOf(gateways, gateway);
+  const provider = entry.provider
+    ?? entry.wireFormat
     ?? providerForBaseUrl(gateway);
   // `responses/` is LiteLLM's own per-model switch onto its Responses bridge,
   // and it holds under `use_chat_completions_url_for_anthropic_messages`, which
@@ -164,7 +173,7 @@ export function litellmConfig(
     ([modelName, model]) => litellmModelEntry(modelName, model.gateway, model.id, native.gateways, model.api),
   );
   const forwardHeaders = Object.entries(native.models)
-    .filter(([, model]) => requiresSessionHeader(native.gateways[model.gateway]?.baseUrl))
+    .filter(([, model]) => requiresSessionHeader(ownEntry(native.gateways, model.gateway)?.baseUrl))
     .map(([modelName]) => modelName);
 
   // Legacy native.models entries stay authoritative during migration: a
@@ -174,7 +183,7 @@ export function litellmConfig(
     if (modelName in native.models) continue;
     if (model.gateway === undefined || model.id === undefined) continue;
     modelList.push(litellmModelEntry(modelName, model.gateway, model.id, native.gateways, model.api));
-    if (requiresSessionHeader(native.gateways[model.gateway]?.baseUrl)) forwardHeaders.push(modelName);
+    if (requiresSessionHeader(ownEntry(native.gateways, model.gateway)?.baseUrl)) forwardHeaders.push(modelName);
   }
 
   return { model_list: modelList, ...sharedSettings(masterKey, forwardHeaders) };

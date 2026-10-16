@@ -8,6 +8,9 @@ import { installLoopSkill, loopSkillFiles, loopSkillSource, pluginPanel } from '
 import { cmdSync } from '../commands/sync.js';
 import { cmdRoute } from '../commands/route.js';
 import { writeSonataKey } from '../native/credentials.js';
+import { assertPlannedConfigParses } from './plan.js';
+import { addTrustBinding } from '../native/host-bindings.js';
+import { seedTrustBeforeKeyWrite } from '../native/trust-seed.js';
 import { litellmStatus } from '../native/litellm-venv.js';
 import { guidanceBlock, mergeGuidance } from './guidance.js';
 import type { InitPlan } from './plan.js';
@@ -54,12 +57,23 @@ export async function apply(
 }> {
   const { cwd, home, packageRoot } = opts;
 
+  // The planned config must load before anything is stored: a key or a trust
+  // binding written for a config that is then refused would be left behind.
+  assertPlannedConfigParses(plan.configToml);
+
   // ---- credentials (first, so a partially-failed run still leaves keys behind) ----
   // Keys typed in the wizard are stored here and nowhere earlier: a cancelled
   // run must leave no credential behind. The gateway is printed, never the key.
+  // The upgrade's seed before anything is stored: see `seedTrustBeforeKeyWrite`.
+  seedTrustBeforeKeyWrite(home);
   for (const { gateway, key } of plan.keysToStore) {
     writeSonataKey(home, gateway, key);
     io.out(`  ✓ stored the key for ${gateway}`);
+  }
+  // The URLs init wrote for these gateways were the user's own choice, so
+  // the stored keys are bound to their hosts as (d) of the trust rule.
+  for (const { gateway, host } of plan.hostsToTrust ?? []) {
+    addTrustBinding(home, gateway, host);
   }
 
   // ---- config ----

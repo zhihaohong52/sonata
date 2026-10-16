@@ -598,6 +598,32 @@ describe('plan — [auto_route] from the Setup step', () => {
     ]);
   });
 
+  it('binds a stored key to the host of the URL the user typed in this run', () => {
+    // A custom provider typed in the wizard is the user's own choice of URL,
+    // so its host is bound to the gateway name its key is stored under.
+    const p = plan(withSaved(), {
+      ...state,
+      byokKeys: { acme: 'sk-provider' },
+      customProviders: [{ name: 'acme', url: 'https://typed.example/v1' }],
+    }, noCredentials, opts);
+    expect(p.hostsToTrust).toEqual([{ gateway: 'acme', host: 'typed.example' }]);
+  });
+
+  it('binds nothing for a URL read from an existing config', () => {
+    // `acme`'s candidate URL comes from the saved config, not from this run:
+    // a repo's own config is never trusted by init (doctor names it instead).
+    const p = plan(withSaved(), {
+      ...state,
+      byokKeys: { acme: 'sk-provider' },
+    }, noCredentials, opts);
+    expect(p.hostsToTrust).toEqual([]);
+  });
+
+  it('binds nothing when no keys are stored', () => {
+    const p = plan(withSaved(), state, noCredentials, opts);
+    expect(p.hostsToTrust).toEqual([]);
+  });
+
   it('stores nothing for a decision key there is none of', () => {
     const p = plan(withSaved(), { ...state, autoRoute: { baseUrl: 'https://api.typesafe.ai' } }, noCredentials, opts);
     expect(p.keysToStore).toEqual([]);

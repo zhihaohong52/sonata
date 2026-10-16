@@ -1,8 +1,8 @@
 import { execFileSync } from 'node:child_process';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 import type { NativeGatewayAuth } from '../config.js';
 import { managedLitellmPath } from './litellm-venv.js';
@@ -93,24 +93,61 @@ export async function loginGateway(opts: {
   }
 
   const dir = credentialDir(opts.home, opts.gateway);
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  // The login runs into a fresh temp directory, swapped in only on success.
+  // LiteLLM's authenticator reads whatever token directory it is pointed at
+  // first, so running it against the live directory let a stored — possibly
+  // revoked — token pass as a fresh login, and a failed run still rewrote or
+  // deleted the working credential. A failure now leaves the old login
+  // exactly as it was.
+  mkdirSync(dirname(dir), { recursive: true, mode: 0o700 });
+  const staging = mkdtempSync(join(dirname(dir), '.login-'));
+  chmodSync(staging, 0o700);
 
   // PATH plus the one token-directory variable. No other parent value is
   // forwarded, matching how serve builds childEnv. FAKE_MODE only crosses over
   // when a test-injected interpreter is in play, so production can never leak
   // it through an ambient env var.
   const env: NodeJS.ProcessEnv = process.env.PATH ? { PATH: process.env.PATH } : {};
-  env[tokenDirEnvVar(opts.auth)] = dir;
+  env[tokenDirEnvVar(opts.auth)] = staging;
   if (opts.interpreter && process.env.FAKE_MODE) env.FAKE_MODE = process.env.FAKE_MODE;
 
-  if (opts.signal?.aborted) return { ok: false, problem: 'login cancelled' };
+  if (opts.signal?.aborted) {
+    rmSync(staging, { force: true, recursive: true });
+    return { ok: false, problem: 'login cancelled' };
+  }
+
+  /** Every regular file 0600 and the directory 0700 — LiteLLM writes with the process umask. */
+  const fixPermissions = (target: string): void => {
+    try { chmodSync(target, 0o700); } catch { return; }
+    let names: string[];
+    try {
+      names = readdirSync(target);
+    } catch {
+      return;
+    }
+    for (const name of names) {
+      const full = join(target, name);
+      try {
+        if (statSync(full).isFile()) chmodSync(full, 0o600);
+      } catch { /* replaced under us, or a subdir; skip */ }
+    }
+  };
 
   return await new Promise<LoginResult>((resolve) => {
+    let finished = false;
+    const finish = (result: LoginResult): void => {
+      if (finished) return;
+      finished = true;
+      fixPermissions(dir);
+      fixPermissions(staging);
+      rmSync(staging, { force: true, recursive: true });
+      resolve(result);
+    };
     let child;
     try {
       child = spawn(interpreter, ['-c', scriptFor(opts.auth)], { env, stdio: ['ignore', 'pipe', 'pipe'] });
     } catch {
-      return resolve({ ok: false, problem: `could not run litellm's interpreter ${interpreter}` });
+      return finish({ ok: false, problem: `could not run litellm's interpreter ${interpreter}` });
     }
 
     let cancelled = false;
@@ -118,7 +155,9 @@ export async function loginGateway(opts: {
     opts.signal?.addEventListener('abort', onAbort, { once: true });
 
     child.on('error', () => {
-      resolve({ ok: false, problem: `could not run litellm's interpreter ${interpreter}` });
+      fixPermissions(staging);
+      rmSync(staging, { force: true, recursive: true });
+      finish({ ok: false, problem: `could not run litellm's interpreter ${interpreter}` });
     });
 
     // Line by line, so the device code reaches the user the instant it is
@@ -129,24 +168,116 @@ export async function loginGateway(opts: {
 
     child.on('close', (code: number | null) => {
       opts.signal?.removeEventListener('abort', onAbort);
-      if (cancelled) return resolve({ ok: false, problem: 'login cancelled' });
-      if (code !== 0) return resolve({ ok: false, problem: `litellm's authenticator exited ${code}` });
+      if (cancelled) {
+        fixPermissions(staging);
+        rmSync(staging, { force: true, recursive: true });
+        return finish({ ok: false, problem: 'login cancelled' });
+      }
+      if (code !== 0) {
+        fixPermissions(staging);
+        rmSync(staging, { force: true, recursive: true });
+        return finish({ ok: false, problem: `litellm's authenticator exited ${code}` });
+      }
       // An exit code alone is not evidence.
-      const credentialPath = join(dir, credentialFileFor(opts.auth));
+      const credentialPath = join(staging, credentialFileFor(opts.auth));
       if (!existsSync(credentialPath)) {
-        return resolve({ ok: false, problem: 'the login reported success but wrote no credential' });
+        fixPermissions(staging);
+        rmSync(staging, { force: true, recursive: true });
+        return finish({ ok: false, problem: 'the login reported success but wrote no credential' });
       }
-      // LiteLLM writes with the process umask, commonly 0644 - fix it up rather
-      // than trust an interpreter we don't control to have written 0600. Every
-      // regular file, not only the one that proves the login: Copilot's
-      // long-lived GitHub token sits in `access-token` beside `api-key.json`.
-      // And the directory itself, since `mkdirSync`'s mode applies only to a
-      // directory it creates — a re-login into a looser one left it as found.
-      chmodSync(dir, 0o700);
-      for (const entry of readdirSync(dir, { withFileTypes: true })) {
-        if (entry.isFile()) chmodSync(join(dir, entry.name), 0o600);
+      // LiteLLM writes with the process umask, commonly 0644 - fix it up
+      // rather than trust an interpreter we don't control to have written
+      // 0600. Every regular file, not only the one that proves the login:
+      // Copilot's long-lived GitHub token sits in `access-token` beside
+      // `api-key.json`. Fix-up runs on failure paths too, so a cancelled or
+      // failed run's temp files carry no readable secret on their way out.
+      fixPermissions(staging);
+      // Keep the old login until installation succeeds. Staging and backup
+      // live beside the destination so both renames stay on one filesystem.
+      const backup = `${staging}-old`;
+      let backedUp = false;
+      try {
+        if (existsSync(dir)) {
+          fixPermissions(dir);
+          setAside(dir, backup, () => { backedUp = true; });
+        }
+        renameSync(staging, dir);
+      } catch {
+        if (backedUp) {
+          // The rollback is itself a rename, and it can fail too: then the
+          // previous credential is named, where it still is, rather than lost.
+          try {
+            renameSync(backup, dir);
+          } catch {
+            return finish({
+              ok: false,
+              problem: `could not install the new login, and the previous credential could not be put back — it is at ${backup}`,
+            });
+          }
+        }
+        return finish({ ok: false, problem: 'could not install the new login; the previous credential was kept' });
       }
-      resolve({ ok: true });
+      if (backedUp) rmSync(backup, { force: true, recursive: true });
+      sweepStaleLoginBackups(dirname(dir));
+      finish({ ok: true });
     });
   });
+}
+
+/** How old a leftover login backup must be before a later login removes it. */
+const STALE_LOGIN_BACKUP_MS = 10 * 60_000;
+
+/**
+ * How old a leftover staging directory must be before a later login removes
+ * it. A device login can wait a long time for the user, so a staging directory
+ * is only swept once it is a day old. That is the cost of not knowing whether
+ * its login is still running; a crashed one may hold its token that long.
+ */
+const STALE_LOGIN_STAGING_MS = 24 * 60 * 60_000;
+
+/**
+ * Moves the previous credential aside as the rollback copy, and stamps the
+ * copy's mtime with now. A rename keeps the old credential's mtime, which can
+ * be months old, so without the stamp a fresh rollback copy would already look
+ * stale to a concurrent sweep. The sweep ages a backup from this stamp.
+ */
+export function setAside(dir: string, backup: string, onMoved?: () => void): void {
+  renameSync(dir, backup);
+  // Reported before the stamp, so a stamp that fails cannot leave the caller
+  // thinking the previous credential is still in place.
+  onMoved?.();
+  try {
+    const now = new Date();
+    utimesSync(backup, now, now);
+  } catch {
+    // An unstamped copy is aged from its rename: older than it looks, never lost.
+  }
+}
+
+/**
+ * Removes what a crashed login left beside its destination: a rollback copy
+ * (`<staging>-old`, the previous credential) older than ten minutes, and a
+ * staging directory (`<staging>`, the new credential) older than a day. A
+ * rollback copy is aged from when it was set aside (`setAside`), so a login in
+ * its swap window keeps its rollback. Only names this module makes are touched.
+ */
+export function sweepStaleLoginBackups(parent: string, now: number = Date.now()): void {
+  let names: string[];
+  try {
+    names = readdirSync(parent);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    let limit: number;
+    if (/^\.login-[A-Za-z0-9]+-old$/.test(name)) limit = STALE_LOGIN_BACKUP_MS;
+    else if (/^\.login-[A-Za-z0-9]+$/.test(name)) limit = STALE_LOGIN_STAGING_MS;
+    else continue;
+    const path = join(parent, name);
+    try {
+      if (now - statSync(path).mtimeMs >= limit) rmSync(path, { force: true, recursive: true });
+    } catch {
+      // Gone already, or not ours to read: nothing to sweep.
+    }
+  }
 }

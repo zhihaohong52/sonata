@@ -12,14 +12,24 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { nullInitLog } from '../../src/commands/init-log.js';
 import { interactiveState } from '../../src/init/interactive-state.js';
 import type { InitEnvironment } from '../../src/init/discover.js';
 import { writeSonataKey } from '../../src/native/credentials.js';
+import { sessionsPath } from '../../src/sessions.js';
+import { seedMarkerPath } from '../../src/native/host-bindings.js';
+import { existsSync } from 'node:fs';
 import { keyPromptFor } from '../../src/tui-ink/components/auto-route-step.js';
 import type { WizardData } from '../../src/tui-ink/app.js';
+
+// Simulate an install after the fixture configs were written, retaining the real
+// seed's session cutoff and once-only marker behavior.
+vi.mock('../../src/native/trust-seed.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/native/trust-seed.js')>();
+  return { ...actual, seedTrustOnUpgrade: (home: string) => actual.seedTrustOnUpgrade(home, Date.now() + 60_000) };
+});
 
 const env = (over: Partial<InitEnvironment> = {}): InitEnvironment => ({
   cwd: '/tmp/test',
@@ -113,5 +123,24 @@ describe('wizard storedKeys — one decision-key policy', () => {
       offered: [{ harness: 'opencode', provider: 'acme', key: 'opencode/acme', count: 1 }],
     });
     expect(data.storedKeys.acme).toBe('oc-acme');
+  });
+});
+
+describe('wizard upgrade trust snapshot', () => {
+  it('seeds an already-known project before reading trust, once only', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'sonata-interactive-seed-'));
+    const project = mkdtempSync(join(tmpdir(), 'sonata-known-project-'));
+    const config = join(project, 'sonata.toml');
+    writeSonataKey(home, 'acme', 'key');
+    writeFileSync(config, '[native.gateways.acme]\nbase_url = "https://known.example/v1"\n');
+    writeFileSync(sessionsPath(home), JSON.stringify({
+      old: { cwd: project, started: '2020-01-01T00:00:00Z' },
+    }));
+    const first = await wizardData(home);
+    expect(first.refreshBindings?.trusted.acme).toEqual(['known.example']);
+    expect(existsSync(seedMarkerPath(home))).toBe(true);
+    writeFileSync(config, '[native.gateways.acme]\nbase_url = "https://later.example/v1"\n');
+    const second = await wizardData(home);
+    expect(second.refreshBindings?.trusted.acme).toEqual(['known.example']);
   });
 });

@@ -13,6 +13,7 @@ import {
 } from '../../src/commands/serve.js';
 import type { RouterTenant } from '../../src/native/router.js';
 import { writeSonataKey } from '../../src/native/credentials.js';
+import { addTrustBinding } from '../../src/native/host-bindings.js';
 import { credentialDir } from '../../src/native/oauth-login.js';
 import { recordSession } from '../../src/sessions.js';
 import { managedLitellmPath, venvDir, LITELLM_VERSION } from '../../src/native/litellm-venv.js';
@@ -104,6 +105,19 @@ beforeEach(async () => {
   handles = [];
   litellmPort = await freePort();
   installFakeVenv(home);
+  // `acme` is the fixture gateway name throughout this file, and its fixture
+  // URLs are not well-known: bind every host the fixtures use, so these tests
+  // exercise credential plumbing rather than the host-binding refusal. Tests
+  // of the refusal itself bind nothing.
+  for (const host of ['gateway.example', 'acme.example', 'a.example', 'b.example', 'other.example',
+    'other-gateway.example', 'or.example', 'newgw.example', 'bgw.example', 'direct.example',
+    'pd.example', 'anth.example']) {
+    addTrustBinding(home, 'acme', host);
+  }
+  for (const [gateway, host] of [['other', 'other-gateway.example'], ['machdirect', 'direct.example'],
+    ['pd', 'pd.example'], ['anth', 'anth.example'], ['newgw', 'newgw.example'], ['bgw', 'bgw.example']] as const) {
+    addTrustBinding(home, gateway, host);
+  }
   writeMachineConfig(`
 [native.models."deepseek-v4-flash"]
 gateway = "acme"
@@ -2659,6 +2673,203 @@ litellm = ${litellmPort}
   });
 });
 
+describe('cmdServe — a machine config’s own loopback gateway needs no trust', () => {
+  it('serves a keyed loopback http gateway from the machine config with no trust step', async () => {
+    // The machine config is trusted by definition, so its own local proxy
+    // (plain http to localhost) works after upgrade with nothing to run.
+    writeMachineConfig(`
+[models."m-flash"]
+gateway = "acme"
+id = "m-flash"
+[tiers.code]
+simple = ["m-flash"]
+complex = ["m-flash"]
+[native.gateways."acme"]
+base_url = "http://127.0.0.1:9999/v1"
+provider = "anthropic"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+    writeSonataKey(home, 'acme', 'acme-key');
+    const seen: string[] = [];
+    const realFetch = globalThis.fetch;
+    try {
+      vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
+        seen.push(`${url} ${(init.headers as Record<string, string>).authorization ?? ''}`);
+        return new Response('{}', { status: 200 });
+      });
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
+        spawnLitellm: () => ({ pid: 1, kill: () => {} }),
+      });
+      handles.push(handle);
+      const res = await realFetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+      });
+      expect(res.status).toBe(200);
+      expect(seen).toEqual(['http://127.0.0.1:9999/v1/messages Bearer acme-key']);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe('cmdServe — shared OpenCode keys do not share host trust', () => {
+  it.each([
+    ['opencode', 'opencode-go', 'anthropic'],
+    ['opencode-go', 'opencode', 'anthropic'],
+    ['opencode', 'opencode-go', 'openai'],
+    ['opencode-go', 'opencode', 'openai'],
+  ])('checks %s trust independently of the key stored under %s (%s)', async (requesting, stored, provider) => {
+    writeSonataKey(home, stored, 'shared-key');
+    addTrustBinding(home, stored, 'alias-only.example');
+    const project = mkdtempSync(join(tmpdir(), 'serve-shared-key-'));
+    writeFileSync(join(project, 'sonata.toml'), `
+[models.flash]
+gateway = "${requesting}"
+id = "flash"
+[tiers.code]
+simple = ["flash"]
+complex = ["flash"]
+[native.gateways."${requesting}"]
+base_url = "https://alias-only.example/v1"
+provider = "${provider}"
+`);
+    const configs: string[] = [];
+    const upstream: string[] = [];
+    const realFetch = globalThis.fetch;
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      vi.stubGlobal('fetch', async (url: string) => {
+        upstream.push(String(url));
+        return new Response('{}', { status: 200 });
+      });
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
+        spawnLitellm: (configPath) => {
+          configs.push(readFileSync(configPath, 'utf8'));
+          return { pid: 1, kill: () => {} };
+        },
+      });
+      handles.push(handle);
+      const res = await realFetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...projectHeaders(project) },
+        body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+      });
+      expect(res.status).toBe(502);
+      expect(await res.text()).toContain('alias-only.example');
+      expect(upstream.some((url) => url.includes('alias-only.example'))).toBe(false);
+      // An unbound model must not enter the child, even when its key resolves
+      // through the other alias. No LiteLLM request may select it later.
+      expect(configs.every((config) => !config.includes('alias-only.example'))).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+      errorSpy.mockRestore();
+    }
+  });
+});
+
+describe('cmdServe — the decision and the send read one config', () => {
+  it('refuses a project rewritten to an unbound host, and sends nothing there', async () => {
+    // The host check and the request are made from the config each request
+    // carries, so a project changed to an unbound host is refused at once,
+    // not sent to on the strength of the last build's answer.
+    const dir = mkdtempSync(join(tmpdir(), 'serve-rewrite-'));
+    const projectToml = (url: string): string => `
+[models."m-flash"]
+gateway = "acme"
+id = "m-flash"
+[tiers.code]
+simple = ["m-flash"]
+complex = ["m-flash"]
+[native.gateways."acme"]
+base_url = "${url}"
+provider = "anthropic"
+`;
+    writeFileSync(join(dir, 'sonata.toml'), projectToml('https://gateway.example/v1'));
+    writeSonataKey(home, 'acme', 'acme-key');
+    const seen: string[] = [];
+    const realFetch = globalThis.fetch;
+    try {
+      vi.stubGlobal('fetch', async (url: string) => {
+        seen.push(String(url));
+        return new Response('{}', { status: 200 });
+      });
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
+        spawnLitellm: () => ({ pid: 1, kill: () => {} }),
+      });
+      handles.push(handle);
+      const send = () => realFetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...projectHeaders(dir) },
+        body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+      });
+      expect((await send()).status).toBe(200);
+      expect(seen.some((url) => url.startsWith('https://gateway.example/'))).toBe(true);
+
+      writeFileSync(join(dir, 'sonata.toml'), projectToml('https://attacker.example/v1'));
+      const refused = await send();
+      expect(refused.status).toBe(502);
+      expect(seen.filter((url) => url.includes('attacker.example'))).toEqual([]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe('cmdServe — upstream requests refuse redirects', () => {
+  it('sends a direct request with redirects refused, and answers a redirect as an upstream failure', async () => {
+    // A redirect that was followed would carry the gateway key, and the
+    // conversation, to a host nothing checked. `redirect: "error"` makes fetch
+    // reject it, and the tier path answers that as an exhausted candidate.
+    writeMachineConfig(`
+[models."or-flash"]
+gateway = "openrouter"
+id = "deepseek/deepseek-v4-flash"
+context_window = 128000
+[tiers.code]
+simple = ["or-flash"]
+complex = ["or-flash"]
+[native.gateways."openrouter"]
+base_url = "https://openrouter.ai/api/v1"
+provider = "anthropic"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+    writeSonataKey(home, 'openrouter', 'OPENROUTER-KEY');
+    let redirect: RequestInit['redirect'] | undefined;
+    const realFetch = globalThis.fetch;
+    vi.stubGlobal('fetch', async (_url: string, init: RequestInit) => {
+      redirect = init.redirect;
+      if (init.redirect === 'error') throw new TypeError('fetch failed: redirect mode is set to error');
+      return new Response('{}', { status: 200 });
+    });
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      waitForLitellm: async () => {}, spawnLitellm: () => ({ pid: 1, kill() {} }),
+    });
+    handles.push(handle);
+    try {
+      const res = await realFetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+      });
+      expect(redirect).toBe('error');
+      // The tier path answers an exhausted candidate with 529, as for any failed upstream.
+      expect(res.status).toBe(529);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
 describe('cmdServe — a config change refreshes direct credentials', () => {
   it('picks up a rotated gateway key on the litellm-restart path too', async () => {
     // A mixed config restarts litellm for its translated gateways, and that
@@ -2811,6 +3022,253 @@ litellm = ${port}
     await waitFor(() => configs.at(-1)?.includes(`${projectId}/flash`) === true, "the project's litellm config");
     expect(configs.at(-1)).toContain(`${projectId}/flash`);
     expect(configs.at(-1)).toContain('a-model');
+  });
+
+  /** A project config naming `acme` at a host nobody has bound. `extra` is one line for the gateway table. */
+  const unboundProject = (extra: string): string => {
+    const evil = mkdtempSync(join(tmpdir(), 'serve-tenant-evil-'));
+    writeFileSync(join(evil, 'sonata.toml'), `
+[models."e-flash"]
+gateway = "acme"
+id = "e-flash"
+[tiers.code]
+simple = ["e-flash"]
+complex = ["e-flash"]
+[native.gateways."acme"]
+base_url = "https://attacker.example/v1"
+${extra}
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+    return evil;
+  };
+
+  it('serves a bound tenant directly while the unbound one sharing its gateway name is refused', async () => {
+    // Both tenants name `acme`, one at a host nobody bound. Only the unbound
+    // tenant's direct requests are refused: the bound tenant keeps its key on
+    // the same name, and the key never reaches the unbound host.
+    writeMachineConfig(`
+[models."m-flash"]
+gateway = "acme"
+id = "m-flash"
+[tiers.code]
+simple = ["m-flash"]
+complex = ["m-flash"]
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+provider = "anthropic"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+    writeSonataKey(home, 'acme', 'acme-key');
+    const evil = unboundProject('provider = "anthropic"');
+    const seen: string[] = [];
+    const realFetch = globalThis.fetch;
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
+        seen.push(`${url} ${(init.headers as Record<string, string>).authorization ?? ''}`);
+        return new Response('{}', { status: 200 });
+      });
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
+        spawnLitellm: () => ({ pid: 1, kill: () => {} }),
+      });
+      handles.push(handle);
+      const send = (headers: Record<string, string> = {}) => realFetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+      });
+      const refused = await send(projectHeaders(evil));
+      expect(refused.status).toBe(502);
+      const message = (await refused.json() as { error: { message: string } }).error.message;
+      expect(message).toContain('attacker.example');
+      expect(message).toContain(join(evil, 'sonata.toml'));
+      expect(message).toContain('sonata doctor');
+      // What reaches the model carries no runnable trust command.
+      expect(message).not.toContain('sonata auth trust');
+      expect(seen.filter((entry) => entry.includes('attacker.example'))).toEqual([]);
+
+      const served = await send();
+      expect(served.status).toBe(200);
+      expect(seen).toEqual(['https://gateway.example/v1/messages Bearer acme-key']);
+    } finally {
+      vi.unstubAllGlobals();
+      errorSpy.mockRestore();
+    }
+  });
+
+  /**
+   * A project whose own `[auto_route]` names `baseUrl`. The decision URL is
+   * the project's, not the machine config's: a machine config's own URL is
+   * trusted by definition, so these tests need a project to exercise the gate.
+   */
+  const decisionProject = (baseUrl: string): string => {
+    const dir = mkdtempSync(join(tmpdir(), 'serve-decision-project-'));
+    writeFileSync(join(dir, 'sonata.toml'), `
+[models."m-flash"]
+gateway = "acme"
+id = "m-flash"
+[models."m-pro"]
+gateway = "acme"
+id = "m-pro"
+[auto_route]
+classifier = "jev"
+base_url = "${baseUrl}"
+[tiers.code]
+simple = ["m-flash"]
+complex = ["m-pro"]
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+`);
+    return dir;
+  };
+
+  /** A decision-routed request against a local decision URL, with the stub recording every upstream call. */
+  const decisionAgainst = async (baseUrl: string, forwarded: string[]): Promise<number> => {
+    const dir = decisionProject(baseUrl);
+    const realFetch = globalThis.fetch;
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      vi.stubGlobal('fetch', async (url: string) => {
+        forwarded.push(String(url));
+        return new Response('{}', { status: 200 });
+      });
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
+        spawnLitellm: () => ({ pid: 1, kill: () => {} }),
+      });
+      handles.push(handle);
+      const res = await realFetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...projectHeaders(dir) },
+        body: JSON.stringify({ model: 'sonata-code-auto', messages: [{ role: 'user', content: 'write a parser' }] }),
+      });
+      return res.status;
+    } finally {
+      vi.unstubAllGlobals();
+      errorSpy.mockRestore();
+    }
+  };
+
+  it('sends a keyless decision to a local decision URL: no key is at stake there', async () => {
+    const forwarded: string[] = [];
+    const status = await decisionAgainst('http://localhost:8123', forwarded);
+    expect(status).toBe(200);
+    expect(forwarded.some((url) => url.includes('localhost:8123/v1/'))).toBe(true);
+  });
+
+  it('refuses a keyed decision to an unbound local URL, and falls back', async () => {
+    writeSonataKey(home, 'auto-route', 'sk-decide');
+    const forwarded: string[] = [];
+    const status = await decisionAgainst('http://localhost:8124', forwarded);
+    expect(status).toBe(200);
+    expect(forwarded.filter((url) => url.includes('localhost:8124'))).toEqual([]);
+  });
+
+  it('sends a keyed decision to a local URL once its host is trusted', async () => {
+    writeSonataKey(home, 'auto-route', 'sk-decide');
+    addTrustBinding(home, 'auto-route', 'localhost:8125');
+    const forwarded: string[] = [];
+    await decisionAgainst('http://localhost:8125', forwarded);
+    expect(forwarded.some((url) => url.includes('localhost:8125/v1/'))).toBe(true);
+  });
+
+  it('keeps the bound tenant on litellm while the unbound one sharing its gateway name is dropped', async () => {
+    // The same split on the LiteLLM transport: the unbound tenant's models on
+    // `acme` are left out of LiteLLM's config, so LiteLLM cannot hand the
+    // shared key to its host; the bound tenant's model stays in.
+    writeMachineConfig(`
+[models."m-flash"]
+gateway = "acme"
+id = "m-flash"
+[tiers.code]
+simple = ["m-flash"]
+complex = ["m-flash"]
+[native.gateways."acme"]
+base_url = "https://gateway.example/v1"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+    writeSonataKey(home, 'acme', 'acme-key');
+    const evil = unboundProject('');
+    const temp = tempDirFor();
+    const forwarded: string[] = [];
+    const realFetch = globalThis.fetch;
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      vi.stubGlobal('fetch', async (url: string) => {
+        forwarded.push(String(url));
+        return new Response('{}', { status: 200 });
+      });
+      const handle = await cmdServe({
+        cwd, home, tempDir: temp, waitForLitellm: async () => {},
+        spawnLitellm: () => ({ pid: 1, kill: () => {} }),
+      });
+      handles.push(handle);
+      const litellmConfig = readFileSync(join(temp, 'config.json'), 'utf8');
+      expect(litellmConfig).toContain('gateway.example');
+      expect(litellmConfig).not.toContain('attacker.example');
+
+      const send = (headers: Record<string, string> = {}) => realFetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+      });
+      const refused = await send(projectHeaders(evil));
+      expect(refused.status).toBe(502);
+      const message = (await refused.json() as { error: { message: string } }).error.message;
+      expect(message).toContain('attacker.example');
+      expect(message).toContain(join(evil, 'sonata.toml'));
+      expect(message).toContain('sonata doctor');
+      // What reaches the model carries no runnable trust command.
+      expect(message).not.toContain('sonata auth trust');
+      expect(forwarded.filter((url) => url.includes('attacker.example'))).toEqual([]);
+
+      const served = await send();
+      expect(served.status).toBe(200);
+      expect(forwarded.some((url) => url.includes(String(litellmPort)))).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('never sends a stored decision key to an unbound host, and serves the request on the fallback tier', async () => {
+    // The stored key goes to the decision URL's host, so an unbound host is
+    // refused: no request reaches it, the fallback tier answers, and the
+    // reason is logged naming the config that set the URL.
+    writeSonataKey(home, 'auto-route', 'sk-decide');
+    const dir = decisionProject('https://attacker.example');
+    const forwarded: string[] = [];
+    const realFetch = globalThis.fetch;
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      vi.stubGlobal('fetch', async (url: string) => {
+        forwarded.push(String(url));
+        return new Response('{}', { status: 200 });
+      });
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
+        spawnLitellm: () => ({ pid: 1, kill: () => {} }),
+      });
+      handles.push(handle);
+      const res = await realFetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...projectHeaders(dir) },
+        body: JSON.stringify({ model: 'sonata-code-auto', messages: [{ role: 'user', content: 'write a parser' }] }),
+      });
+      expect(res.status).toBe(200);
+      expect(forwarded.filter((url) => url.includes('attacker.example'))).toEqual([]);
+      expect(errorSpy.mock.calls.flat().join('\n')).toContain('attacker.example');
+    } finally {
+      vi.unstubAllGlobals();
+      errorSpy.mockRestore();
+    }
   });
 
   it('starts litellm lazily when the first tenant needing it appears after startup', async () => {

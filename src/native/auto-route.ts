@@ -246,6 +246,8 @@ export function jevClassifier(opts: {
             headers: { ...(key === undefined ? {} : { authorization: `Bearer ${key}` }), 'content-type': 'application/json' },
             body: JSON.stringify({ ...(model === undefined ? {} : { model }), ...jevRequestBody(input) }),
             signal: AbortSignal.any([signal, AbortSignal.timeout(attemptMs)]),
+            // A redirect would carry the key and the task to a host nobody checked.
+            redirect: 'error',
           });
           if (!res.ok) { last = new Error(`HTTP ${res.status}`); continue; }
           let json: unknown;
@@ -281,8 +283,10 @@ export function isLoopbackUrl(baseUrl: string): boolean {
  * a self-hosted decision server, keyed under one shared name.
  */
 export function decisionGatewayFor(baseUrl: string): 'typesafe' | 'openrouter' | 'auto-route' {
+  // `host`, not `hostname`: the well-known host is that host on its default
+  // port only. `https://api.typesafe.ai:8443` is a different server.
   let host = '';
-  try { host = new URL(baseUrl).hostname; } catch { /* other */ }
+  try { host = new URL(baseUrl).host; } catch { /* other */ }
   if (host === 'api.typesafe.ai') return 'typesafe';
   if (host === 'openrouter.ai') return 'openrouter';
   return 'auto-route';
@@ -299,13 +303,20 @@ export function decisionKeyFor(
   return { key: keys.other(), hint: 'sonata auth add auto-route' };
 }
 
+/** A classifier that refuses every question with `reason`: the decision fails open and the ledger keeps why. */
+export function refusedClassifier(reason: string): TierClassifier {
+  return { name: 'jev', classify: async () => { throw new Error(reason); } };
+}
+
 /** The classifier for one `[auto_route]` URL; `model` is resolved per call. */
 export function decisionClassifier(
   settings: Pick<AutoRouteConfig, 'baseUrl'>,
   deps: { fetch: typeof fetch; key: () => string | undefined; keyHint: string; model: (signal: AbortSignal) => Promise<string | undefined> },
 ): TierClassifier {
+  // `host`, port included, as the well-known check is: `openrouter.ai:8443` is a
+  // different server that takes no TypeSafe or OpenRouter key.
   let host = '';
-  try { host = new URL(settings.baseUrl).hostname; } catch { /* treated as other */ }
+  try { host = new URL(settings.baseUrl).host; } catch { /* treated as other */ }
   return jevClassifier({
     fetch: deps.fetch,
     key: deps.key,

@@ -165,7 +165,7 @@ describe('AutoRouteStep', () => {
     await until(() => w.lastFrame().includes('Decision server URL'), 'the URL screen');
     await w.type('openrouter.ai/api');
     await w.press(ENTER);
-    expect(w.lastFrame()).toContain('Enter an absolute http(s) URL');
+    expect(w.lastFrame()).toContain('This URL is refused');
     expect(w.done()).toBe(0);
     expect(w.state().autoRoute).toBeUndefined();
     w.unmount();
@@ -179,7 +179,7 @@ describe('AutoRouteStep', () => {
     await until(() => w.lastFrame().includes('Decision server URL'), 'the URL screen');
     await w.type('https://decisions.example.com/v1?token=abc');
     await w.press(ENTER);
-    expect(w.lastFrame()).toContain('Enter a URL without a query string or fragment');
+    expect(w.lastFrame()).toContain('a query string or fragment is not allowed');
     expect(w.done()).toBe(0);
     w.unmount();
   });

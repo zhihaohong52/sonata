@@ -43,7 +43,10 @@ import { configUpstreamFor, proposePricingProvider } from '../pricing.js';
 import { CURRENT_SCHEMA_VERSION } from '../migrations.js';
 import { mainWorktreeDir } from '../git-worktree.js';
 import { keyReport, resolveDecisionKey, resolveKeyDetail } from '../native/credentials.js';
+import { gatewayHostBound, readTrustBindings, unboundMessage } from '../native/host-bindings.js';
 import { decisionKeyFor } from '../native/auto-route.js';
+import { seedTrustOnUpgrade } from '../native/trust-seed.js';
+import { decisionKeyBinding, decisionUnboundMessage } from '../native/decision-binding.js';
 import { ModelListCache, chooseDecisionModel } from '../native/decision-models.js';
 import { loadDecisionCatalog } from '../decision-catalog.js';
 import { opencodeCredentialOrigin, opencodeDbPath, readOpencodeCredentials } from '../native/opencode-store.js';
@@ -1012,8 +1015,29 @@ export async function cmdDoctor(
       other: () => resolveDecisionKey('auto-route', home)?.key,
     });
     let decisionHost = '';
-    try { decisionHost = new URL(auto.baseUrl).hostname; } catch { /* other */ }
+    try { decisionHost = new URL(auto.baseUrl).host; } catch { /* other */ }
     const keyRequired = decisionHost === 'openrouter.ai' || decisionHost === 'api.typesafe.ai';
+    // An unbound host is refused outright: serve sends it neither the key nor
+    // the task text, and every -auto request takes the fallback tier.
+    // The machine config's own [auto_route] URL is trusted by definition.
+    const machineAutoUrl = (() => {
+      try {
+        const machine = join(home, GLOBAL_CONFIG_RELATIVE);
+        if (resolved !== null && canonicalConfigPath(resolved) === canonicalConfigPath(machine)) return config.autoRoute?.baseUrl;
+        if (!existsSync(machine)) return undefined;
+        return parseConfig(readFileSync(machine, 'utf8')).autoRoute?.baseUrl;
+      } catch {
+        return undefined;
+      }
+    })();
+    const binding = decisionKeyBinding(auto.baseUrl, credential.key, home, machineAutoUrl);
+    if (binding !== undefined && !binding.bound) {
+      checks.push({
+        name: 'auto route',
+        ok: false,
+        detail: `${decisionUnboundMessage(auto.baseUrl, binding.host, resolved ?? 'this config', { insecure: binding.insecure })}\n  ! every -auto request takes the fallback tier until that host is trusted`,
+      });
+    }
     // A missing key is advisory: auto-routing falls back to the default tier.
     if (keyRequired && credential.key === undefined) {
       checks.push({
@@ -1050,7 +1074,10 @@ export async function cmdDoctor(
         choiceText = `pinned model ${auto.model}`;
       } else {
         // One free model-list call at most; doctor never makes a decision call.
-        const listed = keyRequired && credential.key === undefined
+        // Not at a host that may not receive the stored key: that host is the
+        // failing check above, and a listing there would send the key anyway.
+        const hostTrusted = binding === undefined || binding.bound;
+        const listed = !hostTrusted || (keyRequired && credential.key === undefined)
           ? undefined
           : await new ModelListCache(fetchFn).list(auto.baseUrl, credential.key);
         const choice = chooseDecisionModel({ baseUrl: auto.baseUrl, listed, catalog: loadDecisionCatalog(home) });
@@ -1415,6 +1442,13 @@ export async function cmdDoctor(
     const thisConfig = resolved === null ? undefined : canonicalConfigPath(resolved);
     const registry = new TenantRegistry(home);
     registry.noteProject(opts.cwd);
+    // The same one-time seed serve runs, before the bindings are read below.
+    try {
+      const seeded = seedTrustOnUpgrade(home);
+      if (seeded.length > 0) checks.push({ name: 'trust seed', ok: true, detail: seeded.join('\n  ') });
+    } catch (error) {
+      checks.push({ name: 'trust seed', ok: false, detail: error instanceof Error ? error.message : String(error) });
+    }
     const tenants = registry.loadable().map(({ configPath, config: tenant }) => ({
       id: configPath, gateways: tenant.native?.gateways ?? {},
     }));
@@ -1492,6 +1526,43 @@ export async function cmdDoctor(
             ok: false,
             detail: `no key — \`sonata auth add ${report.gateway}\``,
           });
+    }
+
+    // A stored key is looked up by gateway NAME, but the `base_url` it is sent
+    // to comes from a config — including a cloned repo's project config
+    // pointing the name at an attacker's host. Serve withholds a key from any
+    // host not bound to its gateway name (well-known, user-confirmed, or the
+    // machine config's own), so the gateway fails here rather than only as a
+    // 502 on the first request. Every tenant serve routes is checked, not just
+    // this file's config, and each failure names the config that sets its URL.
+    {
+      const trust = readTrustBindings(home);
+      const machineGateways = (() => {
+        try {
+          const machine = join(home, GLOBAL_CONFIG_RELATIVE);
+          if (resolved !== null && canonicalConfigPath(resolved) === canonicalConfigPath(machine)) return config.native!.gateways;
+          if (!existsSync(machine)) return {};
+          return parseConfig(readFileSync(machine, 'utf8')).native?.gateways ?? {};
+        } catch {
+          return {};
+        }
+      })();
+      const check = (name: string, baseUrl: string | undefined, auth: string | undefined, configPath: string): void => {
+        if ((auth ?? 'api-key') !== 'api-key' || baseUrl === undefined) return;
+        const binding = gatewayHostBound(name, baseUrl, {
+          trusted: trust[name] ?? [],
+          machineGateways,
+        });
+        if (binding.bound) return;
+        checks.push({
+          name: `credential host: ${name}`,
+          ok: false,
+          detail: `${unboundMessage(name, binding.host, configPath, binding.insecure)}\n  ! serve withholds this gateway's key until that host is trusted`,
+        });
+      };
+      for (const { id, gateways } of tenants) {
+        for (const [name, gateway] of Object.entries(gateways)) check(name, gateway.baseUrl, gateway.auth, id);
+      }
     }
 
     // A credential store that exists but cannot be read. serve treats one as

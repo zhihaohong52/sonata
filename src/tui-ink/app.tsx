@@ -4,6 +4,7 @@ import { MultiSelect } from './components/multi-select.js';
 import { RankedSelect } from './components/ranked-select.js';
 import { ProvidersStep } from './components/providers-step.js';
 import { ModelsStep } from './components/models-step.js';
+import { refreshHostReasons } from '../native/host-bindings.js';
 import { AutoRouteStep } from './components/auto-route-step.js';
 import { candidateFacts, candidateLabel, reasoningOf, expandCandidates, loadAaCatalog, proposeTiers, taskCostedCandidates, unpinnedVariants } from '../catalog.js';
 import { loadModelsDev, type ModelsDevCache } from '../modelsdev.js';
@@ -28,7 +29,7 @@ import {
   type CandidateOption,
   type ProviderOption,
 } from './app-state.js';
-import { TIER_NAMES, type NativeGatewayAuth } from '../config.js';
+import { TIER_NAMES, canonicalBaseUrlOrUndefined, type NativeGatewayAuth } from '../config.js';
 import { fetchModels as defaultFetchModels } from '../native/models.js';
 import { ROLE_BLURB } from '../roles.js';
 import type { InitState, TuiResult } from './types.js';
@@ -63,6 +64,16 @@ export interface WizardData {
   gatewayBaseUrls?: Record<string, string>;
   /** `gatewayBaseUrls` per config scope: the URL asked is the one that scope writes back. */
   gatewayBaseUrlsByScope?: Partial<Record<'project' | 'global', Record<string, string>>>;
+  /**
+   * What a model refresh checks before it sends a stored key to a URL: the
+   * user's host trust, the machine config's gateways (their own URLs are
+   * bound), and the config file each scope's URLs come from.
+   */
+  refreshBindings: {
+    trusted: Record<string, string[]>;
+    machineGateways: Record<string, { baseUrl: string }>;
+    configFileByScope: Partial<Record<'project' | 'global', string>>;
+  };
   /** Gateways the config asks to rank last; see SonataConfig.avoidGateways. */
   avoidGateways?: string[];
   /**
@@ -341,17 +352,39 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       // writes is the pick's provider-screen key wherever one matches, so
       // that screen's later deselect — `applyStep` step 5 — can still undo it.
       const selection = modelsStepSelection(state, candidates);
+      // Every URL the refresh asks is the canonical href of a plain URL
+      // (`canonicalBaseUrl`), the string the router would send. A URL that is
+      // not plain is not asked at all.
+      const gatewayBaseUrls = Object.fromEntries(Object.entries({
+        ...((state.configScope !== undefined ? data.gatewayBaseUrlsByScope?.[state.configScope] : undefined)
+          ?? data.gatewayBaseUrls),
+        ...addedBaseUrls,
+      }).flatMap(([gateway, url]) => {
+        const canonical = canonicalBaseUrlOrUndefined(url);
+        return canonical === undefined ? [] : [[gateway, canonical] as const];
+      }));
+      const keys = { ...data.storedKeys, ...state.byokKeys };
+      const scope = state.configScope ?? 'project';
+      // Required on WizardData: without it no host can be checked, so the refresh
+      // must not be built at all. There is no path that asks an unchecked host.
+      const bindings = data.refreshBindings;
       return <ModelsStep
         key="models"
         candidates={candidates}
         addedGateways={addedGateways}
-        gatewayBaseUrls={{
-          ...((state.configScope !== undefined ? data.gatewayBaseUrlsByScope?.[state.configScope] : undefined)
-            ?? data.gatewayBaseUrls),
-          ...addedBaseUrls,
-        }}
+        gatewayBaseUrls={gatewayBaseUrls}
         gatewayAuth={data.gatewayAuth ?? {}}
-        keys={{ ...data.storedKeys, ...state.byokKeys }}
+        keys={keys}
+        // A refresh sends each stored key to its URL's host, so a host nobody
+        // bound is not asked; the harness list stands, and the reason is shown.
+        hostReasons={refreshHostReasons({
+          gatewayUrls: gatewayBaseUrls,
+          keys,
+          typed: new Set(Object.keys(addedBaseUrls)),
+          trusted: bindings.trusted,
+          machineGateways: bindings.machineGateways,
+          configFile: bindings.configFileByScope[scope] ?? 'the config',
+        })}
         aa={catalog}
         gatewayNames={gatewayNames}
         upstreamForCandidate={upstreamForCandidate}

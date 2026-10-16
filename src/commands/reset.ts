@@ -251,6 +251,7 @@ export function planReset(opts: ResetOptions): ResetPlan {
     kept: [
       `gateway keys (${join(home, '.config', 'sonata', 'credentials')}) — \`sonata auth list\``,
       `the usage ledger (${join(home, '.config', 'sonata', 'usage')}) — \`sonata usage\``,
+      `the host trust file (${join(home, '.config', 'sonata', 'trusted-hosts.json')}) — \`sonata auth trust-list\``,
       'the ranking and pricing caches',
       scope === 'global'
         ? `any project's own sonata.toml`

@@ -1,3 +1,4 @@
+import { ownEntry } from './native/own-entry.js';
 /**
  * Flat-rate plans reached with an ordinary API key, recognised by endpoint.
  *
@@ -105,5 +106,5 @@ export const SHARED_PLAN_HOSTS: Readonly<Record<string, string>> = {
 /** The shared-endpoint plan a base URL might be, or undefined. */
 export function sharedPlanFor(baseUrl: string | undefined): string | undefined {
   if (baseUrl === undefined) return undefined;
-  try { return SHARED_PLAN_HOSTS[new URL(baseUrl).hostname.toLowerCase()]; } catch { return undefined; }
+  try { return ownEntry(SHARED_PLAN_HOSTS, new URL(baseUrl).hostname.toLowerCase()); } catch { return undefined; }
 }
