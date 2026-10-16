@@ -22,7 +22,14 @@ wherever the loop below or *Decide the fix* says `-simple`, `-normal` or
 plan (step 1), `code-auto` for each task and each fix (steps 2–3),
 `review-auto` for the per-task gate (step 3) and for the final gate (step 4).
 Sonata chooses the tier per conversation; do not second-guess it by switching
-to an explicit tier. The one exception is escalation, below.
+to an explicit tier. An explicit tier is a manual override only when the user
+asks for one; earlier tier failures in the session do not count. The one
+exception: a task that failed review twice is re-run on the
+explicit `-complex` agent, and kept there for that task's fixes — that task
+only (*Escalation*, below). If an
+`-auto` dispatch misbehaves, retry it on `-auto` and report it to the user,
+naming the agent and what failed — never pin explicit tiers for later
+dispatches.
 
 You still do the orchestrator's part: write self-contained briefs, and decide
 each fix's approach before dispatching it — a fully decided brief is what lets
@@ -35,6 +42,8 @@ undefined for an `-auto` dispatch. A task that fails review twice on
 that task stays on `code-complex` — its fixes included, so a re-pick of
 `simple` cannot undo the escalation. Its reviews stay on `review-auto`. Failing
 twice on `code-complex` stops and is reported, exactly as the existing rule.
+Escalation applies only to the task that failed review — never to other tasks,
+and never to reviews.
 The loop bound (3 fix iterations) is unchanged. The final gate stays a fresh
 foreign review (`review-auto`), never you. Dispatch with no `model` argument,
 as for any tier agent.
@@ -42,7 +51,8 @@ as for any tier agent.
 **Fallback.** `sonata dispatch --tier` takes no `-auto` name. When an `-auto`
 agent fails with "all native routes … failed", use the tier the error names
 (`sonata dispatch --tier code-normal …`); if it names none, use
-`<role>-normal`.
+`<role>-normal`. That is for the failed dispatch only: tell the user, and keep
+later dispatches on `-auto`.
 
 ## `/sonata-loop panel`
 
@@ -106,7 +116,7 @@ else.
    below; a fix dispatched undecided is what buys a `-complex` agent to make a
    judgement you were better placed to make.
    - **Escalation rule:** a task that fails review twice re-runs one tier up,
-     from scratch — `simple` to `normal`, `normal` to `complex` (on `-auto`,
+     from scratch (that task only — never other tasks or reviews) — `simple` to `normal`, `normal` to `complex` (on `-auto`,
      see the escalation rule in *When auto-routing is on*). A task that
      fails twice at `complex` stops and is reported, not re-run: another
      attempt at the same tier is the definition of no progress.

@@ -93,6 +93,8 @@ export interface RouteLine {
   priceUsd?: number;
   /** The price is a subscription's list value, not money billed per token. */
   isCovered?: true;
+  /** A turn withdrawn before reaching the client: `served` wrote it, nothing was served. */
+  withdrawn?: true;
 }
 
 /** The newest `limit` ledger rows as route lines — alias, what served it, status, tokens, time, gateway and effort — newest first. */
@@ -114,6 +116,7 @@ export function recentRoutes(rows: LedgerRow[], limit: number): RouteLine[] {
       tier: row.tier,
       priceUsd: row.price !== undefined && 'totalUsd' in row.price ? row.price.totalUsd : undefined,
       ...(row.price?.source === 'covered' ? { isCovered: true as const } : {}),
+      ...(row.withdrawn === true ? { withdrawn: true as const } : {}),
     }));
 }
 

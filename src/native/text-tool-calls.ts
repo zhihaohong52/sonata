@@ -19,6 +19,97 @@ import { randomBytes } from 'node:crypto';
 export const TOOL_CALL_OPEN = '<tool_call>';
 export const TOOL_CALL_CLOSE = '</tool_call>';
 
+/**
+ * Whether the text after a `<tool_call>` opening is a call body: the
+ * Qwen-Coder `<function=…>` form the parser recovers, or the JSON form
+ * (`{"name": …}`) some backends emit, after optional whitespace. Anything else
+ * is the tag being *mentioned* — prose about tool calls, which this repo's own
+ * agents write — and is ordinary text: never withdrawn, never a strike.
+ * `undecided` until enough has arrived to tell.
+ */
+export function classifyOpening(after: string): 'call' | 'not' | 'undecided' {
+  const rest = after.trimStart();
+  if (rest === '') return 'undecided';
+  if (rest.startsWith('{') || rest.startsWith(FUNCTION_OPEN)) return 'call';
+  return FUNCTION_OPEN.startsWith(rest) ? 'undecided' : 'not';
+}
+
+const FUNCTION_OPEN = '<function';
+
+const FENCE = /^ {0,3}(`{3,}|~{3,})/;
+
+/**
+ * Whether the end of `before` is inside markdown code: an open fence — a line
+ * that starts (after up to three spaces) with ``` or ~~~, closed by a later
+ * line starting with the same character at least as long — or an odd number
+ * of inline backticks on the current line. A ``` that does not start a line
+ * opens nothing.
+ */
+export function insideCode(before: string): boolean {
+  const lines = before.split('\n');
+  const current = lines.pop() ?? '';
+  let open: string | undefined;
+  for (const line of lines) {
+    const fence = FENCE.exec(line)?.[1];
+    if (fence === undefined) continue;
+    if (open === undefined) open = fence;
+    else if (fence[0] === open[0] && fence.length >= open.length) open = undefined;
+  }
+  if (open !== undefined) return true;
+  return (current.replace(/`{3,}/g, '').match(/`/g) ?? []).length % 2 === 1;
+}
+
+/**
+ * The same question as `insideCode`, answered incrementally: text is pushed
+ * as it settles and only what the answer needs is kept — the open fence, the
+ * current line's leading run, and its inline-backtick parity — so a long text
+ * block costs constant memory rather than a copy of itself.
+ */
+export function createCodeTracker() {
+  let fence: string | undefined;
+  let head = '';
+  let headDone = false;
+  let ticks = 0;
+  let run = 0;
+  const endLine = (): void => {
+    const opening = FENCE.exec(head)?.[1];
+    if (opening !== undefined) {
+      if (fence === undefined) fence = opening;
+      else if (opening[0] === fence[0] && opening.length >= fence.length) fence = undefined;
+    }
+    head = ''; headDone = false; ticks = 0; run = 0;
+  };
+  return {
+    push(text: string): void {
+      for (const c of text) {
+        if (c === '\n') { endLine(); continue; }
+        if (!headDone) {
+          const next = head + c;
+          if (/^ {0,3}(`*|~*)$/.test(next)) head = next; else headDone = true;
+        }
+        if (c === '`') run += 1;
+        else { if (run < 3) ticks += run; run = 0; }
+      }
+    },
+    inside(): boolean {
+      return fence !== undefined || (ticks + (run < 3 ? run : 0)) % 2 === 1;
+    },
+  };
+}
+
+/**
+ * The most characters the scanner holds for one unclosed call, and the most
+ * the stream rewriter holds for one unterminated SSE frame. Past either it
+ * gives up on recovery for the rest of the turn and passes text through: an
+ * unclosed call is emitted as text and counted unrecovered, an oversized frame
+ * is flushed intact. Generous — a text call writing a large file, or one
+ * enormous delta, still fits — and what bounds the parser's own memory.
+ */
+export const PARSE_BUFFER_CAP_CHARS = 8 * 1024 * 1024;
+
+export interface ParseLimits { maxPendingChars: number; maxFrameChars: number }
+const DEFAULT_PARSE_LIMITS: ParseLimits = { maxPendingChars: PARSE_BUFFER_CAP_CHARS, maxFrameChars: PARSE_BUFFER_CAP_CHARS };
+
 /** Tool name → its `input_schema`, from the request the response answers. */
 export type ToolSchemas = Map<string, Record<string, unknown>>;
 
@@ -103,36 +194,75 @@ type Piece = { kind: 'text'; text: string } | { kind: 'call'; call: ParsedCall }
  * The scanner both rewriters share. `push` returns the pieces that are
  * settled; `end` releases whatever is still held as text.
  */
-function createScanner(tools: ToolSchemas, counts: TextToolCallCounts) {
+function createScanner(
+  tools: ToolSchemas,
+  counts: TextToolCallCounts,
+  maxPendingChars = Infinity,
+  // Shared by every scanner of one turn: once one gives up, the rest pass through.
+  shared: { gaveUp: boolean } = { gaveUp: false },
+) {
   let pending = '';
   let inCall = false;
+  // The call being read opened inside markdown code. Call-shaped markup there
+  // is never recovered — it may be an example being quoted — but it is still
+  // counted unrecovered, so an unbalanced fence cannot hide a real call.
+  let quoted = false;
+  // What has settled so far, for telling a quoted tag from a call.
+  const code = createCodeTracker();
+  const settle = (pieces: Piece[], text: string): void => {
+    pieces.push({ kind: 'text', text });
+    code.push(text);
+  };
   return {
     push(text: string): Piece[] {
-      pending += text;
       const pieces: Piece[] = [];
+      if (shared.gaveUp) {
+        if (text !== '') pieces.push({ kind: 'text', text });
+        return pieces;
+      }
+      pending += text;
       for (;;) {
         if (inCall) {
+          // A mentioned tag, not a call: the tag is text, and scanning goes on after it.
+          if (classifyOpening(pending.slice(TOOL_CALL_OPEN.length)) === 'not') {
+            inCall = false;
+            settle(pieces, TOOL_CALL_OPEN);
+            pending = pending.slice(TOOL_CALL_OPEN.length);
+            continue;
+          }
           const close = pending.indexOf(TOOL_CALL_CLOSE);
-          if (close === -1) return pieces;
+          if (close === -1) {
+            // Past the cap, recovery is given up for the rest of the turn: the
+            // call is text, counted unrecovered, and nothing more is held.
+            if (pending.length > maxPendingChars) {
+              counts.unparsed += 1;
+              pieces.push({ kind: 'text', text: pending });
+              pending = '';
+              inCall = false;
+              shared.gaveUp = true;
+            }
+            return pieces;
+          }
           const markup = pending.slice(0, close + TOOL_CALL_CLOSE.length);
           pending = pending.slice(markup.length);
           inCall = false;
-          const call = parseToolCallMarkup(markup, tools);
-          if (call === undefined) { counts.unparsed += 1; pieces.push({ kind: 'text', text: markup }); } else { counts.recovered += 1; pieces.push({ kind: 'call', call }); }
+          const call = quoted ? undefined : parseToolCallMarkup(markup, tools);
+          if (call === undefined) { counts.unparsed += 1; settle(pieces, markup); } else { counts.recovered += 1; pieces.push({ kind: 'call', call }); code.push(markup); }
           continue;
         }
         const lt = pending.indexOf('<');
-        if (lt === -1) { if (pending) pieces.push({ kind: 'text', text: pending }); pending = ''; return pieces; }
-        if (lt > 0) { pieces.push({ kind: 'text', text: pending.slice(0, lt) }); pending = pending.slice(lt); }
-        if (pending.startsWith(TOOL_CALL_OPEN)) { inCall = true; continue; }
+        if (lt === -1) { if (pending) settle(pieces, pending); pending = ''; return pieces; }
+        if (lt > 0) { settle(pieces, pending.slice(0, lt)); pending = pending.slice(lt); }
+        if (pending.startsWith(TOOL_CALL_OPEN)) { inCall = true; quoted = code.inside(); continue; }
         if (TOOL_CALL_OPEN.startsWith(pending)) return pieces; // a prefix: wait for more
-        pieces.push({ kind: 'text', text: '<' });
+        settle(pieces, '<');
         pending = pending.slice(1);
       }
     },
     end(): Piece[] {
       if (pending === '') return [];
-      if (inCall) counts.unparsed += 1;
+      // Unclosed: a call only if its body had begun like one.
+      if (inCall && classifyOpening(pending.slice(TOOL_CALL_OPEN.length)) === 'call') counts.unparsed += 1;
       const rest = pending;
       pending = '';
       inCall = false;
@@ -148,9 +278,11 @@ export function rewriteTextToolCallStream(
   tools: ToolSchemas,
   onEnd: (counts: TextToolCallCounts) => void,
   newId: () => string = defaultId,
+  limits: ParseLimits = DEFAULT_PARSE_LIMITS,
 ): AsyncIterable<Uint8Array> & { cancel(): void } {
   const counts: TextToolCallCounts = { recovered: 0, unparsed: 0 };
   const encoder = new TextEncoder();
+  const shared = { gaveUp: false };
   async function* chunks(): AsyncIterable<Uint8Array> {
     const decoder = new TextDecoder();
     let buffer = '';
@@ -195,7 +327,7 @@ export function rewriteTextToolCallStream(
           const index = nextOut++;
           outIndex.set(data.index, index);
           if (data.content_block?.type === 'text') {
-            textUpstream = data.index; textOut = index; scanner = createScanner(tools, counts);
+            textUpstream = data.index; textOut = index; scanner = createScanner(tools, counts, limits.maxPendingChars, shared);
           }
           return sse({ ...data, index });
         }
@@ -233,7 +365,11 @@ export function rewriteTextToolCallStream(
       // Normalise only each new piece, carrying a pending \r across chunks so a
       // \r\n split by the chunk boundary still becomes one \n.
       let carry = '';
+      // Set once a frame outgrows `maxFrameChars`: from then on the upstream's
+      // bytes go out exactly as they arrive.
+      let passThrough = false;
       for await (const chunk of body) {
+        if (passThrough) { yield chunk; continue; }
         let piece = carry + decoder.decode(chunk, { stream: true });
         if (piece.endsWith('\r')) { carry = '\r'; piece = piece.slice(0, -1); } else carry = '';
         buffer += piece.replace(/\r\n?/g, '\n');
@@ -243,8 +379,19 @@ export function rewriteTextToolCallStream(
           out += handle(buffer.slice(0, split));
           buffer = buffer.slice(split + 2);
         }
+        if (buffer.length > limits.maxFrameChars) {
+          // One frame too large to hold: whatever the scanner kept goes out as
+          // text first, then the frame intact, then the rest unparsed.
+          if (scanner !== undefined) out += emitPieces(scanner.end());
+          out += buffer + carry + decoder.decode();
+          buffer = '';
+          carry = '';
+          passThrough = true;
+          shared.gaveUp = true;
+        }
         if (out !== '') yield encoder.encode(out);
       }
+      if (passThrough) return;
       buffer += (carry + decoder.decode()).replace(/\r\n?/g, '\n');
       if (buffer.trim() !== '') yield encoder.encode(handle(buffer.replace(/\n+$/, '')));
       if (scanner !== undefined) yield encoder.encode(emitPieces(scanner.end()));

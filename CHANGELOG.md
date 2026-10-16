@@ -135,6 +135,36 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
   Every other tool is sent unchanged. A model that still refuses a tool schema
   is skipped for the next candidate instead of ending the request.
+- **A tool call a model writes as text that cannot be recovered no longer
+  ends the agent.** On tier routes, which carry only subagent traffic, the
+  router holds a response until its first real tool call or its end, so a
+  turn carrying an unrecoverable call is withdrawn and the next ranked model
+  asked, as for a 5xx — once per request; later models stream as before. A
+  turn that calls tools properly streams from that call on; one that only
+  thinks and writes text reaches the client when it ends (at most 5 minutes
+  held, then it streams). A main session and bare `--model` requests are
+  never held. Only a `<tool_call>` tag followed by a call body (`<function=…>` or
+  `{`) counts: the tag merely mentioned in prose is ordinary text, and a call
+  quoted in a code fence or backticks is never recovered into a real one.
+  Text already sent before a call still reaches the client, as before; when
+  no other model serves, the withdrawn turn is served after all. A withdrawn
+  turn was still billed, so it gets a ledger row of its own, marked
+  `withdrawn`: priced and counted toward `[budget]`, and shown by `sonata
+  usage`, the usage screen and the web UI beside the totals rather than as a
+  served request. A model that does this twice within 30 minutes is skipped
+  for 30 minutes instead of 60 seconds, and `sonata doctor` names it with the
+  reason.
+
+### Changed
+
+- **`sonata usage` says when requests used an explicit tier while
+  auto-routing is on** — one line, shown only when there were any. Explicit
+  tiers remain a legitimate manual override.
+- **Orchestrators are told to report `-auto` trouble, not route around it.**
+  The loop skill, the managed CLAUDE.md block and the generated `-auto`
+  agents now say that a manual override means the user asked for a tier,
+  that a misbehaving `-auto` dispatch is retried on `-auto` and reported, and
+  that review-failure escalation applies only to the task that failed.
 
 ## [0.16.5] - 2026-10-15
 

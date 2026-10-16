@@ -1,7 +1,16 @@
 import { EventEmitter } from 'node:events';
 import { describe, expect, it } from 'vitest';
 
-import { clearCooldowns, respond, routeRequest, TIER_COOLDOWN_MS, type RouterDeps } from '../../src/native/router.js';
+import { activeTextToolCallCooldowns, clearCooldowns, createRouterServer, respond, routeRequest, TEXT_TOOL_CALL_COOLDOWN_MS, TIER_COOLDOWN_MS, type RouterDeps } from '../../src/native/router.js';
+import { rewriteTextToolCallStream } from '../../src/native/text-tool-calls.js';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { appendRow, readRows } from '../../src/ledger.js';
+import { spentTodayUsd } from '../../src/budget.js';
+import { aggregate } from '../../src/commands/usage.js';
+import { priceRow } from '../../src/commands/serve.js';
+import { parseConfig } from '../../src/config.js';
 import type { LedgerRow } from '../../src/ledger.js';
 
 const DELTA = 'event: message_delta\ndata: {"type":"message_delta","usage":{"input_tokens":100,"output_tokens":7}}\n\n';
@@ -353,10 +362,15 @@ describe('router — text-form tool calls', () => {
       message('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }),
       message('content_block_delta', { index: 0, delta: { type: 'text_delta', text: 'hello' } }),
     ].join('');
-    const d = deps(rows, () => new Response(new ReadableStream<Uint8Array>({
-      start(controller) { controller.enqueue(new TextEncoder().encode(firstChunk)); },
-      cancel() { cancelled = true; },
-    }), { status: 200, headers: { 'content-type': 'text/event-stream' } }));
+    const d = {
+      ...deps(rows, () => new Response(new ReadableStream<Uint8Array>({
+        start(controller) { controller.enqueue(new TextEncoder().encode(firstChunk)); },
+        cancel() { cancelled = true; },
+      }), { status: 200, headers: { 'content-type': 'text/event-stream' } })),
+      // 'hello' alone cannot rule a text tool call out, so the turn is held
+      // until the upstream goes quiet: kept short here.
+      textToolCallHoldLimits: { maxBytes: 1024 * 1024, idleMs: 50, maxMs: 60_000 },
+    };
     const request = {
       ...withTools('sonata-code-simple'),
       body: Buffer.from(JSON.stringify({
@@ -446,27 +460,727 @@ describe('router — text-form tool calls', () => {
     expect(rows[0].textToolCalls).toEqual({ recovered: 0, unparsed: 1 });
   });
 
-  it('cools the candidate on an unparsed call so the next request takes the next one', async () => {
-    clearCooldowns();
-    const rows: LedgerRow[] = [];
+  /** Two candidates, `flash` first; each answers with what `answer` returns for its key. */
+  const twoCandidates = (rows: LedgerRow[], answer: (key: 'flash' | 'pro') => Response, extra: Partial<RouterDeps> = {}) => {
     const seen: string[] = [];
-    const twoModels: RouterDeps = {
-      ...deps(rows, () => sse(stream('x <tool_call><function=Nope></function></tool_call>'))),
+    const d: RouterDeps = {
+      ...deps(rows, () => sse(stream('plain'))),
       fetch: (async (_url: string, init: { body: string }) => {
-        seen.push(JSON.parse(init.body).model);
-        return sse(stream('x <tool_call><function=Nope></function></tool_call>'));
+        const model = String(JSON.parse(init.body).model);
+        seen.push(model);
+        return answer(model.endsWith('/pro') ? 'pro' : 'flash');
       }) as unknown as typeof fetch,
       resolveTier: (alias) => alias === 'sonata-code-simple'
         ? { role: 'code', tier: 'simple', routes: [{ key: 'flash', native: { gateway: 'acme', id: 'x' } }, { key: 'pro', native: { gateway: 'acme', id: 'y' } }] }
         : undefined,
+      ...extra,
     };
-    await drain((await routeRequest(withTools('sonata-code-simple'), twoModels)).body);
-    await drain((await routeRequest(withTools('sonata-code-simple'), twoModels)).body);
-    expect(rows[0].textToolCalls).toEqual({ recovered: 0, unparsed: 1 });
+    return { seen, d };
+  };
+
+  /** An SSE response sent as the given chunks, optionally left open after them. */
+  const chunked = (chunks: string[], open = false, onCancel?: () => void): Response => new Response(new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(new TextEncoder().encode(chunk));
+      if (!open) controller.close();
+    },
+    cancel() { onCancel?.(); },
+  }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+
+  it('withdraws a streamed turn with an unrecoverable call and serves the next candidate', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const { seen, d } = twoCandidates(rows, (key) => sse(stream(key === 'flash' ? UNPARSED : 'from pro')));
+    const out = await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
+    // The client sees the second candidate's turn and nothing of the first.
+    expect(out).toBe(stream('from pro'));
+    expect(seen).toEqual(['default/flash', 'default/pro']);
+    // One row served, one for the withdrawn turn's spend.
+    expect(rows).toHaveLength(2);
+    const served = rows.find((r) => r.withdrawn !== true)!;
+    expect(served.key).toBe('pro');
+    expect('textToolCalls' in served).toBe(false);
+    expect(served.attempts).toEqual([{ key: 'flash', status: 200 }]);
+    const withdrawn = rows.find((r) => r.withdrawn === true)!;
+    expect(withdrawn).toMatchObject({
+      key: 'flash', gateway: 'acme', status: 200, complete: true, attempts: [],
+      textToolCalls: { recovered: 0, unparsed: 1 }, tokens: { input: 10, output: 5 },
+    });
+    // And the withdrawn candidate is cooling: the next request starts at pro.
+    seen.length = 0;
+    await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
+    expect(seen).toEqual(['default/pro']);
+  });
+
+  it('withdraws and recovers through CRLF-framed streams split across chunks, end to end', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const crlf = (text: string) => text.replace(/\n/g, '\r\n');
+    // Cut through a \r\n and through the marker.
+    const split = (text: string): string[] => {
+      const at = text.indexOf('tool_call>') + 3;
+      const cr = text.indexOf('\r\n', 30) + 1;
+      return [text.slice(0, cr), text.slice(cr, at), text.slice(at)];
+    };
+    const { seen, d } = twoCandidates(rows, (key) => chunked(split(crlf(stream(key === 'flash' ? UNPARSED : 'Go ' + CALL)))));
+    const out = await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
+    expect(seen).toEqual(['default/flash', 'default/pro']);
+    expect(out).toContain('"type":"tool_use"');
+    expect(out).toContain('"stop_reason":"tool_use"');
+    expect(out).not.toContain('Nope');
+    const served = rows.find((r) => r.withdrawn !== true)!;
+    expect(served.textToolCalls).toEqual({ recovered: 1, unparsed: 0 });
+    expect(rows.find((r) => r.withdrawn === true)).toMatchObject({ key: 'flash', complete: true, tokens: { input: 10, output: 5 } });
+  });
+
+  it('times a withdrawn turn to its own end, not the request\'s', async () => {
+    clearCooldowns();
+    let clock = 1_000;
+    const rows: LedgerRow[] = [];
+    const { d } = twoCandidates(rows, (key) => {
+      if (key === 'pro') clock += 5_000;
+      return sse(stream(key === 'flash' ? UNPARSED : 'from pro'));
+    }, { now: () => clock });
+    await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
+    expect(rows.find((r) => r.withdrawn === true)!.ms).toBe(0);
+    expect(rows.find((r) => r.withdrawn !== true)!.ms).toBe(5_000);
+  });
+
+  it('times a withdrawn turn from its own candidate\'s start, not the request\'s', async () => {
+    clearCooldowns();
+    let clock = 1_000;
+    const rows: LedgerRow[] = [];
+    const d: RouterDeps = {
+      ...deps(rows, () => sse(stream('plain'))),
+      now: () => clock,
+      fetch: (async (_url: string, init: { body: string }) => {
+        const model = String(JSON.parse(init.body).model);
+        if (model.endsWith('/slow')) { clock += 3_000; return new Response('{}', { status: 503 }); }
+        if (model.endsWith('/flash')) { clock += 2_000; return sse(stream(UNPARSED)); }
+        return sse(stream('from pro'));
+      }) as unknown as typeof fetch,
+      resolveTier: (alias) => alias === 'sonata-code-simple'
+        ? { role: 'code', tier: 'simple', routes: ['slow', 'flash', 'pro'].map((key) => ({ key, native: { gateway: 'acme', id: key } })) }
+        : undefined,
+    };
+    await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
+    const withdrawn = rows.find((r) => r.withdrawn === true)!;
+    expect(withdrawn.key).toBe('flash');
+    expect(withdrawn.ms).toBe(2_000);
+    // Priced by when the request ran, as every row is.
+    expect(withdrawn.ts).toBe(new Date(1_000).toISOString());
+  });
+
+  it('withdraws a non-streamed reply with an unrecoverable call', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const message = (text: string) => JSON.stringify({
+      id: 'm', type: 'message', role: 'assistant', content: [{ type: 'text', text }],
+      stop_reason: 'end_turn', usage: { input_tokens: 3, output_tokens: 2 },
+    });
+    const { d } = twoCandidates(rows, (key) => body200(key === 'flash' ? message(UNPARSED) : message('from pro'), 'application/json'));
+    const res = await routeRequest(withTools('sonata-code-simple'), d);
+    expect(await drain(res.body)).toBe(message('from pro'));
+    const served = rows.find((r) => r.withdrawn !== true)!;
+    expect(served.key).toBe('pro');
+    expect(served.attempts).toEqual([{ key: 'flash', status: 200 }]);
+    expect(rows.find((r) => r.withdrawn === true)).toMatchObject({ key: 'flash', complete: true, tokens: { input: 3, output: 2 } });
+  });
+
+  it('withdraws once per request: the next candidate streams through and is only cooled', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const slowTail = (): Response => new Response(new ReadableStream<Uint8Array>({
+      async start(controller) {
+        const all = stream(UNPARSED);
+        const head = all.indexOf('event: content_block_delta');
+        controller.enqueue(new TextEncoder().encode(all.slice(0, head)));
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        controller.enqueue(new TextEncoder().encode(all.slice(head)));
+        controller.close();
+      },
+    }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    const { seen, d } = twoCandidates(rows, (key) => key === 'flash' ? sse(stream(UNPARSED)) : slowTail());
+    const started = Date.now();
+    const res = await routeRequest(withTools('sonata-code-simple'), d);
+    // Not held: pro's first bytes come back before its tail arrives.
+    expect(Date.now() - started).toBeLessThan(300);
+    expect(res.status).toBe(200);
+    expect(await drain(res.body)).toContain('<tool_call>');
+    expect(seen).toEqual(['default/flash', 'default/pro']);
+    // The served row is pro's, its unrecovered call counted on it; flash's
+    // turn is an attempt with a withdrawn row of its own.
+    expect(rows).toHaveLength(2);
+    const served = rows.find((r) => r.withdrawn !== true)!;
+    expect(served.key).toBe('pro');
+    expect(served.textToolCalls).toEqual({ recovered: 0, unparsed: 1 });
+    expect(served.attempts).toEqual([{ key: 'flash', status: 200 }]);
+    // Replayed as the stream it was, so its usage is still read.
+    expect(served.tokens.output).toBe(5);
+    expect(rows.filter((r) => r.withdrawn === true).map((r) => r.key)).toEqual(['flash']);
+    // Both cooled: the next request has nothing left to ask.
+    seen.length = 0;
+    expect((await routeRequest(withTools('sonata-code-simple'), d)).status).toBe(529);
+    expect(seen).toEqual([]);
+  });
+
+  for (const [what, later] of [
+    ['a 503', () => new Response('{"error":"down"}', { status: 503 })],
+    ['a message-less 400', () => new Response('', { status: 400 })],
+    ['a 400 with a message', () => new Response('{"type":"error","error":{"type":"invalid_request_error","message":"max_tokens too large"}}', { status: 400 })],
+    ['a 422', () => new Response('{"error":{"message":"unprocessable"}}', { status: 422 })],
+  ] as const) {
+    it(`serves the withdrawn turn when the next candidate answers ${what}`, async () => {
+      clearCooldowns();
+      const rows: LedgerRow[] = [];
+      const { seen, d } = twoCandidates(rows, (key) => key === 'flash' ? sse(stream(UNPARSED)) : later());
+      const res = await routeRequest(withTools('sonata-code-simple'), d);
+      expect(res.status).toBe(200);
+      expect(await drain(res.body)).toContain('<tool_call>');
+      expect(seen).toEqual(['default/flash', 'default/pro']);
+      const served = rows.find((r) => r.withdrawn !== true)!;
+      expect(served.key).toBe('flash');
+      expect(served.attempts).toEqual([{ key: 'pro', status: later().status }]);
+      expect(rows.some((r) => r.withdrawn === true)).toBe(false);
+    });
+  }
+
+  it('neither withdraws nor cools a turn that only mentions the tag', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const mention = 'It writes `<tool_call>` markup, and <tool_call> alone is not a call.';
+    const { seen, d } = twoCandidates(rows, () => sse(stream(mention)));
+    const out = await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
+    // The rewriter re-chunks text at each `<`, as it always has; the text itself is untouched.
+    const deltas = out.split('\n\n').filter((e) => e.includes('text_delta'))
+      .map((e) => JSON.parse(e.slice(e.indexOf('data:') + 5)).delta.text).join('');
+    expect(deltas).toBe(mention);
+    await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
+    expect(seen).toEqual(['default/flash', 'default/flash']);
+    expect(rows.every((r) => r.withdrawn === undefined && r.textToolCalls === undefined)).toBe(true);
+  });
+
+  it('prices a withdrawn turn and counts it toward the budget, but not as a served request', async () => {
+    clearCooldowns();
+    const home = mkdtempSync(join(tmpdir(), 'sonata-withdrawn-'));
+    const config = parseConfig([
+      '[models."flash"]', 'gateway = "acme"', 'id = "x"',
+      '[models."flash".price]', 'input = 1', 'output = 2',
+      '[native.gateways."acme"]', 'base_url = "https://example.invalid/v1"',
+    ].join('\n'));
+    const { d } = twoCandidates([], (key) => sse(stream(key === 'flash' ? UNPARSED : 'from pro')), {
+      recordUsage: (row) => appendRow(home, priceRow(config, home, row)),
+    });
+    await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
+    const deadline = Date.now() + 2_000;
+    while (readRows(home, 0, Date.now() + 1).length < 2 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+    const ledger = readRows(home, 0, Date.now() + 1);
+    const withdrawn = ledger.find((r) => r.withdrawn === true)!;
+    // 10 in at $1/M and 5 out at $2/M.
+    expect(withdrawn.price).toMatchObject({ source: 'model', totalUsd: 0.00002 });
+    expect(spentTodayUsd(home)).toBeCloseTo(0.00002, 10);
+    const report = aggregate(ledger, 'model', {});
+    expect(report.buckets.map((b) => [b.label, b.requests])).toEqual([['pro', 1]]);
+    expect(report.withdrawn).toEqual({ turns: 1, costUsd: 0.00002, coveredUsd: 0, unpriced: 0 });
+  });
+
+  it('records a withdrawn turn whose usage never arrived as incomplete, with zero tokens', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const noUsage = [
+      ev('message_start', { message: { id: 'm', role: 'assistant', content: [] } }),
+      ev('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }),
+      ev('content_block_delta', { index: 0, delta: { type: 'text_delta', text: UNPARSED } }),
+      ev('content_block_stop', { index: 0 }),
+      ev('message_stop', {}),
+    ].join('');
+    const { d } = twoCandidates(rows, (key) => sse(key === 'flash' ? noUsage : stream('from pro')));
+    await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
+    const withdrawn = rows.find((r) => r.withdrawn === true)!;
+    // What the router controls. Whether such a row is priced is `priceRow`'s call.
+    expect(withdrawn.complete).toBe(false);
+    expect(withdrawn.tokens).toEqual({ input: 0, output: 0, cacheRead: 0, cacheCreation: 0 });
+  });
+
+  it('passes a recovered call through the hold unchanged', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const { seen, d } = twoCandidates(rows, () => sse(stream('Go ' + CALL)));
+    const out = await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
+    const unheld = await drain(rewriteTextToolCallStream(
+      (async function* () { yield new TextEncoder().encode(stream('Go ' + CALL)); })(),
+      new Map([['Bash', { type: 'object', properties: { command: { type: 'string' } } }]]),
+      () => undefined,
+    ));
+    const ids = (text: string) => text.replace(/toolu_[0-9a-f]+/g, 'toolu_X');
+    expect(ids(out)).toBe(ids(unheld));
+    expect(seen).toEqual(['default/flash']);
+    expect(rows[0].textToolCalls).toEqual({ recovered: 1, unparsed: 0 });
+  });
+
+  it('withdraws a call after a long preamble', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const prose = 'I will now look around the whole repository to find where this behaviour lives, '.repeat(20);
+    const proseThenCall = [
+      ev('message_start', { message: { id: 'm', role: 'assistant', content: [] } }),
+      ev('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }),
+      ev('content_block_delta', { index: 0, delta: { type: 'text_delta', text: prose } }),
+      ev('content_block_delta', { index: 0, delta: { type: 'text_delta', text: UNPARSED } }),
+      ev('content_block_stop', { index: 0 }),
+      ev('message_delta', { delta: { stop_reason: 'end_turn' }, usage: { input_tokens: 10, output_tokens: 5 } }),
+      ev('message_stop', {}),
+    ];
+    const { seen, d } = twoCandidates(rows, (key) => key === 'flash' ? chunked(proseThenCall) : sse(stream('from pro')));
+    const out = await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
+    // The whole turn was held, so the preamble never reached the client either.
+    expect(out).toBe(stream('from pro'));
+    expect(seen).toEqual(['default/flash', 'default/pro']);
+    expect(rows.find((r) => r.withdrawn === true)).toMatchObject({ key: 'flash', textToolCalls: { recovered: 0, unparsed: 1 } });
+  });
+
+  it('withdraws a call that follows a thinking block', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const thinkingThenCall = [
+      ev('message_start', { message: { id: 'm', role: 'assistant', content: [] } }),
+      ev('content_block_start', { index: 0, content_block: { type: 'thinking', thinking: '' } }),
+      ev('content_block_delta', { index: 0, delta: { type: 'thinking_delta', thinking: 'I should list the files.' } }),
+      ev('content_block_stop', { index: 0 }),
+      ev('content_block_start', { index: 1, content_block: { type: 'text', text: '' } }),
+      ev('content_block_delta', { index: 1, delta: { type: 'text_delta', text: UNPARSED } }),
+      ev('content_block_stop', { index: 1 }),
+      ev('message_delta', { delta: { stop_reason: 'end_turn' }, usage: { input_tokens: 10, output_tokens: 5 } }),
+      ev('message_stop', {}),
+    ];
+    const { seen, d } = twoCandidates(rows, (key) => key === 'flash' ? chunked(thinkingThenCall) : sse(stream('from pro')));
+    const out = await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
+    expect(out).toBe(stream('from pro'));
+    expect(seen).toEqual(['default/flash', 'default/pro']);
+  });
+
+  it('finds a marker split across SSE chunks and deltas', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const frames = [
+      ev('message_start', { message: { id: 'm', role: 'assistant', content: [] } }),
+      ev('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }),
+      ev('content_block_delta', { index: 0, delta: { type: 'text_delta', text: 'ok <to' } }),
+      ev('content_block_delta', { index: 0, delta: { type: 'text_delta', text: 'ol_call><function=Nope></function></tool_call>' } }),
+      ev('content_block_stop', { index: 0 }),
+      ev('message_delta', { delta: { stop_reason: 'end_turn' }, usage: { input_tokens: 10, output_tokens: 5 } }),
+      ev('message_stop', {}),
+    ].join('');
+    // Cut mid-event, and through the marker's own delta.
+    const cut = frames.indexOf('ol_call');
+    const { seen, d } = twoCandidates(rows, (key) => key === 'flash'
+      ? chunked([frames.slice(0, 40), frames.slice(40, cut), frames.slice(cut, cut + 7), frames.slice(cut + 7)])
+      : sse(stream('from pro')));
+    const out = await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
+    expect(out).toBe(stream('from pro'));
+    expect(seen).toEqual(['default/flash', 'default/pro']);
+  });
+
+  it('stops holding after the idle limit and streams as before', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    let cancelled = false;
+    const open = [
+      ev('message_start', { message: { id: 'm', role: 'assistant', content: [] } }),
+      ev('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }),
+      ev('content_block_delta', { index: 0, delta: { type: 'text_delta', text: '<tool_call><function=Bash>' } }),
+    ];
+    const { seen, d } = twoCandidates(rows, () => chunked(open, true, () => { cancelled = true; }), {
+      textToolCallHoldLimits: { maxBytes: 1024 * 1024, idleMs: 50, maxMs: 60_000 },
+    });
+    const started = Date.now();
+    const res = await routeRequest(withTools('sonata-code-simple'), d);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(res.status).toBe(200);
+    expect(seen).toEqual(['default/flash']);
+    const iterator = (res.body as AsyncIterable<Uint8Array>)[Symbol.asyncIterator]();
+    const first = await iterator.next();
+    expect(new TextDecoder().decode(first.value)).toContain('message_start');
+    await iterator.return?.();
+    (res.body as { cancel?: () => void }).cancel?.();
+    expect(cancelled).toBe(true);
+  });
+
+  it('waits out a slow first token without counting it as idle', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const late = (): Response => new Response(new ReadableStream<Uint8Array>({
+      async start(controller) {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        controller.enqueue(new TextEncoder().encode(stream(UNPARSED)));
+        controller.close();
+      },
+    }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    const { seen, d } = twoCandidates(rows, (key) => key === 'flash' ? late() : sse(stream('from pro')), {
+      textToolCallHoldLimits: { maxBytes: 1024 * 1024, idleMs: 30, maxMs: 60_000 },
+    });
+    const out = await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
+    // Still withdrawn: the hold did not give up before the first byte.
+    expect(out).toBe(stream('from pro'));
+    expect(seen).toEqual(['default/flash', 'default/pro']);
+  });
+
+  it('stops holding at maxMs even while bytes keep arriving', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    let cancelled = false;
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const trickle = (): Response => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        const enc = new TextEncoder();
+        controller.enqueue(enc.encode([
+          ev('message_start', { message: { id: 'm', role: 'assistant', content: [] } }),
+          ev('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }),
+          ev('content_block_delta', { index: 0, delta: { type: 'text_delta', text: '<tool_call><function=Bash>' } }),
+        ].join('')));
+        // Never idle, never closing the call: only maxMs can end the hold.
+        timer = setInterval(() => controller.enqueue(enc.encode(ev('ping', {}))), 10);
+      },
+      cancel() { cancelled = true; clearInterval(timer); },
+    }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    const { seen, d } = twoCandidates(rows, trickle, {
+      textToolCallHoldLimits: { maxBytes: 1024 * 1024, idleMs: 10_000, maxMs: 100 },
+    });
+    const started = Date.now();
+    const res = await routeRequest(withTools('sonata-code-simple'), d);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(seen).toEqual(['default/flash']);
+    const iterator = (res.body as AsyncIterable<Uint8Array>)[Symbol.asyncIterator]();
+    expect(new TextDecoder().decode((await iterator.next()).value)).toContain('message_start');
+    (res.body as { cancel?: () => void }).cancel?.();
+    clearInterval(timer);
+    expect(cancelled).toBe(true);
+  });
+
+  it('gives up a held turn the moment the client leaves, recording it as served and incomplete', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    let cancelled = false;
+    const open = [
+      ev('message_start', { message: { id: 'm', role: 'assistant', content: [], usage: { input_tokens: 42, output_tokens: 1 } } }),
+      ev('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }),
+      ev('content_block_delta', { index: 0, delta: { type: 'text_delta', text: 'hi' } }),
+    ];
+    const { d } = twoCandidates(rows, () => chunked(open, true, () => { cancelled = true; }));
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 30);
+    const started = Date.now();
+    const res = await routeRequest({ ...withTools('sonata-code-simple'), signal: controller.signal }, d);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(res.status).toBe(499);
+    expect(cancelled).toBe(true);
+    // The upstream answered and billed it: the row a disconnect mid-stream
+    // gets, with the usage the held bytes carried.
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ key: 'flash', status: 200, complete: false, attempts: [] });
+    expect(rows[0].withdrawn).toBeUndefined();
+    expect(rows[0].tokens.input).toBe(42);
+    // Cut off before the rewriter settled its counts: none are claimed.
+    expect('textToolCalls' in rows[0]).toBe(false);
+  });
+
+  it('stops holding an unclosed call with a huge parameter once its input passes the byte limit', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const slowEnd = (): Response => new Response(new ReadableStream<Uint8Array>({
+      async start(controller) {
+        const enc = new TextEncoder();
+        controller.enqueue(enc.encode([
+          ev('message_start', { message: { id: 'm', role: 'assistant', content: [] } }),
+          ev('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }),
+          ev('content_block_delta', { index: 0, delta: { type: 'text_delta', text: '<tool_call><function=Bash><parameter=command>' } }),
+        ].join('')));
+        // Nothing of this is emitted by the scanner, which is holding the call.
+        for (let i = 0; i < 40; i++) controller.enqueue(enc.encode(ev('content_block_delta', { index: 0, delta: { type: 'text_delta', text: 'x'.repeat(100) } })));
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        controller.enqueue(enc.encode(ev('content_block_stop', { index: 0 }) + ev('message_delta', { delta: { stop_reason: 'end_turn' }, usage: { input_tokens: 1, output_tokens: 1 } }) + ev('message_stop', {})));
+        controller.close();
+      },
+    }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    const { seen, d } = twoCandidates(rows, slowEnd, {
+      textToolCallHoldLimits: { maxBytes: 2_000, idleMs: 10_000, maxMs: 60_000 },
+    });
+    const started = Date.now();
+    const res = await routeRequest(withTools('sonata-code-simple'), d);
+    // Released on input bytes, before the upstream's tail arrived.
+    expect(Date.now() - started).toBeLessThan(300);
+    const out = await drain(res.body);
+    expect(out).toContain('x'.repeat(100));
+    expect(out).toContain('message_stop');
+    expect(seen).toEqual(['default/flash']);
+    expect(rows[0]).toMatchObject({ key: 'flash', complete: true, textToolCalls: { recovered: 0, unparsed: 1 } });
+  });
+
+  it('stops holding past the byte limit and streams as before', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const { seen, d } = twoCandidates(rows, (key) => sse(stream(key === 'flash' ? UNPARSED : 'from pro')), {
+      textToolCallHoldLimits: { maxBytes: 16, idleMs: 10_000, maxMs: 60_000 },
+    });
+    const out = await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
+    expect(out).toContain('<tool_call>');
+    expect(seen).toEqual(['default/flash']);
     expect(rows[0].key).toBe('flash');
-    expect(rows[1].key).toBe('pro');
-    expect(seen).toHaveLength(2);
-    expect(seen[0]).not.toBe(seen[1]);
+    expect(rows[0].textToolCalls).toEqual({ recovered: 0, unparsed: 1 });
+  });
+
+  it('leaves a plain text reply byte-identical, streamed and not', async () => {
+    clearCooldowns();
+    const long = 'A plain answer with no tool call in it at all, long enough to pass the probe window easily.';
+    for (const text of ['plain', long]) {
+      const rows: LedgerRow[] = [];
+      const raw = stream(text);
+      const { d } = twoCandidates(rows, () => sse(raw));
+      expect(await drain((await routeRequest(withTools('sonata-code-simple'), d)).body)).toBe(raw);
+      const json = JSON.stringify({ id: 'm', type: 'message', role: 'assistant', content: [{ type: 'text', text }], stop_reason: 'end_turn' });
+      const { d: jd } = twoCandidates(rows, () => body200(json, 'application/json'));
+      expect(await drain((await routeRequest(withTools('sonata-code-simple'), jd)).body)).toBe(json);
+    }
+  });
+
+  it('never holds a bare-key or Anthropic request, only tier routes', async () => {
+    const head = [
+      ev('message_start', { message: { id: 'm', role: 'assistant', content: [] } }),
+      ev('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }),
+      ev('content_block_delta', { index: 0, delta: { type: 'text_delta', text: 'hi' } }),
+    ];
+    for (const model of ['flash', 'claude-opus-4-1']) {
+      clearCooldowns();
+      let cancelled = false;
+      const d: RouterDeps = {
+        ...deps([], () => chunked(head, true, () => { cancelled = true; })),
+        resolveNative: (key) => key === 'flash' ? { gateway: 'acme', id: 'x', transport: 'litellm' as const } : undefined,
+      };
+      const started = Date.now();
+      const res = await routeRequest(withTools(model), d);
+      // Left open: a held stream would not return until a limit.
+      expect(Date.now() - started, model).toBeLessThan(1_000);
+      const iterator = (res.body as AsyncIterable<Uint8Array>)[Symbol.asyncIterator]();
+      expect(new TextDecoder().decode((await iterator.next()).value)).toContain('message_start');
+      (res.body as { cancel?: () => void }).cancel?.();
+      expect(cancelled, model).toBe(true);
+    }
+  });
+
+  it('streams a turn whose first block is a real tool_use without holding it', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const head = [
+      ev('message_start', { message: { id: 'm', role: 'assistant', content: [] } }),
+      ev('content_block_start', { index: 0, content_block: { type: 'tool_use', id: 'toolu_1', name: 'Bash', input: {} } }),
+      ev('content_block_delta', { index: 0, delta: { type: 'input_json_delta', partial_json: '{"command"' } }),
+    ];
+    let cancelled = false;
+    // Left open: a held stream would never return.
+    const { d } = twoCandidates(rows, () => chunked(head, true, () => { cancelled = true; }));
+    const started = Date.now();
+    const res = await routeRequest(withTools('sonata-code-simple'), d);
+    expect(Date.now() - started).toBeLessThan(1_000);
+    const iterator = (res.body as AsyncIterable<Uint8Array>)[Symbol.asyncIterator]();
+    let out = '';
+    while (!out.includes('input_json_delta')) out += new TextDecoder().decode((await iterator.next()).value);
+    expect(out).toBe(head.join(''));
+    (res.body as { cancel?: () => void }).cancel?.();
+    expect(cancelled).toBe(true);
+  });
+
+  it('cools a model that keeps writing unrecoverable calls for much longer', async () => {
+    clearCooldowns();
+    let clock = 1_000_000;
+    const rows: LedgerRow[] = [];
+    const { seen, d } = twoCandidates(rows, (key) => sse(stream(key === 'flash' ? UNPARSED : 'from pro')), { now: () => clock });
+    const ask = async () => { seen.length = 0; await drain((await routeRequest(withTools('sonata-code-simple'), d)).body); return [...seen]; };
+    expect(await ask()).toEqual(['default/flash', 'default/pro']);
+    expect(activeTextToolCallCooldowns(clock)).toEqual([]);
+    clock += TIER_COOLDOWN_MS + 1;
+    // The second within the window: escalated.
+    expect(await ask()).toEqual(['default/flash', 'default/pro']);
+    expect(activeTextToolCallCooldowns(clock)).toEqual([{
+      tenant: 'default', model: 'flash', until: new Date(clock + TEXT_TOOL_CALL_COOLDOWN_MS).toISOString(),
+      reason: expect.stringContaining('wrote tool calls as text that could not be recovered (2×'),
+    }]);
+    clock += TIER_COOLDOWN_MS + 1;
+    expect(await ask()).toEqual(['default/pro']);
+    clock += TEXT_TOOL_CALL_COOLDOWN_MS;
+    expect(activeTextToolCallCooldowns(clock)).toEqual([]);
+    expect(await ask()).toEqual(['default/flash', 'default/pro']);
+  });
+
+  it('counts concurrent unrecoverable calls from one candidate as one strike', async () => {
+    clearCooldowns();
+    const clock = 1_000_000;
+    const rows: LedgerRow[] = [];
+    const { seen, d } = twoCandidates(rows, (key) => sse(stream(key === 'flash' ? UNPARSED : 'from pro')), { now: () => clock });
+    await Promise.all([1, 2].map(async () => drain((await routeRequest(withTools('sonata-code-simple'), d)).body)));
+    expect(seen.filter((m) => m === 'default/flash')).toHaveLength(2);
+    expect(activeTextToolCallCooldowns(clock)).toEqual([]);
+  });
+
+  it('does not count a strike from a request that started before the last one', async () => {
+    clearCooldowns();
+    let clock = 1_000;
+    let releaseSlow: (() => void) | undefined;
+    let flashCalls = 0;
+    const rows: LedgerRow[] = [];
+    const { d } = twoCandidates(rows, (key) => {
+      if (key === 'pro') return sse(stream('from pro'));
+      flashCalls += 1;
+      if (flashCalls > 1) return sse(stream(UNPARSED));
+      // The first request's answer arrives long after the second's.
+      return new Response(new ReadableStream<Uint8Array>({
+        async start(controller) {
+          await new Promise<void>((resolve) => { releaseSlow = resolve; });
+          controller.enqueue(new TextEncoder().encode(stream(UNPARSED)));
+          controller.close();
+        },
+      }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    }, { now: () => clock });
+    const slow = routeRequest(withTools('sonata-code-simple'), d);
+    while (releaseSlow === undefined) await new Promise((r) => setTimeout(r, 5));
+    clock = 2_000;
+    await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
+    // Past any fixed window: only its start time says it was concurrent.
+    clock = 2_000 + TIER_COOLDOWN_MS * 5;
+    releaseSlow();
+    await drain((await slow).body);
+    expect(flashCalls).toBe(2);
+    expect(activeTextToolCallCooldowns(clock)).toEqual([]);
+  });
+
+  it('keeps a strike when only requests that started before it complete cleanly', async () => {
+    clearCooldowns();
+    let clock = 1_000;
+    const gates: Array<() => void> = [];
+    let flashCalls = 0;
+    const rows: LedgerRow[] = [];
+    const gated = (text: string): Response => new Response(new ReadableStream<Uint8Array>({
+      async start(controller) {
+        await new Promise<void>((resolve) => { gates.push(resolve); });
+        controller.enqueue(new TextEncoder().encode(stream(text)));
+        controller.close();
+      },
+    }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    const { d } = twoCandidates(rows, (key) => {
+      if (key === 'pro') return sse(stream('from pro'));
+      flashCalls += 1;
+      // The first two requests are in flight together; later ones fail outright.
+      if (flashCalls === 1) return gated(UNPARSED);
+      if (flashCalls === 2) return gated('served');
+      return sse(stream(UNPARSED));
+    }, { now: () => clock });
+    const a = routeRequest(withTools('sonata-code-simple'), d);
+    const b = routeRequest(withTools('sonata-code-simple'), d);
+    while (gates.length < 2) await new Promise((r) => setTimeout(r, 5));
+    // A strikes at 2_000; B, started at 1_000, then finishes clean.
+    clock = 2_000;
+    gates[0]();
+    await drain((await a).body);
+    gates[1]();
+    await drain((await b).body);
+    // Past the ordinary cooldown: the next failure is the second strike, so the long cooldown starts.
+    clock = 2_000 + TIER_COOLDOWN_MS + 1;
+    await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
+    expect(activeTextToolCallCooldowns(clock).map((c) => c.model)).toEqual(['flash']);
+  });
+
+  it('does not strike or cool a model whose client left during a held turn', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const ac = new AbortController();
+    let flashCalls = 0;
+    const { seen, d } = twoCandidates(rows, (key) => key === 'pro' || ++flashCalls > 1
+      ? sse(stream('from pro'))
+      // A closed call that cannot be parsed, then the stream stays open.
+      : chunked([stream(UNPARSED).replace(/event: message_stop[\s\S]*$/, '')], true), {});
+    const pending = routeRequest({ ...withTools('sonata-code-simple'), signal: ac.signal }, d);
+    await new Promise((r) => setTimeout(r, 50));
+    ac.abort();
+    const res = await pending;
+    expect((res as { clientGone?: boolean }).clientGone).toBe(true);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(activeTextToolCallCooldowns(Date.now())).toEqual([]);
+    seen.length = 0;
+    await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
+    expect(seen[0]).toBe('default/flash');
+  });
+
+  it('never lets a short cooldown cut a long one short', async () => {
+    clearCooldowns();
+    let clock = 1_000_000;
+    let phase = 1;
+    let flashCalls = 0;
+    const rows: LedgerRow[] = [];
+    const { seen, d } = twoCandidates(rows, (key) => {
+      if (key === 'pro') return sse(stream('from pro'));
+      flashCalls += 1;
+      if (phase === 1 || flashCalls % 2 === 0) return sse(stream(UNPARSED));
+      // In phase 2 the other concurrent request fails late, after the strike escalated.
+      return new Response(new ReadableStream<Uint8Array>({
+        async start(controller) { await new Promise((r) => setTimeout(r, 50)); controller.close(); },
+      }), { status: 503 });
+    }, { now: () => clock });
+    await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
+    clock += TIER_COOLDOWN_MS + 1;
+    phase = 2;
+    flashCalls = 0;
+    const fiveHundred = d.fetch;
+    // The 503 must arrive after the escalation: delay its whole response.
+    d.fetch = (async (url: string, init: { body: string }) => {
+      const res = await (fiveHundred as unknown as (u: string, i: { body: string }) => Promise<Response>)(url, init);
+      if (res.status === 503) await new Promise((r) => setTimeout(r, 50));
+      return res;
+    }) as unknown as typeof fetch;
+    await Promise.all([1, 2].map(async () => drain((await routeRequest(withTools('sonata-code-simple'), d)).body)));
+    expect(activeTextToolCallCooldowns(clock).map((c) => c.model)).toEqual(['flash']);
+    clock += TIER_COOLDOWN_MS + 1;
+    seen.length = 0;
+    await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
+    expect(seen).toEqual(['default/pro']);
+  });
+
+  it('resets the run of unrecoverable calls once the model serves a turn', async () => {
+    clearCooldowns();
+    let clock = 1_000_000;
+    let broken = true;
+    const rows: LedgerRow[] = [];
+    const { seen, d } = twoCandidates(rows, (key) => sse(stream(key === 'flash' && broken ? UNPARSED : 'served')), { now: () => clock });
+    const ask = async () => { seen.length = 0; await drain((await routeRequest(withTools('sonata-code-simple'), d)).body); return [...seen]; };
+    await ask();
+    clock += TIER_COOLDOWN_MS + 1;
+    broken = false;
+    expect(await ask()).toEqual(['default/flash']);
+    clock += TIER_COOLDOWN_MS + 1;
+    broken = true;
+    await ask();
+    // One strike since the served turn: the ordinary cooldown only.
+    expect(activeTextToolCallCooldowns(clock)).toEqual([]);
+    clock += TIER_COOLDOWN_MS + 1;
+    expect(await ask()).toEqual(['default/flash', 'default/pro']);
+  });
+
+  it('reports the long cooldown on /__sonata_health', async () => {
+    clearCooldowns();
+    let clock = Date.now();
+    const rows: LedgerRow[] = [];
+    const { d } = twoCandidates(rows, (key) => sse(stream(key === 'flash' ? UNPARSED : 'from pro')), { now: () => clock });
+    await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
+    clock += TIER_COOLDOWN_MS + 1;
+    await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
+    const server = createRouterServer({ ...d, health: true });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const { port } = server.address() as { port: number };
+      const body = await (await fetch(`http://127.0.0.1:${port}/__sonata_health`)).json() as { cooldowns: { model: string; reason: string }[] };
+      expect(body.cooldowns.map((c) => c.model)).toEqual(['flash']);
+      expect(body.cooldowns[0].reason).toContain('no tool-call parser');
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
   });
 
   it('does not cool the candidate on a recovered call so the next request takes the same one', async () => {
@@ -632,7 +1346,7 @@ describe('router — text-form tool calls', () => {
     expect(rows[0].textToolCalls).toEqual({ recovered: 1, unparsed: 0 });
   });
 
-  it('answers client-gone and records nothing when the client leaves mid-JSON', async () => {
+  it('answers client-gone and records a served, incomplete row when the client leaves mid-JSON', async () => {
     clearCooldowns();
     const rows: LedgerRow[] = [];
     const ac = new AbortController();
@@ -655,7 +1369,29 @@ describe('router — text-form tool calls', () => {
     const res = await routeRequest({ ...withTools('sonata-code-simple'), signal: ac.signal }, d);
     expect((res as { clientGone?: boolean }).clientGone).toBe(true);
     expect(res.status).toBe(499);
-    expect(rows).toHaveLength(0);
+    // The upstream answered: the row a held stream cut off the same way gets.
+    // What had arrived went with the aborted read, so no usage is claimed.
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ key: 'flash', status: 200, complete: false, tokens: { input: 0, output: 0 } });
+  });
+
+  it('records a bare --model JSON reply whose client left mid-read, once, as incomplete', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const ac = new AbortController();
+    const d: RouterDeps = {
+      ...deps(rows, () => new Response(new ReadableStream<Uint8Array>({
+        start(controller) { controller.enqueue(new TextEncoder().encode('{"id":"m","type":"message","content":[')); },
+        pull(controller) { ac.abort(); controller.error(new Error('upstream stream failed')); },
+      }), { status: 200, headers: { 'content-type': 'application/json' } })),
+      resolveNative: (key) => key === 'flash' ? { gateway: 'acme', id: 'x', transport: 'litellm' as const } : undefined,
+      resolveGateway: () => 'acme',
+    };
+    const res = await routeRequest({ ...withTools('flash@high'), signal: ac.signal }, d);
+    expect(res.status).toBe(499);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ key: 'flash', gateway: 'acme', effort: 'high', status: 200, complete: false, tokens: { input: 0, output: 0 } });
+    expect('textToolCalls' in rows[0]).toBe(false);
   });
 
   it('leaves a direct-transport candidate byte-identical', async () => {

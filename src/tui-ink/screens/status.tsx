@@ -213,7 +213,7 @@ export function StatusScreen({ cwd, home, global: initialGlobal = false }: {
                     indistinguishable, which is the case a reader checking a
                     tier is actually looking at. */}
                 {fit(
-                  `${line.served ?? 'no candidate served'}${line.effort !== undefined ? `@${line.effort}` : ''}`,
+                  `${line.served ?? 'no candidate served'}${line.effort !== undefined ? `@${line.effort}` : ''}${line.withdrawn === true ? ' (withdrawn)' : ''}`,
                   sc.served,
                 ).padEnd(sc.served)}
               </Text>

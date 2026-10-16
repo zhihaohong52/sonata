@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { chmodSync, mkdtempSync, mkdirSync, readdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { agentMarkdown, cmdSync, nativeAgentMarkdown, outdatedAgents, plannedAgents, tierAgentMarkdown, TIER_AGENT_MARKER } from '../../src/commands/sync.js';
+import { agentMarkdown, autoAgentMarkdown, cmdSync, nativeAgentMarkdown, outdatedAgents, plannedAgents, tierAgentMarkdown, TIER_AGENT_MARKER } from '../../src/commands/sync.js';
 import { parseConfig, type SonataConfig } from '../../src/config.js';
 
 let cwd: string;
@@ -215,7 +215,20 @@ describe('tierAgentMarkdown', () => {
     const body = tierAgentMarkdown({ role: 'code', tier: 'normal' }).split('---')[2] ?? '';
     expect(body).toContain('A large mechanical change is `simple`; a three-line');
     expect(body).toContain('`-normal` — the default. You know what to change, not exactly how.');
-    expect(body).toContain('A task\nthat fails review is re-run one tier up');
+    // Escalation is the caller's rule: it is in the description, not the body.
+    expect(body).not.toContain('fails review');
+  });
+
+  it('tells the caller where a task that fails review goes, in the description only', () => {
+    const description = (tier: 'simple' | 'normal' | 'complex', available?: readonly ('simple' | 'normal' | 'complex')[]) =>
+      tierAgentMarkdown({ role: 'code', tier, ...(available === undefined ? {} : { availableTiers: available }) })
+        .split('\n').find((line) => line.startsWith('description: '))!;
+    // Twice, as the loop skill escalates: one failed review is fixed in place.
+    expect(description('simple')).toContain('A task that fails review twice here is re-run on -normal — that task only, never other tasks or reviews.');
+    expect(description('normal')).toContain('re-run on -complex');
+    expect(description('complex')).not.toContain('fails review');
+    // Without a middle rung, simple escalates straight to complex.
+    expect(description('simple', ['simple', 'complex'])).toContain('re-run on -complex');
   });
 
   it('gives a read-only tier agent read and fan-out tools', () => {
@@ -979,5 +992,28 @@ describe('cmdSync — refreshing the installed loop skill', () => {
     expect(res.skills).toContain(join(dirname(skillPath), 'hooks', 'register.tsx'));
     expect((res.skills ?? []).some((p) => p.endsWith('.test.ts'))).toBe(false);
     expect(readFileSync(skillPath, 'utf8')).toBe(shipped);
+  });
+});
+
+describe('autoAgentMarkdown — tier trouble is reported, not routed around', () => {
+  const markdown = autoAgentMarkdown({ role: 'code', availableTiers: ['simple', 'normal', 'complex'], planTiers: ['simple', 'normal', 'complex'] });
+  // The description is what the caller reads; the body is the subagent's own prompt.
+  const description = markdown.split('\n').find((line) => line.startsWith('description: '))!;
+  const body = markdown.slice(markdown.indexOf('---', 4) + 3).replace(/\s+/g, ' ');
+
+  it('reserves explicit tiers for a user who asks for one, with the one exception', () => {
+    expect(description).toContain('only when the user asks for a specific tier; earlier tier failures do not count');
+    expect(description).toContain("The one exception: a task that failed review twice is re-run on the explicit -complex agent, and kept there for that task's fixes — that task only.");
+  });
+
+  it('tells the caller to retry on -auto and report a misbehaving dispatch', () => {
+    expect(description).toContain('If this agent misbehaves, retry it and report it to the user');
+    expect(description).toContain('rather than pinning an explicit tier');
+  });
+
+  it('keeps caller instructions out of the subagent\'s own prompt', () => {
+    expect(body).not.toContain('review twice');
+    expect(body).not.toContain('report it to the user');
+    expect(body).toContain('Sonata chooses the tier for this task once');
   });
 });

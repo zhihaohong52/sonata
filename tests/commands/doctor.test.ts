@@ -672,6 +672,28 @@ code = ["deepseek-v4-flash"]
     } finally { globalThis.fetch = originalFetch; }
   });
 
+  it('fails a check naming a model the router has put on the long text-call cooldown', async () => {
+    const { cwd, home } = setup();
+    const here = projectTenant(cwd, home);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      status: 'ok', sonata: true, multiTenant: true, tenants: [], problems: [],
+      cooldowns: [
+        { tenant: here, model: 'mimo', until: '2026-10-15T12:30:00.000Z', reason: 'wrote tool calls as text that could not be recovered (2× within 30 min)' },
+        { tenant: 'other-tenant', model: 'elsewhere', until: '2026-10-15T12:30:00.000Z', reason: 'x' },
+        { model: 7 },
+      ],
+    }), { status: 200 })) as unknown as typeof fetch;
+    try {
+      const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+      const cooling = checks.filter((c) => c.name === 'tier cooldown');
+      expect(cooling).toHaveLength(1);
+      expect(cooling[0].ok).toBe(false);
+      expect(cooling[0].detail).toContain('mimo is skipped until 2026-10-15T12:30:00.000Z');
+      expect(cooling[0].detail).toContain('wrote tool calls as text');
+    } finally { globalThis.fetch = originalFetch; }
+  });
+
   it('lists unknown tenant config paths as question marks', async () => {
     const { cwd, home } = setup();
     const originalFetch = globalThis.fetch;
@@ -2464,6 +2486,23 @@ describe('doctor — text tool calls', () => {
     appendRow(home, row('other-tenant', 'vendorz-mimo-v2.6-pro', { recovered: 0, unparsed: 1 }));
     const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
     expect(checks.some((c) => c.name === 'text tool calls')).toBe(false);
+  });
+
+  it('attributes a withdrawn turn to the model that wrote it, not the one that served', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'doc-ttc-cwd-'));
+    const home = mkdtempSync(join(tmpdir(), 'doc-ttc-home-'));
+    writeFileSync(join(cwd, 'sonata.toml'), 'schema_version = 1\n');
+    const tenant = projectTenant(cwd, home);
+    const served = row(tenant, 'pro', { recovered: 0, unparsed: 0 });
+    delete served.textToolCalls;
+    served.attempts = [{ key: 'mimo', status: 200 }];
+    appendRow(home, served);
+    appendRow(home, { ...row(tenant, 'mimo', { recovered: 0, unparsed: 1 }), withdrawn: true });
+    const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home });
+    const check = checks.find((c) => c.name === 'text tool calls');
+    expect(check?.ok).toBe(false);
+    expect(check?.detail).toContain('mimo: 0 recovered, 1 unrecovered');
+    expect(check?.detail).not.toContain('pro:');
   });
 });
 
