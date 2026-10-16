@@ -313,8 +313,10 @@ export function decisionClassifier(
   settings: Pick<AutoRouteConfig, 'baseUrl'>,
   deps: { fetch: typeof fetch; key: () => string | undefined; keyHint: string; model: (signal: AbortSignal) => Promise<string | undefined> },
 ): TierClassifier {
+  // `host`, port included, as the well-known check is: `openrouter.ai:8443` is a
+  // different server that takes no TypeSafe or OpenRouter key.
   let host = '';
-  try { host = new URL(settings.baseUrl).hostname; } catch { /* treated as other */ }
+  try { host = new URL(settings.baseUrl).host; } catch { /* treated as other */ }
   return jevClassifier({
     fetch: deps.fetch,
     key: deps.key,

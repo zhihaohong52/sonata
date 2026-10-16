@@ -113,3 +113,20 @@ describe('jevClassifier', () => {
     expect(init?.redirect).toBe('error');
   });
 });
+
+describe('the decision host that requires a key compares the port too', () => {
+  it('requires a key for openrouter.ai, and not for openrouter.ai on another port', async () => {
+    const { decisionClassifier } = await import('../../src/native/auto-route.js');
+    const make = (baseUrl: string) => decisionClassifier({ baseUrl }, {
+      fetch: (async () => { throw new Error('unreachable in this test'); }) as typeof fetch,
+      key: () => undefined,
+      keyHint: 'sonata auth add openrouter',
+      model: async () => 'm',
+    });
+    const controller = new AbortController();
+    await expect(make('https://openrouter.ai').classify({ role: 'code', task: 'x', tiers: ['simple'] }, controller.signal))
+      .rejects.toThrow(/no classifier key/);
+    await expect(make('https://openrouter.ai:8443').classify({ role: 'code', task: 'x', tiers: ['simple'] }, controller.signal))
+      .rejects.not.toThrow(/no classifier key/);
+  });
+});

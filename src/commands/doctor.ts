@@ -1015,7 +1015,7 @@ export async function cmdDoctor(
       other: () => resolveDecisionKey('auto-route', home)?.key,
     });
     let decisionHost = '';
-    try { decisionHost = new URL(auto.baseUrl).hostname; } catch { /* other */ }
+    try { decisionHost = new URL(auto.baseUrl).host; } catch { /* other */ }
     const keyRequired = decisionHost === 'openrouter.ai' || decisionHost === 'api.typesafe.ai';
     // An unbound host is refused outright: serve sends it neither the key nor
     // the task text, and every -auto request takes the fallback tier.
