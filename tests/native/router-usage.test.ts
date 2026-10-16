@@ -1019,6 +1019,27 @@ describe('router — text-form tool calls', () => {
     expect(activeTextToolCallCooldowns(clock).map((c) => c.model)).toEqual(['flash']);
   });
 
+  it('does not strike or cool a model whose client left during a held turn', async () => {
+    clearCooldowns();
+    const rows: LedgerRow[] = [];
+    const ac = new AbortController();
+    let flashCalls = 0;
+    const { seen, d } = twoCandidates(rows, (key) => key === 'pro' || ++flashCalls > 1
+      ? sse(stream('from pro'))
+      // A closed call that cannot be parsed, then the stream stays open.
+      : chunked([stream(UNPARSED).replace(/event: message_stop[\s\S]*$/, '')], true), {});
+    const pending = routeRequest({ ...withTools('sonata-code-simple'), signal: ac.signal }, d);
+    await new Promise((r) => setTimeout(r, 50));
+    ac.abort();
+    const res = await pending;
+    expect((res as { clientGone?: boolean }).clientGone).toBe(true);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(activeTextToolCallCooldowns(Date.now())).toEqual([]);
+    seen.length = 0;
+    await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
+    expect(seen[0]).toBe('default/flash');
+  });
+
   it('never lets a short cooldown cut a long one short', async () => {
     clearCooldowns();
     let clock = 1_000_000;

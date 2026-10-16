@@ -1526,7 +1526,9 @@ async function recoverTextToolCalls(
   const settle = (found: TextToolCallCounts): void => {
     counts.recovered = found.recovered;
     counts.unparsed = found.unparsed;
-    if (found.unparsed > 0) {
+    // A turn the client walked away from was cut off, not misbehaved: the
+    // rewriter's cleanup still settles it, but it is no strike, cooldown or capture.
+    if (found.unparsed > 0 && !clientLeft(req)) {
       onUnparsed?.(found.unparsed);
       if (capture !== undefined) {
         // Not awaited: this runs as the stream ends, and the client's last
@@ -3043,9 +3045,11 @@ async function routeTierCandidates(
         // and incomplete, with whatever usage the held bytes carry.
         const held = (recovered as { held?: HeldBody }).held;
         if (held !== undefined) {
-          // No `textToolCalls`: the rewriter settles its counts only when a
-          // turn ends, and this one was cut off first, so there are none to
-          // report — an absent field, rather than a zero that reads as "none".
+          // No `textToolCalls`: the rewriter settles its counts in its
+          // cleanup, after this cancel, from only what it had scanned of a
+          // turn that was cut off — a partial tally, so none is reported (an
+          // absent field, rather than a count that reads as complete). The
+          // cut-off turn is also no strike: `settle` ignores a departed client.
           await recordHeld(held, { ...candidateCtx(route), attempts, incomplete: true }, deps);
         }
         return recovered;
