@@ -23,6 +23,7 @@ import {
   KNOWN_ROLES, configPath,
 } from '../config.js';
 import { resolveDecisionKey, resolveKeys } from '../native/credentials.js';
+import { seedTrustOnUpgrade } from '../native/trust-seed.js';
 import { readTrustBindings } from '../native/host-bindings.js';
 import { credentialAvailabilityFor, nativeLabel, deriveInitState, configPathFor, type NativeCandidate } from './helpers.js';
 import { runInitTui } from '../tui-ink/run.js';
@@ -52,6 +53,8 @@ export async function interactiveState(
   },
   log: InitLog,
 ): Promise<{ state: InitState; nativeByKey: Map<string, NativeCandidate>; cancelled: boolean }> {
+  // The wizard snapshots trust before apply writes keys; seed it before that read.
+  seedTrustOnUpgrade(opts.home);
   const byokUrls = new Map(env.byokProviders.map((provider) => [provider.name, provider.url]));
   const nativeByKey = new Map(env.allNativeCandidates.map((c) => [c.key, c]));
   const existingConfigPath = configPath(opts.cwd, opts.home);
