@@ -2717,6 +2717,62 @@ litellm = ${litellmPort}
   });
 });
 
+describe('cmdServe — shared OpenCode keys do not share host trust', () => {
+  it.each([
+    ['opencode', 'opencode-go', 'anthropic'],
+    ['opencode-go', 'opencode', 'anthropic'],
+    ['opencode', 'opencode-go', 'openai'],
+    ['opencode-go', 'opencode', 'openai'],
+  ])('checks %s trust independently of the key stored under %s (%s)', async (requesting, stored, provider) => {
+    writeSonataKey(home, stored, 'shared-key');
+    addTrustBinding(home, stored, 'alias-only.example');
+    const project = mkdtempSync(join(tmpdir(), 'serve-shared-key-'));
+    writeFileSync(join(project, 'sonata.toml'), `
+[models.flash]
+gateway = "${requesting}"
+id = "flash"
+[tiers.code]
+simple = ["flash"]
+complex = ["flash"]
+[native.gateways."${requesting}"]
+base_url = "https://alias-only.example/v1"
+provider = "${provider}"
+`);
+    const configs: string[] = [];
+    const upstream: string[] = [];
+    const realFetch = globalThis.fetch;
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      vi.stubGlobal('fetch', async (url: string) => {
+        upstream.push(String(url));
+        return new Response('{}', { status: 200 });
+      });
+      const handle = await cmdServe({
+        cwd, home, tempDir: tempDirFor(), waitForLitellm: async () => {},
+        spawnLitellm: (configPath) => {
+          configs.push(readFileSync(configPath, 'utf8'));
+          return { pid: 1, kill: () => {} };
+        },
+      });
+      handles.push(handle);
+      const res = await realFetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...projectHeaders(project) },
+        body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+      });
+      expect(res.status).toBe(502);
+      expect(await res.text()).toContain('alias-only.example');
+      expect(upstream.some((url) => url.includes('alias-only.example'))).toBe(false);
+      // An unbound model must not enter the child, even when its key resolves
+      // through the other alias. No LiteLLM request may select it later.
+      expect(configs.every((config) => !config.includes('alias-only.example'))).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+      errorSpy.mockRestore();
+    }
+  });
+});
+
 describe('cmdServe — the decision and the send read one config', () => {
   it('refuses a project rewritten to an unbound host, and sends nothing there', async () => {
     // The host check and the request are made from the config each request
