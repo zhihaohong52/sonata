@@ -40,6 +40,14 @@ export interface InitEnvironment {
   tmux: Detection['tmux'];
   harnesses: Detection['harnesses'];
   problems: Problem[];
+  /**
+   * A config file that exists but fails to parse. Init must stop before the
+   * wizard and write nothing — proceeding from defaults would silently replace
+   * the file, deleting `[budget]`, prices and tiers (and a newer
+   * `schema_version` that `applyMigrations` refuses on purpose). The first
+   * entry wins: the scope init is about to write is reported first.
+   */
+  unreadableConfigs: Array<{ scope: ConfigScope; path: string; error: string }>;
   offered: ProviderSummary[];
   allNativeCandidates: NativeCandidate[];
   providerBaseUrls: Record<string, string>;
@@ -88,6 +96,7 @@ export async function discover(
   let offered: ProviderSummary[] = offerableProviders(allRefs, authed);
 
   const configsByScope: Partial<Record<ConfigScope, SonataConfig>> = {};
+  const unreadableConfigs: InitEnvironment['unreadableConfigs'] = [];
   for (const scope of ['project', 'global'] as const) {
     const path = configPathFor(scope, opts.cwd, opts.home);
     if (!existsSync(path)) continue;
@@ -110,7 +119,13 @@ export async function discover(
         configsByScope[scope] = parsed;
       }
     } catch (err) {
-      out(`  ! could not read ${path}; init is starting from defaults: ${err instanceof Error ? err.message : String(err)}`);
+      // A config that exists but fails to parse is not a default to start
+      // from: rewriting it would silently replace the user's tiers, prices
+      // and `[budget]` with a fresh proposal. Recorded, and `runInit` stops
+      // before the wizard — writing nothing — naming the file and the error.
+      unreadableConfigs.push({
+        scope, path, error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
@@ -305,6 +320,7 @@ export async function discover(
     oauthProviders,
     byokProviders,
     configsByScope,
+    unreadableConfigs,
     existingHookScope,
     copilotUsable,
   };

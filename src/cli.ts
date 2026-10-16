@@ -39,7 +39,7 @@ import { JEVBENCH_ATTRIBUTION } from './decision-catalog.js';
 import { cmdLitellm } from './commands/litellm.js';
 import { AA_ATTRIBUTION, aaCatalogPath, loadAaCatalog } from './catalog.js';
 import { MODELS_DEV_ATTRIBUTION } from './modelsdev.js';
-import { classifierCostNote, cmdUsage, coveredLabel, parseUsageFlags, spentLabel } from './commands/usage.js';
+import { classifierCostNote, cmdUsage, coveredLabel, explicitTierNote, parseUsageFlags, spentLabel, withdrawnNote } from './commands/usage.js';
 import { readRows } from './ledger.js';
 
 const USAGE = `sonata — foreign-model subagents for Claude Code
@@ -380,6 +380,10 @@ export async function main(argv: string[]): Promise<number> {
       task,
       rolesDir: values['roles-dir'] ?? join(packageRoot(), 'roles'),
       sessionId: process.env.CLAUDE_CODE_SESSION_ID,
+      // Printed before blocking, so a caller whose own tool times out first
+      // (Claude Code's Bash cap is 600 s; the window defaults to 540) already
+      // holds the id and resumes with `sonata wait <id>`.
+      onLaunch: (id, modelKey) => console.log(`dispatched ${id} model=${modelKey}`),
     });
     console.log(`${res.state} model=${res.modelKey} id=${res.id}`);
     if (res.report) console.log(`\n${res.report}`);
@@ -623,6 +627,7 @@ export async function main(argv: string[]): Promise<number> {
       // `--project .` for the current directory — cmdUsage resolves it, and
       // pools a worktree with its main checkout the way `[budget]` does.
       project: values.project,
+      cwd: process.cwd(),
       json: values.json,
     });
     if (values.json) {
@@ -657,6 +662,10 @@ export async function main(argv: string[]): Promise<number> {
       const o = report.autoRoute.outcomes;
       console.log(`auto-route decisions: ${o.accepted} accepted, ${o['low-confidence']} low-confidence, ${o.invalid} invalid, ${o.failed} failed, ${o['no-task']} without a task · classifier ${report.autoRoute.classifierTokens.input} in / ${report.autoRoute.classifierTokens.output} out tokens${classifierCostNote(report.autoRoute)}`);
     }
+    const withdrawnTurns = withdrawnNote(report);
+    if (withdrawnTurns !== undefined) console.log(withdrawnTurns);
+    const explicitTiers = explicitTierNote(report);
+    if (explicitTiers !== undefined) console.log(explicitTiers);
     if (report.noPromptTokens.requests > 0) {
       // Beside the total, never inside it. These completed and produced
       // output, so they are priced — on their output alone, because the
@@ -762,7 +771,7 @@ export async function main(argv: string[]): Promise<number> {
         : 'no routes from this project in the last hour — `--global` shows every project');
     } else {
       for (const line of recent) {
-        const served = `${line.served ?? '(none — all candidates failed)'}${line.effort !== undefined ? `@${line.effort}` : ''}`;
+        const served = `${line.served ?? '(none — all candidates failed)'}${line.effort !== undefined ? `@${line.effort}` : ''}${line.withdrawn === true ? ' (withdrawn)' : ''}`;
         const when = localTime(line.ts);
         const via = line.gateway !== undefined ? ` via ${line.gateway}` : '';
         console.log(`${when}  ${line.status}  ${line.alias.padEnd(24)} -> ${served.padEnd(24)}${via.padEnd(16)} ${line.input} in / ${line.output} out  ${routeCostLabel(line)}`);
@@ -891,6 +900,13 @@ export async function main(argv: string[]): Promise<number> {
       // like the foreground command.
       const self = fileURLToPath(import.meta.url);
       const daemon = await startServeDaemon(homedir(), [process.execPath, self, 'serve']);
+      if (daemon.joined) {
+        // Two sessions starting together: this one lost the bind race and
+        // joined the winner. The pid and log below would be the loser's —
+        // a dead EADDRINUSE child — so print neither.
+        console.log(`sonata serve joined the existing router on port ${daemon.port}`);
+        return 0;
+      }
       console.log(`sonata serve running in the background (pid ${daemon.pid}) on port ${daemon.port}`);
       console.log(`  log:  ${daemon.logPath}`);
       console.log(`  stop: kill ${daemon.pid}`);

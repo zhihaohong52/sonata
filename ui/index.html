@@ -67,6 +67,7 @@
   <div>priced <span id="t-priced">—</span></div>
   <div>covered <span id="t-covered">—</span></div>
   <div>unpriced <span id="t-unpriced">—</span></div>
+  <div>withdrawn <span id="t-withdrawn">—</span></div>
 </div>
 <table id="buckets"><thead><tr>
   <th>label</th><th class="num">req</th><th class="num">in</th><th class="num">out</th>
@@ -140,12 +141,17 @@ async function loadRows(generation) {
       cell(tr, int(row.requests), 'num');
       cell(tr, int(row.input), 'num');
       cell(tr, int(row.output), 'num');
-      const c = cell(tr, usd(row.costUsd), 'num');
-      if (row.unpricedRequests) c.title = row.unpricedRequests + ' unpriced request(s) not included';
+      // Withdrawn turns were billed too; shown beside the cost, not inside it.
+      const c = cell(tr, usd(row.costUsd) + (row.withdrawnTurns ? ' +' + usd(row.withdrawnUsd) + ' withdrawn' + (row.withdrawnUnpriced ? ' (+' + row.withdrawnUnpriced + ' unpriced)' : '') : ''), 'num');
+      // Unknown is never shown as zero: unpriced volume is named beside the priced figure.
+      const notes = [];
+      if (row.unpricedRequests) notes.push(row.unpricedRequests + ' unpriced request(s) not included');
+      if (row.withdrawnUnpriced) notes.push(row.withdrawnUnpriced + ' unpriced withdrawn turn(s) not included');
+      if (notes.length) c.title = notes.join('; ');
       // Covered is its own figure, never folded into cost: a subscription-backed
       // session would otherwise read $0.0000, identical to one that truly cost
       // nothing. Same separation the dashboard already keeps.
-      cell(tr, usd(row.coveredUsd), 'num');
+      cell(tr, usd(row.coveredUsd) + (row.withdrawnCoveredUsd ? ' +' + usd(row.withdrawnCoveredUsd) + ' withdrawn' : ''), 'num');
     } else {
       cell(tr, '—', 'num');
       cell(tr, '—', 'num');
@@ -212,6 +218,12 @@ async function loadDashboard(generation) {
   $('t-covered').textContent = usd(r.covered.totalUsd) + ' (' + int(r.covered.requests) + ' req)';
   $('t-unpriced').textContent = int(r.unpriced.requests) + ' req, ' +
     int(r.unpriced.input) + ' in / ' + int(r.unpriced.output) + ' out';
+  // Turns withdrawn for an unrecoverable text tool call: billed, so spend
+  // (and counted toward [budget]), but never served, so in no figure above.
+  const w = r.withdrawn || { turns: 0, costUsd: 0, coveredUsd: 0, unpriced: 0 };
+  $('t-withdrawn').textContent = int(w.turns) + (w.turns === 1 ? ' turn, ' : ' turns, ') + usd(w.costUsd) +
+    (w.coveredUsd ? ', ' + usd(w.coveredUsd) + ' covered' : '') +
+    (w.unpriced ? ', ' + int(w.unpriced) + ' unpriced' : '');
 
   const tb = $('buckets').tBodies[0];
   clear(tb);

@@ -10,13 +10,14 @@
  * usage could not be attributed, which `sonata runs` shows rather than this
  * report guessing at.
  */
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { dirname, join, resolve as resolve0, sep } from 'node:path';
 
-import { configPath, GLOBAL_CONFIG_RELATIVE } from '../config.js';
-import { loadModelsDev } from '../modelsdev.js';
-import { readRows, type LedgerRow } from '../ledger.js';
+import { configPath, GLOBAL_CONFIG_RELATIVE, KNOWN_ROLES, parseConfig, TIER_NAMES } from '../config.js';
+import { canonicalConfigPath, tenantId } from '../native/tenants.js';
+import { loadModelsDev, modelsDevPath } from '../modelsdev.js';
+import { readRows, type LedgerReader, type LedgerRow } from '../ledger.js';
 import { loadSessions, type SessionRecord } from '../sessions.js';
 
 export type UsageDimension = 'model' | 'role' | 'tier' | 'route' | 'effort' | 'gateway' | 'lane' | 'session' | 'project';
@@ -164,7 +165,64 @@ export interface UsageReport {
   };
   covered: { requests: number; totalUsd: number };
   failedAttempts: FailedAttempt[];
+  /**
+   * Turns withdrawn before reaching the client — a tool call written as text
+   * that could not be recovered — and the next candidate asked. Billed by the
+   * upstream, so priced and counted toward `[budget]`, but not served: never
+   * in a bucket, `pricedTotalUsd` or `unpriced`. `unpriced` counts the turns
+   * whose usage or rate is unknown; it is never folded in as $0.
+   */
+  withdrawn: { turns: number; costUsd: number; coveredUsd: number; unpriced: number };
+  /**
+   * Requests the project sent to an explicit tier (`sonata-code-complex`)
+   * while its config has `[auto_route]` — present only when it does. Not a
+   * fault: an explicit tier is a legitimate manual override. Counted because
+   * an orchestrator that stopped trusting `-auto` after one bad turn pins
+   * explicit tiers for the rest of the session, and nothing else shows it.
+   */
+  explicitTierUnderAuto?: number;
   priceCacheAgeMs?: number;
+}
+
+const EXPLICIT_TIER = new RegExp(`^sonata-(${KNOWN_ROLES.join('|')})-(${TIER_NAMES.join('|')})$`);
+
+/** The `sonata usage` line for withdrawn turns, or undefined when there were none. */
+export function withdrawnNote(report: Pick<UsageReport, 'withdrawn'>): string | undefined {
+  const w = report.withdrawn;
+  if (w.turns === 0) return undefined;
+  const parts = [`$${w.costUsd.toFixed(4)}`];
+  if (w.coveredUsd > 0) parts.push(`$${w.coveredUsd.toFixed(2)} covered`);
+  if (w.unpriced > 0) parts.push(`${w.unpriced} unpriced`);
+  return `withdrawn      ${w.turns} turn${w.turns === 1 ? '' : 's'} (${parts.join(', ')}) — unrecoverable text tool calls, `
+    + 'retried on the next model; outside the totals above, counted toward [budget]';
+}
+
+/** The `sonata usage` line for `explicitTierUnderAuto`, or undefined when there is nothing to say. */
+export function explicitTierNote(report: Pick<UsageReport, 'explicitTierUnderAuto'>): string | undefined {
+  const n = report.explicitTierUnderAuto ?? 0;
+  return n > 0 ? `${n} request${n === 1 ? '' : 's'} used an explicit tier while auto-routing is on` : undefined;
+}
+
+/** How many of `rows` belong to `tenant` and named an explicit tier rather than `sonata-<role>-auto`. */
+export function countExplicitTiers(rows: readonly LedgerRow[], tenant: string): number {
+  // A withdrawn turn is a second row for one request; counting it would count the request twice.
+  return rows.filter((row) => row.tenant === tenant && row.withdrawn !== true && row.route !== 'auto' && EXPLICIT_TIER.test(row.alias)).length;
+}
+
+/**
+ * The tenant id of the config `dir` resolves to, when that config has
+ * `[auto_route]`; otherwise undefined. A config that does not parse is
+ * answered undefined too: this only adds a line to a report.
+ */
+function autoRoutedTenant(dir: string, home: string): string | undefined {
+  try {
+    const path = configPath(dir, home);
+    if (path === null) return undefined;
+    if (parseConfig(readFileSync(path, 'utf8')).autoRoute === undefined) return undefined;
+    return tenantId(canonicalConfigPath(path));
+  } catch {
+    return undefined;
+  }
 }
 
 const UNITS: Record<string, number> = { m: 60_000, h: 3_600_000, d: 86_400_000 };
@@ -338,8 +396,18 @@ export function aggregate(
   let autoRoute: UsageReport['autoRoute'];
   const failed = new Map<string, { count: number; statuses: Set<number> }>();
   let pricedTotalUsd = 0;
+  const withdrawn = { turns: 0, costUsd: 0, coveredUsd: 0, unpriced: 0 };
 
   for (const row of rows) {
+    // A withdrawn turn is spend, not a served request: kept out of every
+    // bucket and total above, and reported on its own line.
+    if (row.withdrawn === true) {
+      withdrawn.turns += 1;
+      if (row.price.source === 'none' || row.price.totalUsd === undefined) withdrawn.unpriced += 1;
+      else if (row.price.source === 'covered') withdrawn.coveredUsd += row.price.totalUsd;
+      else withdrawn.costUsd += row.price.totalUsd;
+      continue;
+    }
     if (row.autoRoute !== undefined) {
       autoRoute ??= {
         outcomes: { accepted: 0, 'low-confidence': 0, invalid: 0, failed: 0, 'no-task': 0 },
@@ -421,10 +489,39 @@ export function aggregate(
     noPromptTokens,
     ...(autoRoute === undefined ? {} : { autoRoute }),
     covered,
+    withdrawn,
     failedAttempts: [...failed.entries()]
       .map(([key, { count, statuses }]) => ({ key, count, statuses: [...statuses].sort((a, b) => a - b) }))
       .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key)),
   };
+}
+
+/**
+ * Lets a polling screen skip re-aggregating when the ledger reader returned
+ * the very same rows array. Bounded in age because the label resolvers read
+ * sessions and config files the ledger does not reflect.
+ */
+export interface UsageMemo { entry?: { key: string | undefined; rows: LedgerRow[]; at: number; report: UsageReport } }
+const USAGE_MEMO_MAX_AGE_MS = 30_000;
+
+const fetchedCache = new Map<string, { mtimeMs: number; size: number; fetched: number | undefined }>();
+
+/**
+ * When the models.dev cache was fetched. The cache is a ~1.7 MB JSON file and
+ * only this one field is wanted, so the parse is skipped while the file's size
+ * and mtime are unchanged.
+ */
+function modelsDevFetchedMs(home: string): number | undefined {
+  const path = modelsDevPath(home);
+  let st: ReturnType<typeof statSync>;
+  try { st = statSync(path); } catch { fetchedCache.delete(home); return undefined; }
+  const hit = fetchedCache.get(home);
+  if (hit !== undefined && hit.mtimeMs === st.mtimeMs && hit.size === st.size) return hit.fetched;
+  const cache = loadModelsDev(home);
+  const parsed = cache === undefined ? NaN : Date.parse(cache.fetchedAt);
+  const fetched = Number.isFinite(parsed) ? parsed : undefined;
+  fetchedCache.set(home, { mtimeMs: st.mtimeMs, size: st.size, fetched });
+  return fetched;
 }
 
 export async function cmdUsage(opts: {
@@ -434,10 +531,28 @@ export async function cmdUsage(opts: {
   session?: string;
   /** Restrict to one project, named by any directory inside it. */
   project?: string;
+  /** Where the command runs: whose `[auto_route]` the explicit-tier count is about, absent `project`. */
+  cwd?: string;
   json: boolean;
+  /** A polling screen's incremental reader; absent means a fresh full read. */
+  reader?: LedgerReader;
+  /** Memo shared across polls of one screen; see `UsageMemo`. */
+  memo?: UsageMemo;
 }): Promise<UsageReport> {
   const now = Date.now();
-  let rows = readRows(opts.home, now - parseDuration(opts.since), now);
+  const since = now - parseDuration(opts.since);
+  const allRows = opts.reader !== undefined ? opts.reader.read(since, now) : readRows(opts.home, since, now);
+  const memoKey = opts.memo === undefined ? undefined
+    : JSON.stringify([opts.home, opts.since, opts.by, opts.session, opts.project, opts.cwd]);
+  const hit = opts.memo?.entry;
+  if (hit !== undefined && hit.key === memoKey && hit.rows === allRows && now - hit.at < USAGE_MEMO_MAX_AGE_MS) {
+    const fetched = modelsDevFetchedMs(opts.home);
+    const report = { ...hit.report };
+    delete report.priceCacheAgeMs;
+    if (fetched !== undefined) report.priceCacheAgeMs = now - fetched;
+    return report;
+  }
+  let rows = allRows;
   if (opts.session !== undefined) rows = rows.filter((row) => row.session === opts.session);
 
   const sessions = loadSessions(opts.home);
@@ -479,10 +594,11 @@ export async function cmdUsage(opts: {
   }
 
   const report = aggregate(rows, opts.by, sessions, resolve);
-  const cache = loadModelsDev(opts.home);
-  if (cache !== undefined) {
-    const fetched = Date.parse(cache.fetchedAt);
-    if (Number.isFinite(fetched)) report.priceCacheAgeMs = now - fetched;
-  }
+  const configDir = opts.project !== undefined ? resolve0(opts.project) : opts.cwd;
+  const autoTenant = configDir === undefined ? undefined : autoRoutedTenant(configDir, opts.home);
+  if (autoTenant !== undefined) report.explicitTierUnderAuto = countExplicitTiers(rows, autoTenant);
+  const fetchedMs = modelsDevFetchedMs(opts.home);
+  if (fetchedMs !== undefined) report.priceCacheAgeMs = now - fetchedMs;
+  if (opts.memo !== undefined) opts.memo.entry = { key: memoKey, rows: allRows, at: now, report };
   return report;
 }

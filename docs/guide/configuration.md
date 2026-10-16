@@ -22,7 +22,7 @@ complex = ["kimi-k3", "flash"]
 tail_window_seconds     = 20     # how long `sonata tail` blocks per call
 stall_timeout_seconds   = 120    # silence before a run is reported STALLED
 run_timeout_seconds     = 1800   # hard cap; the run is killed at this point
-dispatch_window_seconds = 1500   # how long `sonata wait` blocks before giving up
+dispatch_window_seconds = 540    # how long `sonata wait` blocks before giving up
 ```
 
 A `[models."<key>"]` entry can carry `gateway`/`id` (native), `harness`/`harness_id`
@@ -303,4 +303,6 @@ The whole grammar `sonata.toml` parses. Top-level keys must sit above every
 `cached_input`, `cache_write`, `output`, each optional; a rate of `0` is a
 real price (a free tier). `windows` is an optional array of tables with
 `from` and `to` as UTC `HH:MM` plus the same rate keys; evaluated in order,
-the first match wins. A window whose `from` equals its `to` is refused.
+the first match wins. A rate a window does not set falls back to the flat
+rate, so a window setting only `input` still charges the flat `output`. A
+window whose `from` equals its `to` is refused.

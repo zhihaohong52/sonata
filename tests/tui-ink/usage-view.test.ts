@@ -140,6 +140,31 @@ describe('UsageScreen', () => {
     } finally { app.unmount(); }
   });
 
+  it('shows withdrawn turns beside the total, not in it', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'usage-screen-'));
+    appendRow(home, row());
+    appendRow(home, row({ key: 'mimo', withdrawn: true, price: { source: 'model', totalUsd: 0.25 } }));
+    const app = render(React.createElement(ThemeProvider, null,
+      React.createElement(UsageScreen, { cwd: home, home })));
+    try {
+      await until(() => (app.lastFrame() ?? '').includes('$0.5000'), 'the report');
+      expect(app.lastFrame()).toContain('withdrawn 1 turn, $0.2500');
+    } finally { app.unmount(); }
+  });
+
+  it('shows covered withdrawn spend as covered, not as $0', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'usage-screen-'));
+    appendRow(home, row());
+    appendRow(home, row({ key: 'mimo', withdrawn: true, price: { source: 'covered', totalUsd: 1.5 } }));
+    const app = render(React.createElement(ThemeProvider, null,
+      React.createElement(UsageScreen, { cwd: home, home })));
+    try {
+      await until(() => (app.lastFrame() ?? '').includes('withdrawn'), 'the report');
+      expect(app.lastFrame()).toContain('withdrawn 1 turn, $0.0000, $1.5000 covered');
+      expect(app.lastFrame()).not.toContain('mimo');
+    } finally { app.unmount(); }
+  });
+
   it('says nothing about a missing task when every decision had one', async () => {
     const home = mkdtempSync(join(tmpdir(), 'usage-screen-'));
     appendRow(home, row({ route: 'auto', autoRoute: { classifier: 'jev', outcome: 'accepted', ms: 12, tokens: { input: 3, output: 2 } } }));

@@ -65,11 +65,37 @@ describe('readPermissionMode', () => {
     expect(readPermissionMode(cwd, 's2')).toBe('acceptEdits');
   });
 
-  it('still falls back to default for a genuinely unknown mode', () => {
+  it('maps dontAsk (auto-deny) to plan, the read-only end', () => {
+    // `dontAsk` auto-denies anything not allow-listed. Read as `default` it
+    // would hand codex workspace-write — the most permissive end for the most
+    // restrictive session mode. Every adapter honours `plan` without writing,
+    // so this keeps the dispatch inside the session's permissions.
     mkdirSync(join(cwd, '.sonata'), { recursive: true });
     writeFileSync(join(cwd, '.sonata', 'session-s3.json'),
+      JSON.stringify({ permissionMode: 'dontAsk' }));
+    expect(readPermissionMode(cwd, 's3')).toBe('plan');
+  });
+
+  it('falls back to default for a corrupt session file, the guarded path', () => {
+    // A file that is not JSON names no mode at all — unlike an unknown mode
+    // string, there is nothing to refuse on. `default` is itself the guarded
+    // path (opencode/pi refuse it for write roles), so falling back is safe.
+    mkdirSync(join(cwd, '.sonata'), { recursive: true });
+    writeFileSync(join(cwd, '.sonata', 'session-s5.json'), 'not json{{{');
+    expect(readPermissionMode(cwd, 's5')).toBe('default');
+  });
+
+  it('falls back to default for an empty session file', () => {
+    mkdirSync(join(cwd, '.sonata'), { recursive: true });
+    writeFileSync(join(cwd, '.sonata', 'session-s6.json'), '');
+    expect(readPermissionMode(cwd, 's6')).toBe('default');
+  });
+
+  it('refuses a genuinely unknown mode rather than guessing', () => {
+    mkdirSync(join(cwd, '.sonata'), { recursive: true });
+    writeFileSync(join(cwd, '.sonata', 'session-s4.json'),
       JSON.stringify({ permissionMode: 'someFutureMode' }));
-    expect(readPermissionMode(cwd, 's3')).toBe('default');
+    expect(() => readPermissionMode(cwd, 's4')).toThrow(/unknown permission mode "someFutureMode"/);
   });
 });
 

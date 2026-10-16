@@ -14,7 +14,7 @@
  * daemon, and the first thing an unrouted session would do is cache the error
  * from a router that is not there.
  */
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -304,12 +304,66 @@ export function routeSessionsFile(
     : join(cwd, '.sonata', 'route-sessions.json');
 }
 
+/**
+ * One live auto-routed session: its id, and when it last (re)registered.
+ *
+ * `startedAt` is what narrows "registered" to "still inside its settle
+ * window" (`sessionsSettling`): a session that settled hours ago stays
+ * registered until its SessionEnd but its window is long closed, so a later
+ * subagent stop must still clear the env. Without it the last SubagentStop
+ * saw any registered session and never cleared again — `route auto`
+ * degrading into `route on`.
+ */
+export interface SessionEntry {
+  id: string;
+  startedAt: number;
+  /**
+   * Set once a settle has taken the routing env out. Past that point the
+   * session's window is over whatever the clock says: a subagent that starts
+   * and stops inside the one-second slack must still clear the env it wrote,
+   * because no later settle exists to do it.
+   */
+  settled?: boolean;
+}
+
 export function readSessions(file: string): string[] {
+  return readSessionEntries(file).map((entry) => entry.id);
+}
+
+/**
+ * The registry with per-entry settle-window timestamps. Accepts the legacy
+ * `string[]` format (entries with no known registration time count as
+ * long-settled) and the current `{ id, startedAt }[]` one; anything else —
+ * corrupt JSON, a non-array, mixed junk — reads as empty, so a broken file
+ * never stops a session from starting.
+ */
+export function readSessionEntries(file: string): SessionEntry[] {
   if (!existsSync(file)) return [];
   try {
     const doc: unknown = JSON.parse(readFileSync(file, 'utf8'));
     if (!Array.isArray(doc)) return [];
-    return doc.filter((id): id is string => typeof id === 'string');
+    const out: SessionEntry[] = [];
+    for (const item of doc) {
+      if (typeof item === 'string') {
+        // Legacy entry: no registration time was recorded. It cannot be
+        // shown to be inside its window, so it counts as settled — failing
+        // open the other way would pin the env on for a file last written
+        // before this change.
+        out.push({ id: item, startedAt: 0 });
+      } else if (
+        item !== null && typeof item === 'object' &&
+        typeof (item as { id?: unknown }).id === 'string' &&
+        typeof (item as { startedAt?: unknown }).startedAt === 'number'
+      ) {
+        const entry: SessionEntry = {
+          id: (item as { id: string }).id,
+          startedAt: (item as { startedAt: number }).startedAt,
+        };
+        if ((item as { settled?: unknown }).settled === true) entry.settled = true;
+        out.push(entry);
+      }
+    }
+    return out;
   } catch {
     // A corrupt registry must not stop a session from starting; treat it as
     // empty and let the write below replace it.
@@ -318,12 +372,30 @@ export function readSessions(file: string): string[] {
 }
 
 export function writeSessions(file: string, ids: string[]): void {
-  if (ids.length === 0) {
+  writeSessionEntries(file, ids.map((id) => ({ id, startedAt: 0 })));
+}
+
+/**
+ * Writes the session registry atomically: tmp file in the same directory,
+ * then rename. A reader never sees a half-written file — and a half-written
+ * file is exactly what the old direct write left behind when the writer died
+ * mid-write, which every lock-free reader then failed open as "empty".
+ *
+ * Called only with a lock held (session or subagent), but lock-free readers
+ * exist (`sessionsSettling`, the settle-window check), so atomicity — not the
+ * lock — is what they rely on. `writeSessions` funnels through here, so
+ * legacy string entries keep their shape on disk; only writers that know a
+ * registration time use entries directly.
+ */
+export function writeSessionEntries(file: string, entries: SessionEntry[]): void {
+  if (entries.length === 0) {
     rmSync(file, { force: true });
     return;
   }
   mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(file, `${JSON.stringify(ids, null, 2)}\n`);
+  const tmp = join(dirname(file), `.${Date.now()}.${process.pid}.tmp`);
+  writeFileSync(tmp, `${JSON.stringify(entries, null, 2)}\n`);
+  renameSync(tmp, file);
 }
 
 /**
@@ -809,13 +881,22 @@ export async function cmdRouteSettle(
 
   const registry = routeSessionsFile(opts.cwd, scope, opts.home);
   await withSessionLock(registry, async () => {
-    const registered = readSessions(registry);
+    const registered = readSessionEntries(registry);
     // The newest registration, not merely membership. Registration order is
     // the file's order — `cmdRouteSession('start')` appends — so the last
     // entry is the most recent session to have written the env, and only its
     // own settle may take that env away again.
-    if (registered[registered.length - 1] !== sessionId) return;
+    //
+    // Compared by POSITION (last entry), not by timestamp: two sessions
+    // starting within the same millisecond would otherwise tie, and the
+    // older one's settle could end the newer one's window. Timestamps decide
+    // only the `sessionsSettling` question the subagent stop asks.
+    if (registered[registered.length - 1]?.id !== sessionId) return;
     await routeOffKeepingRegistries(opts, scope);
+    // The env is out, so every registered session's window is over — older
+    // entries whose own settles returned early included. Recorded so
+    // `sessionsSettling` stops counting them during the slack interval.
+    writeSessionEntries(registry, registered.map((entry) => ({ ...entry, settled: true })));
   });
 }
 
@@ -877,9 +958,9 @@ export async function cmdRouteSession(
     // of a concurrent start/end's lock acquisitions runs second always sees
     // the other's completed write.
     return await withSessionLock(registry, async () => {
-      const current = readSessions(registry);
-      const left = current.filter((id) => id !== sessionId);
-      writeSessions(registry, left);
+      const current = readSessionEntries(registry);
+      const left = current.filter((entry) => entry.id !== sessionId);
+      writeSessionEntries(registry, left);
       if (left.length > 0) return { sessions: left.length, routing: 'off' };
       // Last session out clears the subagent count and routing with it. A
       // subagent killed before its SubagentStop hook would otherwise leak a
@@ -944,16 +1025,25 @@ export async function cmdRouteSession(
     // again, and `cmdRouteSettle` lets only the newest registration clear it.
     // Left at its old position, its own settle returned early and the env
     // stayed for as long as any session lived.
-    const current = readSessions(registry);
-    writeSessions(registry, [...current.filter((id) => id !== sessionId), sessionId]);
+    //
+    // Re-entering also refreshes `startedAt`: the re-entry wrote the env
+    // again, so the settle window restarts from here — and the entry moves to
+    // newest, so an older settle cannot end this window.
+    const current = readSessionEntries(registry);
+    const now = Date.now();
+    writeSessionEntries(registry, [
+      ...current.filter((entry) => entry.id !== sessionId),
+      { id: sessionId, startedAt: now },
+    ]);
     try {
       await cmdRoute('on', opts);
     } catch (error) {
       // Registration and the routing write are one step. Restoring the list
       // as it was read — under the same lock — un-registers a new id and keeps
       // a re-entering one live in its old place, since its SessionEnd must
-      // still find it.
-      writeSessions(registry, current);
+      // still find it. `current` still carries the old `startedAt`s, so a
+      // restored re-entry keeps its earlier window rather than a fresh one.
+      writeSessionEntries(registry, current);
       throw error;
     }
   });
@@ -1092,6 +1182,52 @@ async function routeOffKeepingRegistries(
   await updateSettings(file, (current) => planRouteOff(current, opts.packageRoot));
 }
 
+/**
+ * How far past the settle delay a registration still counts as "settling".
+ *
+ * The settle fires `ROUTE_SETTLE_MS` after its own start, so a registration
+ * exactly that old is borderline. The slack covers scheduling jitter between
+ * the registration write and the settle's own clock — small, because both
+ * clocks are the same machine's, and deliberately not a second window.
+ */
+export const SETTLE_SLACK_MS = 1_000;
+
+/**
+ * Whether any session is still inside its settle window — i.e. registered
+ * recently enough that its env-removal settle may not have run yet.
+ *
+ * The subagent stop path calls this before removing the env: a session that
+ * started routed has not yet settled (its settle fires a full window after
+ * the LAST start), so taking the env away on a subagent stop would un-route
+ * a session that may not have read it yet. A session that settled long ago
+ * stays registered until its SessionEnd, but its window is closed — its
+ * registration must NOT hold the env open, or `route auto` degrades into
+ * `route on` and every later session launches routed.
+ *
+ * Read lock-free on purpose: the caller holds the subagent lock, and taking
+ * the session lock inside it would invert the global session → subagent →
+ * settings order. Atomic writes (`writeSessionEntries`) are what make the
+ * torn-read case a stale-but-whole list instead of a corrupt one.
+ */
+export function sessionsSettling(
+  opts: { cwd: string; home: string },
+  scope: 'project' | 'global',
+  now: number = Date.now(),
+): boolean {
+  return readSessionEntries(routeSessionsFile(opts.cwd, scope, opts.home))
+    .some((entry) => entry.settled !== true && now - entry.startedAt <= ROUTE_SETTLE_MS + SETTLE_SLACK_MS);
+}
+
+export interface SubagentDeps {
+  /** Resolves true when the router already answers on `port`. */
+  probe?: (port: number) => Promise<boolean>;
+  /**
+   * Clock for the settle-window check. Injected so a test can age a
+   * registration past its window; defaults to the real clock.
+   */
+  now?: () => number;
+}
+
 export interface SubagentPhaseResult {
   /** Foreign-model subagents still running after this phase. */
   subagents: number;
@@ -1120,7 +1256,7 @@ export async function cmdRouteSubagent(
   agentId: string,
   opts: { cwd: string; home: string; packageRoot: string; scope?: 'project' | 'global' },
   /** Test seam: an injected probe means the caller is encoding the scenario, so the real router check is skipped — the same discipline `cmdRouteSession` follows. */
-  deps: { probe?: (port: number) => Promise<boolean> } = {},
+  deps: SubagentDeps = {},
 ): Promise<SubagentPhaseResult> {
   // 'project', matching `routeSubagentsFile`'s own default and every other
   // scope default in this file. This read `?? 'global'` — the lone outlier —
@@ -1152,6 +1288,13 @@ export async function cmdRouteSubagent(
   // registry does: deciding "none left" and acting on it as two acquisitions
   // leaves a gap where a concurrent start can register and route, only for
   // this stale decision to un-route it.
+  //
+  // Lock order, innermost last: the subagent registry (this call's lock), the
+  // session registry (read, never locked, inside), then the settings file's
+  // own lock (inside `updateSettings`). Taking the session lock here would
+  // invert the global session → subagent → settings order — the settle path
+  // takes the session lock and must never block behind this one — so the
+  // settle-window check below is a plain read, not a guarded one.
   return await withSessionLock(registry, async () => {
     const current = readSessions(registry);
     if (phase === 'stop') {
@@ -1161,6 +1304,12 @@ export async function cmdRouteSubagent(
       // Not `cmdRoute('off')`: that also clears the *session* registry, which
       // is a different lifetime entirely. A finishing subagent erasing session
       // liveness would make the next SessionEnd believe it was the last one.
+      //
+      // And not unconditionally either: a session still inside its settle
+      // window has written the env but may not have read it yet, and the last
+      // SubagentStop firing first would strip it. Leave the env in place;
+      // that session's own settle removes it when the window closes.
+      if (sessionsSettling(opts, scope, (deps.now ?? Date.now)())) return { subagents: 0, routing: 'on' };
       await routeOffKeepingRegistries(opts, scope);
       return { subagents: 0, routing: 'off' };
     }

@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { useInput } from 'ink';
-import { loadAaCatalog } from '../../catalog.js';
-import { loadModelsDev } from '../../modelsdev.js';
+import { loadAaCatalogCached as loadAaCatalog, loadModelsDevCached as loadModelsDev } from '../cached-loads.js';
 import { editorCandidates, itemFacts, itemLabel, suggestedTiers, writeTiers } from '../../commands/agents.js';
 import { AgentsApp } from '../agents-app.js';
 import { Message } from '../components/screen.js';

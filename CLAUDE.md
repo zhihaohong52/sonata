@@ -120,7 +120,7 @@ opencode → deepseek-v4-flash   (or codex, pi, or reasonix)
 
 Invariants to hold when changing code (reasons in `docs/internals/architecture.md`):
 
-- **Dispatch tools must be allow-listed** (`Bash(sonata dispatch:*)`, `Bash(sonata wait:*)`, `Bash(sonata approve:*)`); the auto-mode classifier is not stable on them. There is no MCP server.
+- **Dispatch and wait must be allow-listed** (`Bash(sonata dispatch:*)`, `Bash(sonata wait:*)`); the auto-mode classifier is not stable on them. `approve` must NOT be allow-listed — approvals reach a human through the permission prompt. There is no MCP server.
 - **`sonata dispatch` never parses harness output** — it reads run state only. All harness-specific knowledge lives in its adapter.
 - **Completion = exit sentinel + report file**, never terminal scraping. No report → `degraded`. A timed-out run (`run_timeout_seconds`) is `DONE`, degraded, `[timed out: …]`.
 - **Worktree fingerprint** (`src/worktree.ts`): annotates `[no worktree change: …]`, never degrades; inert outside git; skipped for read-only roles; capture lands after the sentinel.
@@ -297,7 +297,16 @@ Claude's own code.
 
 **Auto-routing is on:** `-auto` agents are the default (`code-auto`,
 `review-auto`, …). Sonata chooses the tier for each task;
-explicit tier agents are the manual override when you know better.
+explicit tier agents are a manual override, used only when the user asks
+for a specific tier — earlier tier failures in the session do not count.
+The one exception: a task that failed review twice is re-run on
+the explicit `-complex` agent, and kept there for that task's fixes — that
+task only.
+If an `-auto` dispatch misbehaves, retry it on `-auto` and report it to the
+user, naming the agent and what failed; never pin explicit tiers for later
+dispatches. The one exception: when it fails with "all native routes …
+failed", re-run that failed dispatch only on the tier the error names (or
+`-normal` if it names none); later dispatches stay on `-auto`.
 
 For a manual override, match the tier to the work. `-simple` is writable
 without asking a question (one or two files, no interface change).
@@ -312,8 +321,7 @@ identical, sonata generates one agent named for the role alone.
 
 Size is not difficulty — a large mechanical change is `simple`, a three-line
 change that decides an interface is `complex`. Start at the tier the task
-needs rather than a rung higher: a task that fails review is re-run one tier
-up, so starting low is cheap to correct.
+needs rather than a rung higher.
 
 Dispatch them with **no `model` argument**. Each agent pins its routed model
 in frontmatter, and the Agent tool's own `model` parameter overrides that — so

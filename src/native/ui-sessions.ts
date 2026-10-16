@@ -24,6 +24,16 @@ export interface SessionRow {
   costUsd: number;
   coveredUsd: number;
   unpricedRequests: number;
+  /**
+   * Turns withdrawn for an unrecoverable text tool call, and their priced
+   * cost: billed, so spend, but not served, so in no figure above.
+   */
+  withdrawnTurns: number;
+  withdrawnUsd: number;
+  /** Withdrawn turns on a subscription: list value, like `coveredUsd`, never billed. */
+  withdrawnCoveredUsd: number;
+  /** Withdrawn turns with no price: their cost is unknown, not zero, and in no USD figure above. */
+  withdrawnUnpriced: number;
   models: string[];
 }
 
@@ -41,9 +51,19 @@ export async function sessionRows(deps: UiDeps, filters: UiFilters): Promise<Ses
 
   const report = aggregate(rows, 'session', sessions, resolve);
   const servedBySession = new Map<string, Set<string>>();
+  const withdrawnBySession = new Map<string, { turns: number; usd: number; coveredUsd: number; unpriced: number }>();
   for (const row of rows) {
     const id = row.session;
     if (id === undefined) continue;
+    if (row.withdrawn === true) {
+      const w = withdrawnBySession.get(id) ?? { turns: 0, usd: 0, coveredUsd: 0, unpriced: 0 };
+      w.turns += 1;
+      if (row.price.source === 'covered') w.coveredUsd += row.price.totalUsd ?? 0;
+      else if (row.price.source !== 'none' && row.price.totalUsd !== undefined) w.usd += row.price.totalUsd;
+      else w.unpriced += 1;
+      withdrawnBySession.set(id, w);
+      continue;
+    }
     const served = row.key ?? row.alias;
     if (served === '') continue;
     const models = servedBySession.get(id) ?? new Set<string>();
@@ -51,27 +71,39 @@ export async function sessionRows(deps: UiDeps, filters: UiFilters): Promise<Ses
     servedBySession.set(id, models);
   }
 
-  return report.buckets
-    .filter((bucket) => bucket.label !== 'unknown')
-    .map((bucket) => ({
-      kind: 'session' as const,
-      id: bucket.label,
-      project: labelOf(
-        // The bucket only exists because at least one filtered row has this id.
-        rows.find((row) => row.session === bucket.label)!,
-        'project',
-        sessions,
-        resolve,
-      ),
-      started: sessions[bucket.label]?.started,
-      requests: bucket.requests,
-      input: bucket.input,
-      output: bucket.output,
-      costUsd: bucket.costUsd,
-      coveredUsd: bucket.coveredUsd,
-      unpricedRequests: bucket.unpricedRequests,
-      models: [...(servedBySession.get(bucket.label) ?? new Set<string>())].sort(),
-    }))
+  // A session whose only rows are withdrawn turns has no bucket, but it did
+  // spend: it is listed with no requests and its withdrawn figures.
+  const buckets = new Map(report.buckets.map((bucket) => [bucket.label, bucket]));
+  const ids = new Set([...buckets.keys(), ...withdrawnBySession.keys()]);
+  ids.delete('unknown');
+  return [...ids]
+    .map((id) => {
+      const bucket = buckets.get(id);
+      const withdrawn = withdrawnBySession.get(id);
+      return {
+        kind: 'session' as const,
+        id,
+        project: labelOf(
+          // The id only exists because at least one filtered row has it.
+          rows.find((row) => row.session === id)!,
+          'project',
+          sessions,
+          resolve,
+        ),
+        started: sessions[id]?.started,
+        requests: bucket?.requests ?? 0,
+        input: bucket?.input ?? 0,
+        output: bucket?.output ?? 0,
+        costUsd: bucket?.costUsd ?? 0,
+        coveredUsd: bucket?.coveredUsd ?? 0,
+        unpricedRequests: bucket?.unpricedRequests ?? 0,
+        withdrawnTurns: withdrawn?.turns ?? 0,
+        withdrawnUsd: withdrawn?.usd ?? 0,
+        withdrawnCoveredUsd: withdrawn?.coveredUsd ?? 0,
+        withdrawnUnpriced: withdrawn?.unpriced ?? 0,
+        models: [...(servedBySession.get(id) ?? new Set<string>())].sort(),
+      };
+    })
     .sort(
       (a, b) => (Date.parse(b.started ?? '') || 0) - (Date.parse(a.started ?? '') || 0)
         || a.id.localeCompare(b.id),

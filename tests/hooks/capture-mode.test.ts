@@ -134,6 +134,28 @@ describe('readPermissionMode — machine-level session file', () => {
     expect(readPermissionMode(bare, 'abc', home)).toBe('acceptEdits');
   });
 
+  it('refuses a non-string mode instead of coercing an array to an alias', () => {
+    const home = mkdtempSync(join(tmpdir(), 'sonata-home-'));
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(
+      join(home, '.config', 'sonata', 'session-arr.json'),
+      JSON.stringify({ permissionMode: ['auto'] }),
+    );
+    const bare = mkdtempSync(join(tmpdir(), 'sonata-bare-'));
+    expect(() => readPermissionMode(bare, 'arr', home)).toThrow(/unknown permission mode/);
+  });
+
+  it('does not treat an inherited property name as an alias', () => {
+    const home = mkdtempSync(join(tmpdir(), 'sonata-home-'));
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(
+      join(home, '.config', 'sonata', 'session-ctor.json'),
+      JSON.stringify({ permissionMode: 'constructor' }),
+    );
+    const bare = mkdtempSync(join(tmpdir(), 'sonata-bare-'));
+    expect(() => readPermissionMode(bare, 'ctor', home)).toThrow(/unknown permission mode/);
+  });
+
   it('prefers the project session file over the machine one', () => {
     const local = mkdtempSync(join(tmpdir(), 'sonata-local-'));
     const home = mkdtempSync(join(tmpdir(), 'sonata-home-'));
@@ -151,5 +173,16 @@ describe('readPermissionMode — machine-level session file', () => {
     const bare = mkdtempSync(join(tmpdir(), 'sonata-bare-'));
     const home = mkdtempSync(join(tmpdir(), 'sonata-home-'));
     expect(readPermissionMode(bare, 'abc', home)).toBe('default');
+  });
+
+  it('passes dontAsk through raw, so the reader can map it to plan', async () => {
+    const bare = mkdtempSync(join(tmpdir(), 'sonata-pass-'));
+    const home = mkdtempSync(join(tmpdir(), 'sonata-pass-home-'));
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(join(home, '.config', 'sonata', 'sonata.toml'), '');
+    await invokeIn(bare, home, { session_id: 'sess-raw', permission_mode: 'dontAsk' });
+    const machine = join(home, '.config', 'sonata', 'session-sess-raw.json');
+    expect(JSON.parse(readFileSync(machine, 'utf8')).permissionMode).toBe('dontAsk');
+    expect(readPermissionMode(bare, 'sess-raw', home)).toBe('plan');
   });
 });

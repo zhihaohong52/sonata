@@ -41,10 +41,10 @@ mistyped command suggests the nearest real one.
 
 | Command | Purpose |
 |---|---|
-| `sonata dispatch (--tier <role>-<tier> \| --model <key>) [--task-file <path>] "<task>"` | Blocking harness dispatch with ranked fallback — what a tier agent runs when every native route fails |
+| `sonata dispatch (--tier <role>-<tier> \| --model <key>) [--task-file <path>] "<task>"` | Blocking harness dispatch with ranked fallback — what a tier agent runs when every native route fails. Prints `dispatched <id> model=<m>` as each candidate launches, before blocking, so a caller cut off by its own tool timeout already holds the id and resumes with `sonata wait <id>` |
 | `sonata run --role <role> --model <key> --task-file <path> [--json]` | Launch a run in the background and print its id |
 | `sonata wait <id>` | Resume a running or approved run and block until its next state — finished, needs approval, or stalled |
-| `sonata approve <id> (--yes\|--no)` | Answer a pending approval |
+| `sonata approve <id> (--yes\|--no)` | Answer a pending approval. Deliberately not allow-listed: every call goes through the permission prompt, so approvals reach a human |
 | `sonata tail <id>` | A human view of a run's progress |
 | `sonata log <id>` | Print what a run printed |
 | `sonata verify <id> [--model <key>]` | Verify a completed run |

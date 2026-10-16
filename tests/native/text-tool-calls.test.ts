@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { coerceArguments, parseToolCallMarkup, rewriteTextToolCallJson, rewriteTextToolCallStream, toolSchemas, type TextToolCallCounts } from '../../src/native/text-tool-calls.js';
+import { coerceArguments, createCodeTracker, insideCode, parseToolCallMarkup, rewriteTextToolCallJson, rewriteTextToolCallStream, toolSchemas, type TextToolCallCounts } from '../../src/native/text-tool-calls.js';
 
 const REQUEST = Buffer.from(JSON.stringify({
   model: 'm', messages: [],
@@ -227,6 +227,62 @@ describe('rewriteTextToolCallStream', () => {
     expect(counts).toEqual({ recovered: 0, unparsed: 1 });
   });
 
+  it('counts a JSON-form call it cannot recover as unparsed', async () => {
+    const json = '<tool_call>\n{"name": "Bash", "arguments": {"command": "ls"}}\n</tool_call>';
+    const { events, counts } = await run(textStream([json]));
+    expect(text(events)).toBe(json);
+    expect(counts).toEqual({ recovered: 0, unparsed: 1 });
+  });
+
+  it('leaves a tag mentioned in prose as text, unclosed or not, and counts nothing', async () => {
+    for (const prose of [
+      'The router parses <tool_call> markup back into calls.',
+      'Wrap it in <tool_call> and </tool_call> tags.',
+    ]) {
+      // Split mid-tag too: the decision waits for the text after it.
+      const { events, counts } = await run(textStream([prose.slice(0, 20), prose.slice(20)]));
+      expect(text(events)).toBe(prose);
+      expect(counts).toEqual({ recovered: 0, unparsed: 0 });
+    }
+  });
+
+  it('never recovers call-shaped markup quoted in code, but still counts it unrecovered', async () => {
+    for (const quoted of [
+      `Models write \`${CALL}\` as text.`,
+      `Example:\n\`\`\`\n${CALL}\n\`\`\`\n`,
+      `Example:\n~~~\n${CALL}\n~~~\n`,
+      `Unclosed in code: \`<tool_call><function=Bash>\``,
+    ]) {
+      const { events, counts } = await run(textStream([quoted]));
+      expect(text(events)).toBe(quoted);
+      expect(events.some((e) => e.content_block?.type === 'tool_use')).toBe(false);
+      expect(counts).toEqual({ recovered: 0, unparsed: 1 });
+    }
+  });
+
+  it('counts a real call after an unclosed fence: the fence cannot hide it', async () => {
+    const { events, counts } = await run(textStream(['Here:\n```bash\n', CALL]));
+    expect(text(events)).toBe('Here:\n```bash\n' + CALL);
+    expect(counts).toEqual({ recovered: 0, unparsed: 1 });
+  });
+
+  it('treats a ``` that does not start a line as no fence', async () => {
+    const { counts } = await run(textStream(['Wrap code in ``` fences. ', CALL]));
+    expect(counts).toEqual({ recovered: 1, unparsed: 0 });
+  });
+
+  it('closes a fence only with the same character', async () => {
+    expect(insideCode('~~~\nx\n```\n')).toBe(true);
+    expect(insideCode('~~~\nx\n~~~\n')).toBe(false);
+    expect(insideCode('  ```ts\nx\n')).toBe(true);
+    expect(insideCode('    ```\nx\n')).toBe(false);
+  });
+
+  it('still recovers a call after a closed fence', async () => {
+    const { counts } = await run(textStream(['```\nx\n```\n', CALL]));
+    expect(counts).toEqual({ recovered: 1, unparsed: 0 });
+  });
+
   it('recovers two calls in one turn as two tool_use blocks', async () => {
     const { events, counts } = await run(textStream([CALL, '\n', CALL]));
     expect(counts).toEqual({ recovered: 2, unparsed: 0 });
@@ -302,5 +358,62 @@ describe('rewriteTextToolCallJson', () => {
     const content = JSON.parse(out.toString()).content;
     expect(content[0]).toEqual({ type: 'text', text: 'Now: ', citations: [{ x: 1 }] });
     expect(content[1]).toMatchObject({ type: 'tool_use', id: 'toolu_x' });
+  });
+});
+
+describe('bounded parsing', () => {
+  const LIMITS = { maxPendingChars: 1000, maxFrameChars: 1000 };
+  async function runWith(input: string[]): Promise<{ raw: string; counts: TextToolCallCounts }> {
+    let counts: TextToolCallCounts | undefined;
+    async function* body(): AsyncIterable<Uint8Array> { for (const part of input) yield new TextEncoder().encode(part); }
+    let raw = '';
+    for await (const chunk of rewriteTextToolCallStream(body(), tools, (c) => { counts = c; }, () => 'toolu_x', LIMITS)) {
+      raw += new TextDecoder().decode(chunk);
+    }
+    return { raw, counts: counts! };
+  }
+  const deltaEv = (t: string) => ev('content_block_delta', { index: 0, delta: { type: 'text_delta', text: t } });
+
+  it('gives up on an unclosed call past the cap: text, counted unrecovered, the rest passed through', async () => {
+    const parts = [
+      ev('message_start', { message: {} }),
+      ev('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }),
+      deltaEv('<tool_call><function=Bash><parameter=command>'),
+      ...Array.from({ length: 30 }, () => deltaEv('x'.repeat(100))),
+      // Recovery is over for this turn: even a well-formed call now passes as text.
+      deltaEv(CALL),
+      ev('content_block_stop', { index: 0 }),
+      ev('message_delta', { delta: { stop_reason: 'end_turn' } }),
+      ev('message_stop', {}),
+    ];
+    const { raw, counts } = await runWith(parts);
+    expect(counts).toEqual({ recovered: 0, unparsed: 1 });
+    const events = raw.split('\n\n').filter(Boolean).map((e) => JSON.parse(e.split('\n').find((l) => l.startsWith('data:'))!.slice(5)));
+    expect(text(events)).toBe('<tool_call><function=Bash><parameter=command>' + 'x'.repeat(3000) + CALL);
+    expect(events.some((e) => e.content_block?.type === 'tool_use')).toBe(false);
+    expect(raw).toContain('"stop_reason":"end_turn"');
+  });
+
+  it('flushes an oversized unterminated SSE frame intact and passes the rest through', async () => {
+    const before = ev('message_start', { message: {} }) + ev('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }) + deltaEv('<tool_call><function=Bash>');
+    const huge = `event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'y'.repeat(3000) } })}`;
+    const after = '\n\n' + ev('content_block_stop', { index: 0 }) + ev('message_stop', {});
+    const { raw, counts } = await runWith([before, huge.slice(0, 1500), huge.slice(1500), after]);
+    // What the scanner held went out as text first, counted; then the frame and the rest as they came.
+    expect(counts).toEqual({ recovered: 0, unparsed: 1 });
+    expect(raw).toContain('"text":"<tool_call><function=Bash>"');
+    expect(raw.endsWith(huge + after)).toBe(true);
+  });
+
+  it('tracks code incrementally exactly as insideCode does over the whole text', () => {
+    const samples = ['a `b', '```\nx\n', '~~~\nx\n```\n', '  ```ts\nx\n```\ny `z` `', '    ```\n', 'Use ``` here `x', '````\n```\n', '```\n~~~\n```\n'];
+    for (const sample of samples) {
+      for (let cut = 0; cut <= sample.length; cut++) {
+        const tracker = createCodeTracker();
+        tracker.push(sample.slice(0, cut));
+        tracker.push(sample.slice(cut));
+        expect(tracker.inside(), `${JSON.stringify(sample)} cut at ${cut}`).toBe(insideCode(sample));
+      }
+    }
   });
 });

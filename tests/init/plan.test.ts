@@ -35,6 +35,7 @@ const env = (over: Partial<InitEnvironment> = {}): InitEnvironment => ({
   providerBaseUrls: { acme: 'https://acme.example/v1', 'flaky-gw': 'https://flaky.example/v1' },
   gatewayAuth: new Map([['acme', 'api-key' as const], ['flaky-gw', 'api-key' as const]]),
   oauthProviders: new Map(), byokProviders: [], configsByScope: {},
+  unreadableConfigs: [],
   existingHookScope: undefined, copilotUsable: false,
   ...over,
 });
@@ -114,6 +115,20 @@ describe('plan — the config it emits', () => {
       state, noCredentials, opts);
     const back = parseConfig(p.configToml);
     expect(back.avoidGateways).toEqual(['flaky-gw']);
+  });
+
+  it('drops a saved avoid_gateways entry for a gateway deselected this run', () => {
+    // The re-run scenario: an existing config avoids flaky-gw, the user
+    // unticks every flaky-gw model, and the writer no longer emits that
+    // gateway. Writing the saved avoidance back verbatim would refuse the
+    // whole config on the unknown-gateway check.
+    const p = plan(
+      env({ configsByScope: { project: { avoidGateways: ['flaky-gw'] } as never } }),
+      { ...state, nativeKeys: ['acme-fast'], tiers: { code: { simple: ['acme-fast'], complex: ['acme-fast'] } } },
+      noCredentials, opts);
+    // Must parse — and carry no stale avoidance — rather than refuse on the
+    // unwritten gateway.
+    expect(parseConfig(p.configToml).avoidGateways ?? []).toEqual([]);
   });
 
   // The real scenario for both tests below: an EXISTING config being re-run.

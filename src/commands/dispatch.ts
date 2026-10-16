@@ -50,6 +50,13 @@ export interface DispatchOptions {
   task: string;
   rolesDir: string;
   sessionId?: string;
+  /**
+   * Called with the launched run's id and model key as each candidate starts,
+   * BEFORE blocking in `wait` — so a caller whose own tool times out first
+   * already holds the id and can resume with `sonata wait <id>`. The CLI
+   * wires this to a `dispatched <id> model=<m>` line on stdout.
+   */
+  onLaunch?: (id: string, modelKey: string) => void;
 }
 
 export interface DispatchAttempt {
@@ -174,6 +181,12 @@ export async function cmdDispatch(
       });
       continue;
     }
+
+    // A throwing observer is not a failed launch: the run is live, so trying
+    // the next candidate would race it on the same tree.
+    try {
+      opts.onLaunch?.(launched.id, modelKey);
+    } catch { /* observer errors never affect the dispatch */ }
 
     let result: WaitResult;
     try {

@@ -173,6 +173,160 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ### Fixed
 
+- **Generated `-auto` guidance keeps the exhausted-route recovery.** When an
+  `-auto` dispatch fails with "all native routes … failed", the agent now re-runs
+  that dispatch on the tier the error names (or `-normal`) and keeps later
+  dispatches on `-auto`, matching `sonata-loop`. Run `sonata init` to refresh the
+  block.
+- **A `sonata init` blocked by an unreadable config now exits non-zero.** The
+  interactive wizard printed the refusal and exited 0.
+- **`route auto` no longer leaves routing on after a settle.** A subagent that
+  started and stopped inside the settle slack interval kept the routing env for
+  good; a completed settle is now recorded and no longer counts as settling.
+- **A watchdog whose wrapper was killed now terminates the surviving harness**
+  instead of exiting and leaving it with no timeout.
+- **A permission mode that is not a string in a session file is refused** instead
+  of being coerced to an alias.
+- **`sonata restart` no longer joins a router it did not start** after the grace
+  period, and a lazy LiteLLM child that exited before becoming ready is no longer
+  terminated a second time (about 10 s of extra wait).
+- **The dashboard says "1 turn"** for a single withdrawn turn.
+
+- **An idle `sonata` TUI no longer grows to gigabytes.** A shell left open for
+  6.5 h reached 1.2 GB RSS at ~14% idle CPU. The usage screen re-read and
+  re-parsed the whole 7-day ledger every 5 s (~215 ms CPU, ~30 MB of fresh
+  allocations per poll on a 23 MB ledger) and the status screen did the same
+  every 2 s. Both now use an incremental ledger reader (`createLedgerReader`):
+  per day file it keeps the parsed rows and the byte offset consumed, parses
+  only newly appended complete lines, reparses a file that shrank or was
+  replaced, drops files that left the window, and returns the same array while
+  nothing changed so the usage report is not re-aggregated either. The models.dev
+  cache age is read from a stat-keyed cache instead of re-parsing a 1.7 MB file
+  each poll. Windowing is exact on the row timestamp, as before; budget, doctor
+  and the CLI keep `readRows`.
+- **The init wizard no longer re-parses the models.dev and Artificial Analysis
+  caches on every keypress.** They were loaded in the render body; they are now
+  loaded through a file-identity cache (path, size, mtime), so the object is
+  stable between renders (which lets the family cache hit) and a mid-wizard
+  refresh that rewrites the file is still seen.
+- **The TUI clocks re-render only when the text changes.** The status and usage
+  screens ticked state every second for an "updated Ns ago" label; they now
+  skip the render when the label is unchanged.
+- **A run's timeout watchdog no longer outlives its wrapper.** If the tmux
+  session was killed, the watchdog's single `sleep <run_timeout_seconds>` kept
+  running (ppid 1) for up to the full timeout, which left `sonata-run-*/cmd.sh`
+  processes behind after test runs. It now sleeps in one-second steps and exits
+  once the wrapper is gone.
+
+- **Codex (ChatGPT) prompt cache now hits across a conversation's turns.**
+  The router sent LiteLLM no session id, so its chatgpt provider invented a
+  new random `session_id` per request and the upstream cache keyed on it
+  almost never hit (~15% vs ~99% on other gateways). Each turn was billed as
+  an uncached prompt, draining the ChatGPT plan's usage several times
+  faster. The router now also sends `x-litellm-session-id` set to the
+  per-conversation key (else Claude Code's session id).
+- **`sonata init` lists models for every provider you select.** A provider
+  picked without typing a key — its key already stored by sonata or held by
+  opencode, as Mistral, Google and OpenRouter usually are — has no models in
+  any harness's catalogue, and the models step only asked providers that did
+  (or whose key was typed this run) what they serve. Their models were missing
+  from the picker. Every selected provider with a key is now asked, at its
+  well-known URL when no config names one, and the models picked are written
+  with that URL.
+- **`-free` models are ranked again.** A free route such as OpenCode Zen's
+  `kimi-k3-free` or `muse-spark-1.3-contributor-free` carries the same weights
+  as its paid name, but Artificial Analysis scores only the paid name, so the
+  free one matched nothing and was never ranked. It is now scored as its paid
+  equivalent — the way OpenRouter's `:free` already was — unless the catalog
+  has a row under the `-free` name itself. A `-contributor-free` model takes
+  the derived contributor row, not the standard model's.
+- **`sonata init` no longer writes a config that will not load.** Re-running
+  init after deselecting every model of an avoided gateway wrote the saved
+  `avoid_gateways` entry back verbatim, and `parseConfig` refuses an unknown
+  gateway name — so the written file failed to parse. `avoid_gateways` is now
+  filtered to gateways the file writes, the same filter `gateway_order`
+  already carried. `plan` additionally parses the TOML it is about to write
+  and refuses — showing and writing nothing — when the writer emits something
+  unloadable, and `apply` re-checks before the first byte hits the disk.
+- **`sonata init` no longer silently replaces a config it cannot read.** A
+  file that exists but fails to parse — including one stamped with a newer
+  `schema_version`, which `applyMigrations` refuses on purpose — used to be
+  reported on one line while init rewrote it from defaults, deleting
+  `[budget]`, prices and tiers. Init now refuses only when the file at the
+  scope being written is unreadable — after the scope is known, so a broken
+  project config never blocks a global init and vice versa — names that
+  file and the parse error, says to fix the file or move it aside to start
+  over, and writes nothing.
+- **A price window no longer charges unset rates at $0 while it runs.** A
+  window setting only `input` used to replace the flat rates entirely, so
+  output and cache reads priced at nothing for the window's duration. Each
+  rate a window does not set now falls back to the flat rate.
+- **A hand-written `[price]` without `cached_input` no longer charges cache
+  reads at $0.** Cache reads fall back to the `input` rate, erring toward
+  overcounting rather than undercounting. Scraped models.dev tables still
+  decline a partial rate instead of filling the gap.
+- **Non-streamed (`stream: false`) 200s no longer record 0 tokens.** The
+  usage recorder parsed a streamed body only with the SSE collector, so a
+  JSON 200 escaped pricing and `[budget]`. It now accumulates an
+  `application/json` body, bounded like the other collectors, and reads
+  usage from the finished document with the existing JSON reader.
+- **`sonata approve` is no longer allow-listed, so approvals reach a human.**
+  `Bash(sonata approve:*)` sat on the auto-allow list alongside `dispatch` and
+  `wait`, so a dispatched model could answer a codex or reasonix approval card
+  itself with no prompt. Only `dispatch` and `wait` stay allow-listed; every
+  `sonata approve` call now goes through Claude Code's permission prompt. The
+  generated wrapper text says the main thread runs approve itself, `sonata
+  init` removes a stale approve entry when it next rewrites the settings, and
+  `sonata doctor` flags it until then.
+- **Claude Code's `dontAsk` mode no longer dispatches as `default`.**
+  An unrecognised mode used to fall back to `default` silently, and `dontAsk`
+  (auto-deny anything not allow-listed) landed there — handing codex
+  workspace-write, the most permissive end for the most restrictive session
+  mode. `dontAsk` now maps to `plan` (read-only; every adapter already honours
+  it without writing, and write roles under it refuse where a harness cannot
+  honour it), and any other unknown mode refuses with a named error rather
+  than guessing. The capture hook passes the raw value through unchanged.
+- **A dispatch cut off by the caller's tool timeout no longer loses its run
+  id.** `dispatch_window_seconds` defaulted to 1500 s while Claude Code's Bash
+  tool caps at 600 s, and the id was printed only after the blocking wait
+  returned — so a killed caller never learned the id. `sonata dispatch` now
+  prints `dispatched <id> model=<m>` as each candidate launches, before
+  blocking; the default window drops to 540 s; the generated wrapper text tells
+  the agent to pass `timeout: 600000` and to resume a cut-off call with
+  `sonata wait <id>`.
+- **Quit-watcher subshells in the codex and reasonix launch scripts no longer
+  loop past the run they watch.** Both waited on `report.md` alone, so a run
+  whose harness exited without a report leaked the watcher forever. Each now
+  also stops when the `exit` sentinel exists, and reasonix no longer types the
+  task when its 60 s readiness loop falls through without the composer — the
+  run is already over then, and typing blind lands text into whatever the pane
+  holds.
+
+- **Two sessions starting together no longer leave the second unrouted.**
+  With the router down, both SessionStart hooks spawned a daemon; one won
+  the port and the other exited with EADDRINUSE, then polled only for its
+  own instance id until the deadline ran out. Once its spawned child has
+  exited — or after a short grace period — the loser now joins any healthy
+  multi-tenant sonata router already answering the port, instead of waiting
+  out the full 60 s. A non-sonata listener, or a pre-multi-tenant router,
+  is still never joined. The join is reported as `joined` rather than with
+  the loser's pid and log, and `sonata restart` never joins: a stop that
+  failed to free the port is an error, not a restart.
+- **The last SubagentStop no longer strips the routing env during another
+  session's settle window.** The stop removed the env unconditionally,
+  un-routing a session that had written it but might not have read it yet.
+  It now checks the session registry first and leaves the env in place for
+  that session's own settle to remove. The registry stores a registration
+  time per session, so a session that settled long ago but is still live no
+  longer holds the env open; registry writes are atomic (tmp file plus
+  rename) so lock-free readers never see a half-written file.
+- **A failed lazy LiteLLM start no longer orphans a SIGTERM-deaf child.**
+  The lazy path sent SIGTERM alone and forgot the pid, so a child stuck in
+  a device-code login survived as an orphan. It now escalates to SIGKILL
+  after a bounded wait and waits once more after SIGKILL before the retry
+  spawns — the same sequence the eager-failure path and `stop()` use —
+  keeps the pid recorded until the exit is seen, and no longer spawns while
+  a stop is in flight.
 - **Muse Spark 1.3 Contributor no longer refuses every Claude Code request.**
   Its server rejects a tool schema whose pattern uses the `\0` (NUL) escape,
   and Claude Code sends every tool on every request, so it failed them all.
@@ -196,6 +350,36 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
   Every other tool is sent unchanged. A model that still refuses a tool schema
   is skipped for the next candidate instead of ending the request.
+- **A tool call a model writes as text that cannot be recovered no longer
+  ends the agent.** On tier routes, which carry only subagent traffic, the
+  router holds a response until its first real tool call or its end, so a
+  turn carrying an unrecoverable call is withdrawn and the next ranked model
+  asked, as for a 5xx — once per request; later models stream as before. A
+  turn that calls tools properly streams from that call on; one that only
+  thinks and writes text reaches the client when it ends (at most 5 minutes
+  held, then it streams). A main session and bare `--model` requests are
+  never held. Only a `<tool_call>` tag followed by a call body (`<function=…>` or
+  `{`) counts: the tag merely mentioned in prose is ordinary text, and a call
+  quoted in a code fence or backticks is never recovered into a real one.
+  Text already sent before a call still reaches the client, as before; when
+  no other model serves, the withdrawn turn is served after all. A withdrawn
+  turn was still billed, so it gets a ledger row of its own, marked
+  `withdrawn`: priced and counted toward `[budget]`, and shown by `sonata
+  usage`, the usage screen and the web UI beside the totals rather than as a
+  served request. A model that does this twice within 30 minutes is skipped
+  for 30 minutes instead of 60 seconds, and `sonata doctor` names it with the
+  reason.
+
+### Changed
+
+- **`sonata usage` says when requests used an explicit tier while
+  auto-routing is on** — one line, shown only when there were any. Explicit
+  tiers remain a legitimate manual override.
+- **Orchestrators are told to report `-auto` trouble, not route around it.**
+  The loop skill, the managed CLAUDE.md block and the generated `-auto`
+  agents now say that a manual override means the user asked for a tier,
+  that a misbehaving `-auto` dispatch is retried on `-auto` and reported, and
+  that review-failure escalation applies only to the task that failed.
 
 ## [0.16.5] - 2026-10-15
 

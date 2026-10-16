@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { main } from '../src/cli.js';
 import { cmdDispatch } from '../src/commands/dispatch.js';
 
@@ -30,8 +30,17 @@ const cmdDispatchMock = vi.mocked(cmdDispatch);
  * code 3 marks the outcome distinct from success (0) and failure (1).
  */
 describe('dispatch exit codes', () => {
+  let printed: string[];
+  let logSpy: ReturnType<typeof vi.spyOn>;
   beforeEach(() => {
     cmdDispatchMock.mockReset();
+    printed = [];
+    logSpy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      printed.push(args.map(String).join(' '));
+    });
+  });
+  afterEach(() => {
+    logSpy.mockRestore();
   });
 
   it('passes stdin as the task text when --task-stdin is given', async () => {
@@ -73,5 +82,26 @@ describe('dispatch exit codes', () => {
 
     const code = await main(['dispatch', '--model', 'flash', 'do the thing']);
     expect(code).toBe(0);
+  });
+
+  it('prints the run id before blocking, so a cut-off caller can resume', async () => {
+    // The `dispatched <id> model=<m>` line is what survives a caller-side
+    // tool timeout: the final `<STATE> model=… id=…` line only prints after
+    // the blocking wait returns, which a killed caller never sees.
+    cmdDispatchMock.mockImplementation(async (opts) => {
+      opts.onLaunch?.('run-9', 'flash');
+      return {
+        id: 'run-9',
+        state: 'DONE',
+        modelKey: 'flash',
+        report: 'finished',
+        attempts: [{ modelKey: 'flash', state: 'DONE', degraded: false }],
+      };
+    });
+
+    const code = await main(['dispatch', '--model', 'flash', 'do the thing']);
+    expect(code).toBe(0);
+    expect(printed[0]).toBe('dispatched run-9 model=flash');
+    expect(printed).toContain('DONE model=flash id=run-9');
   });
 });

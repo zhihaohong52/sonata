@@ -1894,7 +1894,8 @@ context_window = 128000
     expect(result.pid).toBe(4242);
     expect(result.port).toBe(4100);
     expect(opts[0]).toMatchObject({ detached: true });
-    expect(existsSync(result.logPath)).toBe(true);
+    expect(result.joined).toBe(false);
+    expect(existsSync(result.logPath!)).toBe(true);
   });
 
   it('waits for the router rather than reporting success immediately', async () => {
@@ -2017,8 +2018,192 @@ context_window = 128000
     const result = await startServeDaemon(home, ['node', 'cli.js', 'serve'], {
       spawn: fakeSpawn(), probe: async () => true,
     }, home);
+    expect(result.joined).toBe(false);
     expect(result.logPath).toContain(join('.config', 'sonata', 'logs'));
     expect(result.logPath).toMatch(/serve-.*\.log$/);
+  });
+
+  // Two sessions starting together with the router down: both spawn, one wins
+  // the bind, the other exits with EADDRINUSE. The loser used to poll only
+  // for its own instance id, waited out the whole deadline, and left its
+  // session unrouted. Once its own child is known to have exited, it joins
+  // whatever healthy multi-tenant router is answering instead.
+  it('a loser whose child has exited joins the winner instead of waiting out the deadline', async () => {
+    let clock = 0;
+    let sleeps = 0;
+    const listeners: Record<string, (() => void)[]> = {};
+    const fakeChild = {
+      pid: 4242,
+      unref: () => {},
+      on: (event: string, cb: () => void) => { (listeners[event] ??= []).push(cb); },
+    };
+    const result = await startServeDaemon(home, ['node', 'cli.js', 'serve'], {
+      spawn: (() => fakeChild) as unknown as typeof spawnType,
+      probe: async () => false,
+      probeAny: async () => true,
+      // The child exits from inside the poll, after the first sleep: that is
+      // what opens the fallback. If the exit listener did nothing, the join
+      // would wait for fallbackAfterMs and the clock assertion below fails.
+      sleep: async () => {
+        clock += 500;
+        sleeps += 1;
+        if (sleeps === 1) listeners.exit!.forEach((cb) => cb());
+      },
+      now: () => clock,
+      timeoutMs: 60_000,
+      fallbackAfterMs: 60_000,
+    }, home);
+    expect(listeners.exit?.length).toBe(1);
+    // Joined right after the exit, nowhere near the 60 s grace deadline.
+    expect(clock).toBe(500);
+    expect(result.port).toBe(4100);
+    // A join, not a spawn: the loser's pid and log must not be reported as
+    // the router's. The winner's own pid stays in its state file.
+    expect(result.joined).toBe(true);
+    expect(result.pid).toBeUndefined();
+    expect(result.logPath).toBeUndefined();
+  });
+
+  it('an explicit undefined fallbackAfterMs turns the grace fallback off', async () => {
+    let clock = 0;
+    await expect(startServeDaemon(home, ['node', 'cli.js', 'serve'], {
+      spawn: fakeSpawn(),
+      probe: async () => false,
+      probeAny: async () => true,
+      sleep: async () => { clock += 500; },
+      now: () => clock,
+      timeoutMs: 20_000,
+      fallbackAfterMs: undefined,
+    }, home)).rejects.toThrow(/did not answer on port 4100/);
+  });
+
+  it('falls back to any healthy router after a grace period even when the child lingers', async () => {
+    let clock = 0;
+    const result = await startServeDaemon(home, ['node', 'cli.js', 'serve'], {
+      spawn: fakeSpawn(),
+      probe: async () => false,
+      probeAny: async () => true,
+      sleep: async () => { clock += 500; },
+      now: () => clock,
+      timeoutMs: 60_000,
+      fallbackAfterMs: 1_000,
+    }, home);
+    // 500ms sleeps: the grace period (1000ms) passes after two sleeps, and
+    // the third probeAny — past the fallback — returns.
+    expect(clock).toBe(1_000);
+    expect(result.port).toBe(4100);
+    expect(result.joined).toBe(true);
+  });
+
+  it('never joins a pre-multi-tenant router or a non-sonata listener', async () => {
+    let clock = 0;
+    const exitedChild = {
+      pid: 4242,
+      unref: () => {},
+      exitCode: 1,
+    };
+    // probeAny false throughout: the production default only matches a
+    // ready AND multi-tenant sonata router, so neither occupant qualifies.
+    await expect(startServeDaemon(home, ['node', 'cli.js', 'serve'], {
+      spawn: (() => exitedChild) as unknown as typeof spawnType,
+      probe: async () => false,
+      probeAny: async () => false,
+      sleep: async () => { clock += 500; },
+      now: () => clock,
+      timeoutMs: 2000,
+    }, home)).rejects.toThrow(/did not answer on port 4100.*serve-/s);
+  });
+
+  it('still prefers its own instance id while it is alive and unanswered', async () => {
+    // The stale-router guard this fallback must not reopen: while the spawned
+    // child is alive, a pre-existing router answering the port is not joined
+    // until the grace period passes — `sonata restart`'s false-success case.
+    let clock = 0;
+    let anyCalls = 0;
+    const result = await startServeDaemon(home, ['node', 'cli.js', 'serve'], {
+      spawn: fakeSpawn(),
+      probe: async (_port, _id) => clock >= 1_500,
+      probeAny: async () => { anyCalls += 1; return true; },
+      sleep: async () => { clock += 500; },
+      now: () => clock,
+      timeoutMs: 60_000,
+      fallbackAfterMs: 60_000,
+    }, home);
+    expect(result.port).toBe(4100);
+    expect(anyCalls).toBe(0);
+    expect(result.joined).toBe(false);
+  });
+
+  // The production fallback gate against fixture health responses: only a
+  // ready AND multi-tenant sonata router is ever joined. A pre-multi-tenant
+  // `{sonata: true}` without the flag, a non-sonata 500, and a 503
+  // still-starting router must all keep waiting, never join.
+  it.each([
+    ['pre-multi-tenant', { status: 'ok', sonata: true }, 200],
+    ['non-sonata listener', '', 500],
+    ['not-ready router', { status: 'starting', sonata: true, ready: false, multiTenant: true }, 503],
+    ['ready but single-tenant', { status: 'ok', sonata: true, multiTenant: false }, 200],
+  ])('production probeAny never joins a %s response', async (_name, body, status) => {
+    let clock = 0;
+    const exitedChild = { pid: 4242, unref: () => {}, exitCode: 1 };
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(typeof body === 'string' ? body : JSON.stringify(body), { status }),
+    ) as unknown as typeof fetch);
+    try {
+      await expect(startServeDaemon(home, ['node', 'cli.js', 'serve'], {
+        spawn: (() => exitedChild) as unknown as typeof spawnType,
+        probe: async () => false,
+        // No probeAny seam: the production default runs against the stub.
+        sleep: async () => { clock += 500; },
+        now: () => clock,
+        timeoutMs: 1500,
+      }, home)).rejects.toThrow(/did not answer/);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('production probeAny joins a ready multi-tenant router once the child has exited', async () => {
+    const exitedChild = { pid: 4242, unref: () => {}, exitCode: 1 };
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(JSON.stringify({ status: 'ok', sonata: true, ready: true, multiTenant: true }), { status: 200 }),
+    ) as unknown as typeof fetch);
+    try {
+      const result = await startServeDaemon(home, ['node', 'cli.js', 'serve'], {
+        spawn: (() => exitedChild) as unknown as typeof spawnType,
+        probe: async () => false,
+        sleep: async () => {},
+        timeoutMs: 60_000,
+      }, home);
+      expect(result.joined).toBe(true);
+      expect(result.port).toBe(4100);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('cmdRestart never joins: a stop that failed to free the port is an error, not a restart', async () => {
+    // stopServe's seams report a recorded router the kill cannot stop: SIGTERM
+    // is a no-op (kill records but isAlive stays true), so stopServe escalates
+    // to SIGKILL — also a no-op here — and throws "still running". The fresh
+    // spawn must never get far enough to join the squatter: cmdRestart fails
+    // at the stop, before spawning at all.
+    writeFileSync(join(home, '.config', 'sonata', 'serve-state.json'), JSON.stringify({ routerPid: 111 }));
+    const spawned: number[] = [];
+    const spawnSpy = ((() => { spawned.push(1); return { pid: 999, unref: () => {} }; }) as unknown as typeof spawnType);
+    await expect(cmdRestart(home, ['node', 'cli.js', 'serve'], {
+      cwd: home,
+      probeHealth: (async () => new Response(JSON.stringify({ sonata: true, multiTenant: true }))) as unknown as typeof fetch,
+      kill: () => {},
+      isAlive: () => true,
+      findPortPid: () => '111',
+      processCommand: () => '/opt/venv/bin/python /opt/venv/bin/litellm --config x',
+      spawn: spawnSpy,
+      probe: async () => false,
+      sleep: async () => {},
+      timeoutMs: 1500,
+    })).rejects.toThrow(/still running after .* did not respond to SIGKILL/s);
+    expect(spawned).toEqual([]);
   });
 });
 
@@ -2553,6 +2738,31 @@ context_window = 128000
       spawn: spawnSpy, probe: async () => true,
     });
     expect(result.pid).toBe(777);
+    expect(result.joined).toBe(false);
+  });
+
+  it('never joins when the stop failed to free the port: that is an error, not a restart', async () => {
+    // stopServe's seams report a recorded router the kill cannot stop: SIGTERM
+    // is a no-op (kill records but isAlive stays true), so stopServe escalates
+    // to SIGKILL — also a no-op here — and throws "still running". The fresh
+    // spawn must never get far enough to join the squatter: cmdRestart fails
+    // at the stop, before spawning at all.
+    writeFileSync(join(home, '.config', 'sonata', 'serve-state.json'), JSON.stringify({ routerPid: 111 }));
+    const spawned: number[] = [];
+    const spawnSpy = ((() => { spawned.push(1); return { pid: 999, unref: () => {} }; }) as unknown as typeof spawnType);
+    await expect(cmdRestart(home, ['node', 'cli.js', 'serve'], {
+      cwd: home,
+      probeHealth: (async () => new Response(JSON.stringify({ sonata: true, multiTenant: true }))) as unknown as typeof fetch,
+      kill: () => {},
+      isAlive: () => true,
+      findPortPid: () => '111',
+      processCommand: () => '/opt/venv/bin/python /opt/venv/bin/litellm --config x',
+      spawn: spawnSpy,
+      probe: async () => false,
+      sleep: async () => {},
+      timeoutMs: 1500,
+    })).rejects.toThrow(/still running after .* did not respond to SIGKILL/s);
+    expect(spawned).toEqual([]);
   });
 });
 
@@ -6084,6 +6294,7 @@ litellm = ${litellmPort}
     writeFileSync(join(project, 'sonata.toml'), TENANT('needs-litellm'));
     let spawns = 0;
     let waits = 0;
+    let signalsSent = 0;
     let firstExit: ((code: number | null, signal: NodeJS.Signals | null) => void) | undefined;
     vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
     const handle = await cmdServe({
@@ -6093,7 +6304,8 @@ litellm = ${litellmPort}
         spawns += 1;
         return {
           pid: spawns,
-          kill: () => {},
+          kill: () => { signalsSent += 1; },
+          forceKill: () => { signalsSent += 1; },
           onExit: (cb) => { if (spawns === 1) firstExit = cb; },
         };
       },
@@ -6116,8 +6328,90 @@ litellm = ${litellmPort}
     await request();
     await waitFor(() => spawns === 1, 'the first lazy spawn');
     expect(spawns).toBe(1);
+    // The child had already exited: no SIGTERM/SIGKILL, and no timeout waits.
+    expect(signalsSent).toBe(0);
     const served = await request();
     expect(served.status).toBe(200);
+    expect(spawns).toBe(2);
+  });
+
+  it('escalates a failed lazy start to SIGKILL when the child ignores SIGTERM', async () => {
+    // A child stuck in a device-code login ignores SIGTERM for the whole of
+    // its poll. The failed lazy start used to send SIGTERM alone and forget
+    // the pid, orphaning the child; it now escalates exactly the way the
+    // eager-failure path and stop() do — SIGTERM, a bounded wait, SIGKILL,
+    // and a second bounded wait.
+    writeMachineConfig(`
+[models."m"]
+gateway = "anth"
+id = "some-model"
+[native.gateways."anth"]
+base_url = "https://anth.example"
+provider = "anthropic"
+[native.ports]
+router = 0
+litellm = ${litellmPort}
+`);
+    writeSonataKey(home, 'anth', 'k');
+    const project = mkdtempSync(join(tmpdir(), 'serve-tenant-lazy-sigkill-'));
+    writeFileSync(join(project, 'sonata.toml'), TENANT('needs-litellm'));
+    let spawns = 0;
+    const signals: string[] = [];
+    let sigkillExitSeen = false;
+    const realFetch = globalThis.fetch;
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
+    const handle = await cmdServe({
+      cwd, home, tempDir: tempDirFor(),
+      litellmExitTimeoutMs: 20,
+      spawnLitellm: () => {
+        spawns += 1;
+        const exited: ((code: number | null, signal: NodeJS.Signals | null) => void)[] = [];
+        return {
+          pid: 9000 + spawns,
+          kill: () => { signals.push('SIGTERM'); },
+          // SIGTERM-deaf like a device-code login: only SIGKILL ends it.
+          // The SIGKILL exit fires on a short timer, not synchronously: the
+          // second bounded wait is what observes it, and the retry spawn must
+          // not happen before that exit is seen.
+          forceKill: () => {
+            signals.push('SIGKILL');
+            setTimeout(() => {
+              sigkillExitSeen = true;
+              exited.forEach((cb) => cb(null, 'SIGKILL'));
+            }, 5);
+          },
+          onExit: (cb) => { exited.push(cb); },
+        };
+      },
+      waitForLitellm: async () => { throw new Error('not ready'); },
+      respawnDelayMs: 0,
+    });
+    handles.push(handle);
+    vi.unstubAllGlobals();
+    const res = await realFetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...projectHeaders(project) },
+      body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+    });
+    // The failed start never becomes ready, so the request waits on it and
+    // then reaches the stubbed upstream (which answers 200): the retry, not
+    // the answer, is what this test proves — the next request must spawn
+    // again rather than reuse a forgotten child.
+    expect(res.status).toBe(200);
+    expect(spawns).toBe(1);
+    expect(signals).toContain('SIGTERM');
+    await waitFor(() => signals.includes('SIGKILL'), 'the SIGKILL escalation');
+    await waitFor(() => sigkillExitSeen, 'the SIGKILL exit');
+    expect(signals).toEqual(['SIGTERM', 'SIGKILL']);
+    // The retry owns the next start: a second request spawns again — and only
+    // after the old child's exit was observed, never while it was alive.
+    expect(spawns).toBe(1);
+    const res2 = await realFetch(`http://localhost:${handle.routerPort}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...projectHeaders(project) },
+      body: JSON.stringify({ model: 'sonata-code-simple', messages: [] }),
+    });
+    expect(res2.status).toBe(200);
     expect(spawns).toBe(2);
   });
 

@@ -395,6 +395,23 @@ export function normalizeModelName(raw: string, providers: readonly string[] = [
  * exactly the sort of thing another vendor might publish under).
  */
 export function aaLookupNames(normalized: string): string[] {
+  // A `-free` model (OpenCode Zen's `kimi-k3-free`,
+  // `muse-spark-1.3-contributor-free`) is a free route to the same weights as
+  // its paid name — the spelling OpenRouter writes `:free`, which
+  // `normalizeModelName` already strips. AA scores only the paid name, so the
+  // free one is looked up under it too: second, so a row filed under the
+  // `-free` name itself still wins, and before any shortened guess, since the
+  // paid name is the exact model and a dropped namespace is not.
+  const paid = normalized.endsWith(FREE_SUFFIX) && normalized.length > FREE_SUFFIX.length
+    ? normalized.slice(0, -FREE_SUFFIX.length)
+    : undefined;
+  if (paid === undefined) return shortenedNames(normalized);
+  return [...new Set([normalized, paid, ...shortenedNames(normalized), ...shortenedNames(paid)])];
+}
+
+const FREE_SUFFIX = '-free';
+
+function shortenedNames(normalized: string): string[] {
   const names = [normalized];
   let rest = normalized;
   for (let drop = 0; drop < 2; drop++) {

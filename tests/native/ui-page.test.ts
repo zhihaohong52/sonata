@@ -98,4 +98,13 @@ describe('the page’s own behaviour, asserted statically', () => {
   it('surfaces project-discovery truncation beside the run-cap notice', () => {
     expect(html()).toContain('data.projectsTruncated');
   });
+
+  it('shows withdrawn turns beside the totals and each session\'s cost', () => {
+    expect(html()).toContain('id="t-withdrawn"');
+    expect(html()).toMatch(/\$\('t-withdrawn'\)\.textContent = int\(w\.turns\)/);
+    expect(html()).toContain('row.withdrawnTurns');
+    expect(html()).toContain('row.withdrawnCoveredUsd');
+    expect(html()).toContain('row.withdrawnUnpriced');
+    expect(html()).toContain("' covered'");
+  });
 });

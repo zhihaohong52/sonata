@@ -8,11 +8,11 @@ import { installLoopSkill, loopSkillFiles, loopSkillSource, pluginPanel } from '
 import { cmdSync } from '../commands/sync.js';
 import { cmdRoute } from '../commands/route.js';
 import { writeSonataKey } from '../native/credentials.js';
-import { assertPlannedConfigParses } from './plan.js';
 import { addTrustBinding } from '../native/host-bindings.js';
 import { seedTrustBeforeKeyWrite } from '../native/trust-seed.js';
 import { litellmStatus } from '../native/litellm-venv.js';
 import { guidanceBlock, mergeGuidance } from './guidance.js';
+import { assertPlannedConfigParses } from './plan.js';
 import type { InitPlan } from './plan.js';
 import type { InitOptions } from './helpers.js';
 
@@ -57,8 +57,11 @@ export async function apply(
 }> {
   const { cwd, home, packageRoot } = opts;
 
-  // The planned config must load before anything is stored: a key or a trust
-  // binding written for a config that is then refused would be left behind.
+  // The last line before anything touches the disk: the planned TOML parses.
+  // `plan` already proved this when it built the plan, but apply is also
+  // called with hand-built plans (and a plan built by an older plan is still
+  // a string by the time it arrives here). A refusal writes nothing — in
+  // particular no key and no trust binding, since those go first below.
   assertPlannedConfigParses(plan.configToml);
 
   // ---- credentials (first, so a partially-failed run still leaves keys behind) ----

@@ -25,7 +25,8 @@ import {
   modeHookPresent,
   readSettings,
   settingsPath,
-  missingAllowEntries,
+  missingAllowEntriesAcross,
+  staleAllowEntries,
 } from '../settings.js';
 import type { Settings } from '../settings.js';
 import { homedir } from 'node:os';
@@ -1145,12 +1146,15 @@ export async function cmdDoctor(
     const nowMs = now().getTime();
     const byKey = new Map<string, { recovered: number; unparsed: number }>();
     for (const row of readRows(home, nowMs - 24 * 3_600_000, nowMs)) {
-      if (row.textToolCalls === undefined || (tenant !== undefined && row.tenant !== tenant)) continue;
-      const key = row.key ?? row.alias;
-      const total = byKey.get(key) ?? { recovered: 0, unparsed: 0 };
-      total.recovered += row.textToolCalls.recovered;
-      total.unparsed += row.textToolCalls.unparsed;
-      byKey.set(key, total);
+      if (tenant !== undefined && row.tenant !== tenant) continue;
+      const add = (key: string, counts: { recovered: number; unparsed: number }): void => {
+        const total = byKey.get(key) ?? { recovered: 0, unparsed: 0 };
+        total.recovered += counts.recovered;
+        total.unparsed += counts.unparsed;
+        byKey.set(key, total);
+      };
+      // A withdrawn turn has a row of its own, under the model that wrote it.
+      if (row.textToolCalls !== undefined) add(row.key ?? row.alias, row.textToolCalls);
     }
     if (byKey.size > 0) {
       const parts = [...byKey.entries()].map(([key, t]) => `${key}: ${t.recovered} recovered, ${t.unparsed} unrecovered`);
@@ -1159,7 +1163,7 @@ export async function cmdDoctor(
         name: 'text tool calls',
         ok: !unrecovered,
         detail: `last 24h, tool calls written as text — ${parts.join('; ')}`
-          + (unrecovered ? ' — an unrecovered call ends the agent; consider ranking that model lower' : ''),
+          + (unrecovered ? ' — an unrecovered call costs a retry on the next model, or ends the agent when none serves; consider ranking that model lower' : ''),
       });
     }
   }
@@ -1304,6 +1308,24 @@ export async function cmdDoctor(
           if (Array.isArray(problems)) {
             for (const problem of problems) {
               if (typeof problem === 'string') checks.push({ name: 'serve gateways', ok: false, detail: problem });
+            }
+          }
+          // A model put on the long cooldown for writing tool calls as text
+          // the router cannot recover: its tier is quietly one model shorter
+          // for half an hour, and the model will do it again after.
+          const cooling = (body as { cooldowns?: unknown }).cooldowns;
+          if (Array.isArray(cooling)) {
+            const here = projectTenant(opts.cwd, home);
+            for (const entry of cooling) {
+              if (entry === null || typeof entry !== 'object') continue;
+              const { tenant, model, until, reason } = entry as Record<string, unknown>;
+              if (typeof model !== 'string' || typeof until !== 'string' || typeof reason !== 'string') continue;
+              if (here !== undefined && tenant !== here) continue;
+              checks.push({
+                name: 'tier cooldown',
+                ok: false,
+                detail: `${model} is skipped until ${until}: it ${reason} — consider ranking it lower`,
+              });
             }
           }
           // Same gate as `sonata status`: a router without the `ui` capability
@@ -1714,24 +1736,43 @@ export async function cmdDoctor(
           'cannot honour — those dispatches will refuse. Run `sonata init`',
     });
   }
-  // The wrapper's three tools must be allow-listed. Left to `auto` mode they
+  // The wrapper's two tools must be allow-listed. Left to `auto` mode they
   // are judged per call and the decisions are not stable: a wrapper on
   // 2026-08-12 had `tail` allowed twice then denied twice mid-run, so the run
   // kept going with nothing able to read it back. `run` executes code, and it
   // is the one the classifier tends to permit — so the failure is silent by
   // construction, and worth naming before it happens rather than after.
+  //
+  // `approve` is checked separately and in the opposite direction: it must
+  // NOT be allow-listed, because an allow-listed `sonata approve` lets a
+  // model answer a codex or reasonix approval card itself with no human ever
+  // seeing the prompt — in `default` mode that makes the dispatch more
+  // permissive than the session that spawned it, silently.
   {
     const scopes = ['project', 'global'] as const;
-    const missing = scopes
-      .map((scope) => missingAllowEntries(readSettings(settingsPath(scope, opts.cwd, homedir()))))
-      .reduce((a, b) => (a.length <= b.length ? a : b));
-    checks.push({
-      name: 'tool permissions',
-      ok: missing.length === 0,
-      detail: missing.length === 0
+    // Union across scopes: an entry allow-listed in either scope covers the
+    // call, so a list split across the two files (dispatch in one, wait in
+    // the other) is complete. The old per-scope min-length comparison
+    // false-failed exactly that shape.
+    const missing = missingAllowEntriesAcross(
+      scopes.map((scope) => readSettings(settingsPath(scope, opts.cwd, home))),
+    );
+    // Union, not min-length like missing above: a stale entry in EITHER scope
+    // keeps the model-approved approval path alive, so either scope failing
+    // fails the check.
+    const stale = [...new Set(scopes
+      .flatMap((scope) => staleAllowEntries(readSettings(settingsPath(scope, opts.cwd, home)))) )];
+    const detail = stale.length > 0
+      ? `${stale.join(', ')} still allow-listed — approvals must reach a human, so every ` +
+        '`sonata approve` call goes through the permission prompt. Run `sonata init` to remove it'
+      : missing.length === 0
         ? 'the sonata tools are allow-listed, so no dispatch depends on the classifier'
         : `${missing.join(', ')} not allow-listed — in \`auto\` mode these are judged per call, ` +
-          'and a denied `wait` leaves a paused dispatch unobservable. Run `sonata init`',
+          'and a denied `wait` leaves a paused dispatch unobservable. Run `sonata init`';
+    checks.push({
+      name: 'tool permissions',
+      ok: missing.length === 0 && stale.length === 0,
+      detail,
     });
   }
 

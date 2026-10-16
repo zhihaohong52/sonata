@@ -212,10 +212,27 @@ describe('guidanceBlock with auto-routing', () => {
   it('makes -auto the default when auto-routing is on', () => {
     const block = guidanceBlock({ autoRoute: true });
     expect(block).toContain('`-auto` agents are the default');
-    expect(block).toContain('explicit tier agents are the manual override');
+    expect(block).toContain('explicit tier agents are a manual override, used only when the user asks');
+    // An orchestrator that saw one bad -auto turn must report it, not route around -auto.
+    expect(block).toContain('earlier tier failures in the session do not count');
+    expect(block).toContain('never pin explicit tiers for later');
+    // The exhausted-route recovery from skills/loop/SKILL.md: one failed
+    // dispatch on the named tier (or -normal), later ones back on -auto.
+    expect(block).toContain('all native routes');
+    expect(block).toContain('only on the tier the error names');
+    expect(block).toContain('later dispatches stay on `-auto`');
+    // One exception, stated once, and no rival "one tier up" rule beside it.
+    expect(block.replace(/\s+/g, ' ')).toContain("The one exception: a task that failed review twice is re-run on the explicit `-complex` agent, and kept there for that task's fixes — that task only.");
+    expect(block).not.toContain('re-run one tier');
     expect(block).not.toContain('`-normal` is the default');
     expect(block.startsWith(GUIDANCE_BEGIN)).toBe(true);
     expect(block.trimEnd().endsWith(GUIDANCE_END)).toBe(true);
+  });
+
+  it('keeps the one-tier-up escalation, scoped to the task, when auto-routing is off', () => {
+    const block = guidanceBlock();
+    expect(block.replace(/\s+/g, ' ')).toContain('a task that fails review twice is re-run one tier up (that task only — never other tasks or reviews)');
+    expect(block).not.toContain('The one exception');
   });
 });
 

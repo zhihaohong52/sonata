@@ -13,10 +13,32 @@ Sonata mirrors the Claude Code permission mode onto the harness; a sonata agent 
   - `--permission-mode plan` is **refused by `reasonix run`** ("requires an interactive session", exit 2), so read-only work uses `dontAsk` instead. That is real enforcement, probed: a run asked to read one file and write another read it fine and was refused both the write tool and the shell fallback. It cannot write `report.md` either, so `canWriteReport` is false.
   - **Never use `-y`/`--auto`.** It aliases reasonix's own `auto`, which is wider than Claude Code's — it skips risk prompts for things like `git push`. Claude's `auto` maps to `acceptEdits`, so always pass `--permission-mode` explicitly.
   - Reasonix loads the working directory's `.mcp.json` on top of its own config, so a dispatched model inherits whatever MCP servers the project defines — sonata itself is not one of them (there is no MCP server anymore), but a project's own servers still apply. `sonata doctor` warns on a `.mcp.json` that still registers a stale `sonata` entry (`staleMcpRegistration`), naming `claude mcp remove sonata`.
-- **Claude Code** (`claude -p` is headless and has no TUI): `plan`, `default`, `acceptEdits`, and `bypassPermissions` map directly to Claude Code's corresponding permission modes. Read-only roles get `--tools=Read,Grep,Glob` plus `--strict-mcp-config` with no `--mcp-config` — `--tools` restricts only the built-in set, and was probed live (2.1.284) to leave every user, project, plugin and claude.ai MCP tool reachable until strict mode loaded no server at all; native runs assume `sonata serve` is already up so the session is routed to the foreign model.
+- **Claude Code** (`claude -p` is headless and has no TUI): `plan`, `default`, `acceptEdits`, and `bypassPermissions` map directly to Claude Code's corresponding permission modes, except that a
+write role dispatched while the session is in `plan` mode (which is also what
+`dontAsk` maps to) runs as `plan` with the same tool restriction as a
+read-only role. Read-only roles get `--tools=Read,Grep,Glob` plus `--strict-mcp-config` with no `--mcp-config` — `--tools` restricts only the built-in set, and was probed live (2.1.284) to leave every user, project, plugin and claude.ai MCP tool reachable until strict mode loaded no server at all; native runs assume `sonata serve` is already up so the session is routed to the foreign model.
+
+**Approvals always reach a human.** `Bash(sonata approve:*)` is deliberately
+*not* on the allow list (`SONATA_TOOLS` in `src/settings.ts` holds only
+`dispatch` and `wait`), so every `sonata approve` call goes through Claude
+Code's permission prompt. An allow-listed approve would let a dispatched model
+answer a codex or reasonix approval card itself with no prompt — in `default`
+mode that makes the dispatch more permissive than the session that spawned
+it, silently. `sonata init` removes a stale approve entry when it next
+rewrites the settings, and `sonata doctor` flags it until then.
 
 The permission mode is not exposed as an env var, so this needs a **PreToolUse hook** (`hooks/capture-mode.mjs`), which `sonata init` offers to install at project or global scope. Without it sonata assumes `default` — for opencode/pi that means dispatches refuse, so `sonata doctor` reports a missing hook as a blocker.
 
 **Where the mode is stored mirrors config resolution.** A project with its own `sonata.toml` or `.sonata/` gets `<cwd>/.sonata/session-<id>.json`; a project relying only on `~/.config/sonata/sonata.toml` gets `~/.config/sonata/session-<id>.json`; a directory with neither is left alone. That second case matters — the hook is installed globally and fires on every Bash call, so writing into the repo would scatter `.sonata/` directories across the machine. `readPermissionMode` reads the same two locations in the same order.
 
 **`auto` mode** (Claude Code's current default) maps to `acceptEdits`. Residual gap: the foreign harness has no classifier, so it will run things auto mode would have blocked. Dispatch in `plan` mode, or to a read-only role, when that matters.
+
+**`dontAsk` mode** (auto-deny anything not allow-listed) maps to `plan`
+(read-only). Read the other way — as `default` — it would hand codex
+`workspace-write`, which is the most permissive end of the spectrum for the
+most restrictive session mode: exactly backwards. Every adapter already
+honours `plan` without writing (a write role sent there runs read-only), and
+write roles under `plan` refuse where a harness cannot honour it — so the
+mapping holds the lane's core invariant, never more permissive than the
+session. Any *other* unrecognised mode refuses outright with a named error
+rather than guessing, since a silent fallback is what produced this bug.

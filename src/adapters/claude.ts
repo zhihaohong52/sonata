@@ -31,7 +31,12 @@ export function planClaude(
   input: PlanInput,
   env: ClaudePlanEnv = { managedMcpFile: MANAGED_MCP_FILES[process.platform] },
 ): LaunchPlan {
-  const readOnly = isReadOnlyRole(input.role);
+  // A write role dispatched in `plan` mode is read-only too: the session asked
+  // for no writes, so it gets the same tool restriction as a read-only role.
+  // This is what makes the `dontAsk` → `plan` mapping hold — without it a
+  // write role under `plan` would run with the full toolset and every MCP
+  // tool, the most permissive end for a restrictive session mode.
+  const readOnly = isReadOnlyRole(input.role) || input.mode === 'plan';
   const permissionMode = readOnly ? 'plan' : input.mode;
   // The level travels in the model name, not in a flag of its own. The claude
   // harness routes through sonata's router, whose `routeRequest` already

@@ -149,6 +149,40 @@ async function runInit(
     return cancelledResult(env.problems, chosen.state, opts);
   }
 
+  // A config file at the scope being written that fails to parse stops init
+  // here — after the scope is known — and writes nothing: proceeding from
+  // defaults would silently replace the file's tiers, prices and `[budget]`
+  // with a fresh proposal. Scoped, because the file at the other scope is
+  // never touched: a broken project config must not block a global init, and
+  // vice versa. The other scope's broken file is still noted, and it simply
+  // contributes nothing this run. This includes a file stamped with a newer
+  // `schema_version`, which `applyMigrations` refuses on purpose. The `--yes`
+  // lane throws, matching how it reports every other refusal.
+  const writeScope = chosen.state.configScope ?? 'project';
+  const broken = env.unreadableConfigs.filter((c) => c.scope === writeScope);
+  const otherBroken = env.unreadableConfigs.filter((c) => c.scope !== writeScope);
+  for (const c of otherBroken) {
+    out(`  ! not reading ${c.path}: ${c.error}`);
+  }
+  if (broken.length > 0) {
+    const lines = broken.map(({ path, error }) => `  ✗ ${path}: ${error}`);
+    if (!interactive) throw new Error(
+      [`sonata init: the existing ${writeScope} config cannot be read — fix it or move it aside to start over.`,
+        ...broken.map(({ path, error }) => `${path}: ${error}`),
+      ].join('\n'));
+    for (const l of lines) out(l);
+    out('');
+    out('  The existing config cannot be read — fix it or move it aside to start over.');
+    out('  Nothing written.');
+    // The parse failure lives in `unreadableConfigs`, not `env.problems`, so
+    // the CLI would read this as success and exit 0 with nothing written.
+    const unreadable: Problem[] = broken.map(({ path, error }) => ({
+      severity: 'error',
+      message: `the existing ${writeScope} config cannot be read: ${path}: ${error}`,
+    }));
+    return blockedResult([...env.problems, ...unreadable], opts, broken[0].path);
+  }
+
   // ---- validate ---------------------------------------------------------
   // Validation precedes planning: a plan built from an invalid state is a
   // plan nobody should see, and `validate` resolves its own candidates so it
@@ -230,10 +264,10 @@ async function runInit(
   };
 }
 
-function blockedResult(problems: Problem[], opts: InitOptions): InitResult {
+function blockedResult(problems: Problem[], opts: InitOptions, configPath?: string): InitResult {
   return {
     problems, models: [], roles: [], scope: 'skip', routing: 'skip', hookChanged: false,
-    agentsWritten: [], configPath: join(opts.cwd, 'sonata.toml'),
+    agentsWritten: [], configPath: configPath ?? join(opts.cwd, 'sonata.toml'),
     pruned: [],
   };
 }

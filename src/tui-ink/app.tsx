@@ -6,8 +6,9 @@ import { ProvidersStep } from './components/providers-step.js';
 import { ModelsStep } from './components/models-step.js';
 import { refreshHostReasons } from '../native/host-bindings.js';
 import { AutoRouteStep } from './components/auto-route-step.js';
-import { candidateFacts, candidateLabel, reasoningOf, expandCandidates, loadAaCatalog, proposeTiers, taskCostedCandidates, unpinnedVariants } from '../catalog.js';
-import { loadModelsDev, type ModelsDevCache } from '../modelsdev.js';
+import { candidateFacts, candidateLabel, reasoningOf, expandCandidates, proposeTiers, taskCostedCandidates, unpinnedVariants } from '../catalog.js';
+import { type ModelsDevCache } from '../modelsdev.js';
+import { loadAaCatalogCached, loadModelsDevCached } from './cached-loads.js';
 import { loginGateway as defaultLoginGateway } from '../native/oauth-login.js';
 import { catalogSpellingsForGateway } from '../pricing.js';
 import {
@@ -294,7 +295,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
         gatewayAuth={data.gatewayAuth ?? {}}
         storedKeys={data.storedKeys}
         fetchModels={data.fetchModels ?? defaultFetchModels}
-        modelsDevCache={data.modelsDevCache ?? loadModelsDev(data.home)}
+        modelsDevCache={data.modelsDevCache ?? loadModelsDevCached(data.home)}
         loginGateway={data.loginGateway}
         state={state}
         onChange={setState}
@@ -318,9 +319,9 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
         state,
         data.gatewayAuth ?? {},
       );
-      const catalog = loadAaCatalog(data.home);
+      const catalog = loadAaCatalogCached(data.home);
       const gatewayNames = [...new Set(candidates.map((candidate) => candidate.gateway))];
-      const modelsDev = loadModelsDev(data.home);
+      const modelsDev = loadModelsDevCached(data.home);
       const pricingProviders = state.configScope === undefined
         ? {}
         : data.declaredPricingProviders?.[state.configScope] ?? {};
@@ -356,6 +357,8 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       // (`canonicalBaseUrl`), the string the router would send. A URL that is
       // not plain is not asked at all.
       const gatewayBaseUrls = Object.fromEntries(Object.entries({
+        // A BYOK provider's well-known URL, under any URL a config sets.
+        ...Object.fromEntries(data.byokProviders.map((provider) => [provider.name, provider.url])),
         ...((state.configScope !== undefined ? data.gatewayBaseUrlsByScope?.[state.configScope] : undefined)
           ?? data.gatewayBaseUrls),
         ...addedBaseUrls,
@@ -422,7 +425,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       const role = roles[Math.floor(tierIndex / TIER_NAMES.length)];
       const tier = TIER_NAMES[tierIndex % TIER_NAMES.length]!;
       if (!role) return <Summary state={state} savedBaseUrl={savedAutoRouteBaseUrl} savedModel={savedAutoRouteModel} onDone={onDone} onBack={back} />;
-      const catalog = loadAaCatalog(data.home);
+      const catalog = loadAaCatalogCached(data.home);
       // Ranking runs over every model actually selected, not the startup set:
       // `data.candidates` predates this run's additions, and a model whose
       // gateway name is missing cannot have its id recovered, misses its
@@ -495,7 +498,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       // name, which is what scores a vendor's versionless alias
       // (`deepseek-flash` is "DeepSeek V4.1 Flash"). Harness-only entries
       // have no gateway to price by and keep their id alone.
-      const modelsDev = loadModelsDev(data.home);
+      const modelsDev = loadModelsDevCached(data.home);
       const pricingProviders = state.configScope !== undefined
         ? data.declaredPricingProviders?.[state.configScope] ?? {}
         : {};

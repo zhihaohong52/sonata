@@ -5,7 +5,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 
 import { budgetRefusal, type BudgetStatus } from '../budget.js';
 import { isTierAliasShape, TIER_NAMES, tiersCollapse, type NativeGatewayAuth, type SonataConfig, type AutoRouteConfig } from '../config.js';
-import type { AutoRouteRecord, LedgerRow } from '../ledger.js';
+import type { AutoRouteRecord, LedgerAttempt, LedgerRow } from '../ledger.js';
 import { autoRole, cleanTask, decideTier, DecisionStore, type TierClassifier } from './auto-route.js';
 import { SONATA_PROJECT_HEADER, TenantError } from './tenants.js';
 import { SONATA_TOKEN_HEADER, projectHintAuthorised } from './router-token.js';
@@ -13,6 +13,7 @@ import { OPENCODE_SESSION_HEADER, type Transport } from './providers.js';
 import { joinCandidate, splitCandidate, wireEffort, type Effort } from '../effort.js';
 import { createUsageCollector, type UsageTokens, usageFromJsonBody } from './usage.js';
 import { rewriteTextToolCallJson, rewriteTextToolCallStream, toolSchemas, type TextToolCallCounts } from './text-tool-calls.js';
+import { holdForTextToolCalls, type HoldLimits } from './text-tool-call-hold.js';
 import { handleUiRequest, type UiDeps } from './ui.js';
 
 export interface TierRoute {
@@ -185,6 +186,12 @@ export interface RouterDeps {
    */
   textToolCallReadLimits?: { maxBytes: number; idleMs: number };
   /**
+   * Bounds on holding a streamed tier response back while deciding whether
+   * it carries an unrecoverable text tool call. Test seam; defaults to
+   * `TEXT_TOOL_CALL_HOLD_LIMITS`.
+   */
+  textToolCallHoldLimits?: HoldLimits;
+  /**
    * Where to write the outbound body of every 400 a tier candidate answers,
    * one 0600 file per refusal. Unset (the default) writes nothing: bodies
    * hold conversation content. `serve` sets it from `SONATA_CAPTURE_400_DIR`.
@@ -217,6 +224,27 @@ export const ERROR_BODY_LIMITS = { maxBytes: 1024 * 1024, timeoutMs: 10_000 };
  * its text, and far past what rewriting needs.
  */
 export const TEXT_TOOL_CALL_READ_LIMITS = { maxBytes: 64 * 1024 * 1024, idleMs: 10_000 };
+
+/**
+ * Bounds on holding a streamed tier turn back while deciding whether it
+ * carries an unrecoverable text tool call (`holdForTextToolCalls`). Past any
+ * of them the held bytes are released and the turn streams as it would have
+ * unheld — a call found after that can no longer be withdrawn, only cooled.
+ * Hitting one never fails the turn.
+ *
+ * The hold now spans a whole turn up to its first real `tool_use`, thinking
+ * included, so these are sized for the longest ordinary turn rather than a
+ * prefix:
+ *
+ * - `maxMs` 5 min: a 20–30k-token thinking or report turn at 50–100 tokens/s.
+ *   Kept well under the 10 min a client waits for response headers (Claude
+ *   Code's default `API_TIMEOUT_MS`), since nothing is sent while held.
+ * - `maxBytes` 32 MiB, counted on upstream input and on held output alike:
+ *   SSE costs roughly 150 bytes a token, so ~200k tokens.
+ * - `idleMs` 10 s, counted from the first byte: upstreams send pings, so this
+ *   long without a byte is a stall, not a slow model.
+ */
+export const TEXT_TOOL_CALL_HOLD_LIMITS: HoldLimits = { maxBytes: 32 * 1024 * 1024, idleMs: 10_000, maxMs: 300_000 };
 
 export interface RouterRequest {
   method: string;
@@ -449,7 +477,7 @@ interface RecordContext {
   effort?: Effort;
   gateway?: string;
   upstream: 'litellm' | 'anthropic' | 'direct';
-  attempts: { key: string; status: number }[];
+  attempts: LedgerAttempt[];
   credential?: 'subscription' | 'key';
   session?: string;
   project?: string;
@@ -461,6 +489,17 @@ interface RecordContext {
    */
   tenantConfig?: SonataConfig;
   textToolCalls?: TextToolCallCounts;
+  /** The turn was withdrawn, never served: a row for its spend alone. */
+  withdrawn?: true;
+  /** The row is incomplete whatever its body shows: the client left while it was held. */
+  incomplete?: true;
+  /** When the turn ended, for a row written later than that (a withdrawn turn's). */
+  endedAt?: number;
+  /**
+   * Where `ms` is measured from, when not the request's start: a withdrawn
+   * turn's own candidate. `ts` stays the request's start, which prices it.
+   */
+  measuredFrom?: number;
 }
 
 function headerNumber(headers: Record<string, string>, name: string): number | undefined {
@@ -481,13 +520,13 @@ function withUsageRecording(response: RouterResponse, ctx: RecordContext, deps: 
     const retries = headerNumber(response.headers, 'x-litellm-attempted-retries');
     const emit = (tokens: UsageTokens, complete: boolean): void => {
       try {
-        const endedAt = now();
+        const endedAt = ctx.endedAt ?? now();
         deps.recordUsage?.({
           // Priced at request start, not completion (spec §3): a stream that
           // crosses a price-window boundary must keep the rate it started
           // under. `ms` is the genuine duration and stays tied to `endedAt`.
           ts: new Date(ctx.startedAt).toISOString(),
-          ms: endedAt - ctx.startedAt,
+          ms: endedAt - (ctx.measuredFrom ?? ctx.startedAt),
           session: ctx.session,
           project: ctx.project,
           tenant: ctx.tenant,
@@ -506,7 +545,7 @@ function withUsageRecording(response: RouterResponse, ctx: RecordContext, deps: 
           litellmModel: response.headers['x-litellm-model-name'],
           callId: response.headers['x-litellm-call-id'],
           status: response.status,
-          complete,
+          complete: ctx.incomplete === true ? false : complete,
           tokens,
           // The router knows observations, while serve owns pricing config.
           price: { source: 'none' },
@@ -517,6 +556,7 @@ function withUsageRecording(response: RouterResponse, ctx: RecordContext, deps: 
           ...(ctx.textToolCalls !== undefined && (ctx.textToolCalls.recovered > 0 || ctx.textToolCalls.unparsed > 0)
             ? { textToolCalls: { ...ctx.textToolCalls } }
             : {}),
+          ...(ctx.withdrawn === true ? { withdrawn: true as const } : {}),
         }, ctx.tenantConfig);
       } catch { /* Accounting is strictly best-effort. */ }
     };
@@ -528,12 +568,31 @@ function withUsageRecording(response: RouterResponse, ctx: RecordContext, deps: 
     }
 
     const collector = createUsageCollector();
+    const contentType = response.headers['content-type'] ?? '';
+    // A `stream: false` 200 arrives as `application/json`, not SSE, so the
+    // collector above would see no usage frame and the row would record 0
+    // tokens — escaping pricing and `[budget]`. Accumulate the body instead, bounded
+    // like the other collectors, and read usage from the finished document.
+    const isJson = !contentType.includes('text/event-stream') && contentType.includes('application/json');
+    const json: Buffer[] = [];
+    let jsonBytes = 0;
     return {
       ...response,
       body: observe(
         response.body,
-        (chunk) => collector.push(chunk),
+        (chunk) => {
+          collector.push(chunk);
+          if (isJson && jsonBytes + chunk.byteLength <= COMPLETION_JSON_CAP_BYTES) {
+            json.push(Buffer.from(chunk));
+            jsonBytes += chunk.byteLength;
+          }
+        },
         (streamComplete) => {
+          if (isJson) {
+            const { tokens, complete } = usageFromJsonBody(Buffer.concat(json));
+            emit(tokens, streamComplete && complete);
+            return;
+          }
           const { tokens, complete } = collector.finish();
           emit(tokens, streamComplete && complete);
         },
@@ -985,6 +1044,82 @@ function providerCooldownKey(tenant: RouterTenant, gateway: string): string {
 const capability400Counts = new Map<string, number>();
 
 /**
+ * Unrecoverable text tool calls within `TEXT_TOOL_CALL_STRIKE_WINDOW_MS` that
+ * move a candidate from the ordinary cooldown to `TEXT_TOOL_CALL_COOLDOWN_MS`.
+ *
+ * A model that writes a call the router cannot parse almost always lacks a
+ * tool-call parser on its backend altogether, so a 60 s cooldown just puts it
+ * back in front of the next request to fail the same way. One such turn may be
+ * a fluke; two close together are the backend.
+ */
+export const TEXT_TOOL_CALL_STRIKES = 2;
+export const TEXT_TOOL_CALL_STRIKE_WINDOW_MS = 30 * 60_000;
+export const TEXT_TOOL_CALL_COOLDOWN_MS = 30 * 60_000;
+
+/**
+ * When each recent unrecoverable text tool call happened, per candidate (the
+ * tenant-scoped `cool` key the cooldowns use). A turn the candidate serves in
+ * full with nothing unrecovered clears its entry.
+ */
+const textToolCallStrikes = new Map<string, number[]>();
+
+/**
+ * Cools `cool` until `until`, never shortening a cooldown already longer: a
+ * concurrent request's 60 s failure must not cut a 30-minute one short.
+ */
+function coolUntil(cool: string, until: number): void {
+  cooldowns.set(cool, Math.max(cooldowns.get(cool) ?? 0, until));
+}
+
+/** The escalated cooldowns, for `/__sonata_health` to name. Keyed like `cooldowns`. */
+const textToolCallCooldowns = new Map<string, { tenant: string; model: string; until: number; strikes: number }>();
+
+/**
+ * Records one unrecoverable text tool call from `model` and answers how long
+ * to cool it: `TIER_COOLDOWN_MS`, or `TEXT_TOOL_CALL_COOLDOWN_MS` once it has
+ * done so `TEXT_TOOL_CALL_STRIKES` times within the window.
+ */
+function strikeTextToolCall(tenant: RouterTenant, model: string, cool: string, at: number, requestStartedAt: number): number {
+  const recent = (textToolCallStrikes.get(cool) ?? []).filter((t) => at - t < TEXT_TOOL_CALL_STRIKE_WINDOW_MS);
+  // A request that started before the last strike was already on its way to
+  // this candidate when it failed — concurrent requests fail together, before
+  // the first strike's cooldown could keep the others away: one failure.
+  const last = recent.at(-1);
+  if (last !== undefined && requestStartedAt <= last) return TIER_COOLDOWN_MS;
+  recent.push(at);
+  textToolCallStrikes.set(cool, recent);
+  if (recent.length < TEXT_TOOL_CALL_STRIKES) return TIER_COOLDOWN_MS;
+  textToolCallCooldowns.set(cool, { tenant: tenant.id, model, until: at + TEXT_TOOL_CALL_COOLDOWN_MS, strikes: recent.length });
+  return TEXT_TOOL_CALL_COOLDOWN_MS;
+}
+
+/** A candidate on the long cooldown for writing tool calls as text, as `/__sonata_health` reports it. */
+export interface TextToolCallCooldown {
+  tenant: string;
+  model: string;
+  /** ISO time the cooldown ends. */
+  until: string;
+  reason: string;
+}
+
+/** Every escalated text-tool-call cooldown still in force, dropping those that have lapsed. */
+export function activeTextToolCallCooldowns(at: number = Date.now()): TextToolCallCooldown[] {
+  const active: TextToolCallCooldown[] = [];
+  for (const [cool, entry] of textToolCallCooldowns) {
+    // Lapsed, or cut short: a cooldown the router has since cleared or replaced is not this one.
+    if (entry.until <= at || cooldowns.get(cool) !== entry.until) { textToolCallCooldowns.delete(cool); continue; }
+    active.push({
+      tenant: entry.tenant,
+      model: entry.model,
+      until: new Date(entry.until).toISOString(),
+      reason: `wrote tool calls as text that could not be recovered (${entry.strikes}× within ` +
+        `${TEXT_TOOL_CALL_STRIKE_WINDOW_MS / 60_000} min) — its serving backend likely has no tool-call parser`,
+    });
+  }
+  return active;
+}
+
+/**
  * How long a conversation stays pinned to the candidate that served it.
  *
  * Long enough to cover a subagent's whole run — the agents this protects are
@@ -1303,6 +1438,8 @@ export function clearCooldowns(): void {
   cooldowns.clear();
   providerCooldowns.clear();
   capability400Counts.clear();
+  textToolCallStrikes.clear();
+  textToolCallCooldowns.clear();
   stickyCandidates.clear();
 }
 
@@ -1384,6 +1521,11 @@ async function readWholeOrPassThrough(
  * `counts` once the body has been read: at stream end for SSE, at once for
  * JSON. Calls `onUnparsed` when a call could not be recovered. Any other
  * status or content type passes through untouched and unbuffered.
+ *
+ * With `fallThrough` (a tier candidate, which has a next one to ask) a turn
+ * whose unrecoverable call can still be withdrawn — a JSON reply, or a stream
+ * held whole by `holdForTextToolCalls` — comes back `unrecoverable` instead of
+ * being served. Without it (a bare key) every turn is served as before.
  */
 async function recoverTextToolCalls(
   response: RouterResponse,
@@ -1392,7 +1534,8 @@ async function recoverTextToolCalls(
   counts: TextToolCallCounts,
   onUnparsed?: (unparsed: number) => void,
   capture?: { alias: string; candidate: string; outbound: Buffer },
-): Promise<RouterResponse> {
+  fallThrough = false,
+): Promise<RouterResponse | UnrecoverableResponse> {
   if (response.status !== 200) return response;
   const tools = toolSchemas(req.body);
   // Recovery has failed in production while every replay of the same text
@@ -1402,7 +1545,9 @@ async function recoverTextToolCalls(
   const settle = (found: TextToolCallCounts): void => {
     counts.recovered = found.recovered;
     counts.unparsed = found.unparsed;
-    if (found.unparsed > 0) {
+    // A turn the client walked away from was cut off, not misbehaved: the
+    // rewriter's cleanup still settles it, but it is no strike, cooldown or capture.
+    if (found.unparsed > 0 && !clientLeft(req)) {
       onUnparsed?.(found.unparsed);
       if (capture !== undefined) {
         // Not awaited: this runs as the stream ends, and the client's last
@@ -1426,7 +1571,21 @@ async function recoverTextToolCalls(
       body = tee.stream;
       upstream = tee.seen;
     }
-    return { ...response, body: rewriteTextToolCallStream(body, tools, settle) };
+    if (!fallThrough) return { ...response, body: rewriteTextToolCallStream(body, tools, settle) };
+    // Held until it is clear the turn carries no call that cannot be
+    // recovered, so one that does can be withdrawn and the next candidate
+    // asked instead (`holdForTextToolCalls`).
+    const outcome = await holdForTextToolCalls(
+      body,
+      (input) => rewriteTextToolCallStream(input, tools, settle),
+      () => counts.unparsed,
+      deps.textToolCallHoldLimits ?? TEXT_TOOL_CALL_HOLD_LIMITS,
+      req.signal,
+    );
+    // Answered upstream and so billed: what was held goes back for its row.
+    if (outcome.kind === 'client-gone') return Object.assign(clientGone(), { held: { status: response.status, headers: response.headers, body: outcome.held } });
+    if (outcome.kind === 'unrecoverable') return { ...response, body: outcome.held, unrecoverable: true };
+    return { ...response, body: outcome.body };
   }
   if (!type.includes('application/json')) return response;
   let read: { whole: Buffer } | { passThrough: AsyncIterable<Uint8Array> & { cancel(): void } };
@@ -1435,9 +1594,13 @@ async function recoverTextToolCalls(
       ? { whole: response.body }
       : await readWholeOrPassThrough(response.body, deps.textToolCallReadLimits ?? TEXT_TOOL_CALL_READ_LIMITS);
   } catch (error) {
-    // The client left while the body was still arriving: the same answer
-    // every other forwarding path gives, and like those, no ledger row.
-    if (clientLeft(req)) return clientGone();
+    // The client left while the body was still arriving. The upstream had
+    // answered, so a tier candidate gets the row a held stream cut off the
+    // same way gets: served and incomplete. What had arrived is lost with the
+    // aborted read, so the row carries no usage (`held` is empty).
+    if (clientLeft(req)) {
+      return Object.assign(clientGone(), { held: { status: response.status, headers: response.headers, body: Buffer.alloc(0) } });
+    }
     throw error;
   }
   // A body the bounded read gave up on is served as it arrived, with nothing
@@ -1447,7 +1610,20 @@ async function recoverTextToolCalls(
   upstream = () => whole;
   const { body, counts: found } = rewriteTextToolCallJson(whole, tools);
   settle(found);
+  // Read whole, so nothing has reached the client yet.
+  if (fallThrough && found.unparsed > 0) return { ...response, body, unrecoverable: true };
   return { ...response, body };
+}
+
+/**
+ * A 200 whose turn held a tool call written as text that could not be
+ * recovered, read in full and never sent: the candidate loop falls past it,
+ * and serves `body` only when no other candidate serves instead.
+ */
+interface UnrecoverableResponse extends RouterResponse { body: Buffer; unrecoverable: true }
+
+function isUnrecoverable(response: RouterResponse): response is UnrecoverableResponse {
+  return (response as Partial<UnrecoverableResponse>).unrecoverable === true;
 }
 
 /**
@@ -2257,6 +2433,8 @@ async function forwardToLitellm(
   }
 }
 
+const LITELLM_SESSION_HEADER = 'x-litellm-session-id';
+
 function litellmHeaders(headers: Record<string, string>, litellmKey: string): Record<string, string> {
   const out = { ...headers };
   for (const name of Object.keys(out)) {
@@ -2279,6 +2457,12 @@ function litellmHeaders(headers: Record<string, string>, litellmKey: string): Re
  * session id; failing both, nothing, and the upstream's refusal reaches the
  * fallback below.
  *
+ * The same value goes to LiteLLM as `x-litellm-session-id`, which its proxy
+ * reads into `litellm_session_id`. LiteLLM's chatgpt (codex OAuth) provider
+ * sends that as the upstream `session_id` header, which is what ChatGPT's
+ * prompt cache keys on; without it LiteLLM invents a fresh uuid4 per request
+ * and the cache almost never hits.
+ *
  * Every other `x-*` header is dropped, AFTER the session is read from them:
  * for those model groups LiteLLM forwards every client `x-*` header upstream,
  * and Claude Code's session id and metadata are not a third party's business.
@@ -2293,7 +2477,10 @@ function withSessionHeader(
   const out = Object.fromEntries(
     Object.entries(headers).filter(([name]) => !name.toLowerCase().startsWith('x-')),
   );
-  if (session !== undefined) out[OPENCODE_SESSION_HEADER] = session;
+  if (session !== undefined) {
+    out[OPENCODE_SESSION_HEADER] = session;
+    out[LITELLM_SESSION_HEADER] = session;
+  }
   return out;
 }
 
@@ -2373,6 +2560,75 @@ async function routeTierRequest(
   unavailable: string | undefined,
   auto?: { alias: string; record?: AutoRouteRecord },
 ): Promise<RouterResponse> {
+  const withdrawn: WithdrawnTurn[] = [];
+  try {
+    return await routeTierCandidates(req, deps, alias, startedAt, session, tenant, unavailable, auto, withdrawn);
+  } finally {
+    // Each withdrawn turn was billed by its upstream, so each is a ledger row
+    // of its own — priced and counted toward `[budget]` like any other —
+    // marked `withdrawn` so reports keep it apart from served requests. A
+    // turn served after all (no other candidate served) is recorded as the
+    // served row instead, never twice. Recorded on every way out, a client
+    // that left included: the upstream was paid either way.
+    for (const turn of withdrawn) {
+      if (!turn.served) await recordWithdrawnTurn(turn, deps);
+    }
+  }
+}
+
+/** A turn withdrawn for an unrecoverable text tool call, with the context its ledger row needs. */
+interface WithdrawnTurn {
+  response: UnrecoverableResponse;
+  ctx: RecordContext;
+  /** Set when no other candidate served and this turn was served after all. */
+  served: boolean;
+}
+
+/**
+ * Writes a withdrawn turn's ledger row, its usage read from the held body by
+ * the same collector a served row uses. A stream that never reported usage
+ * yields an incomplete row with zero tokens. The router prices nothing: serve
+ * prices every row in `priceRow` (src/commands/serve.ts), and that is where
+ * such a row must stay unpriced rather than become $0.
+ */
+async function recordWithdrawnTurn(turn: WithdrawnTurn, deps: RouterDeps): Promise<void> {
+  // The auto-route decision rides on the served row only, or it is counted twice.
+  await recordHeld(turn.response, { ...turn.ctx, autoRoute: undefined, withdrawn: true }, deps);
+}
+
+/** Writes the ledger row for a held body that no client will read through `withUsageRecording`. */
+async function recordHeld(response: HeldBody, ctx: RecordContext, deps: RouterDeps): Promise<void> {
+  if (deps.recordUsage === undefined) return;
+  try {
+    const recorded = withUsageRecording(replayHeld(response), ctx, deps);
+    if (!Buffer.isBuffer(recorded.body)) for await (const _ of recorded.body) { /* emits the row at its end */ }
+  } catch { /* accounting is strictly best-effort */ }
+}
+
+/** What a hold kept back: the response's status and headers, and the bytes held. */
+interface HeldBody { status: number; headers: Record<string, string>; body: Buffer }
+
+/** A held turn as the body a client would have read: a stream for SSE, the buffer otherwise. */
+function replayHeld(response: HeldBody): RouterResponse {
+  const held = response.body;
+  const body = (response.headers['content-type'] ?? '').includes('text/event-stream')
+    ? (async function* () { yield new Uint8Array(held); })()
+    : held;
+  return { status: response.status, headers: response.headers, body };
+}
+
+/** The candidate loop behind `routeTierRequest`; turns it withdraws are left in `withdrawn` to record. */
+async function routeTierCandidates(
+  req: RouterRequest,
+  deps: RouterDeps,
+  alias: string,
+  startedAt: number,
+  session: string | undefined,
+  tenant: RouterTenant,
+  unavailable: string | undefined,
+  auto: { alias: string; record?: AutoRouteRecord } | undefined,
+  withdrawn: WithdrawnTurn[],
+): Promise<RouterResponse> {
   // Once per request, not once per candidate: a candidate skipped for being
   // in its post-failure cooldown window would otherwise mean this never
   // fires at all, silently masking a real config change behind an unrelated
@@ -2398,7 +2654,24 @@ async function routeTierRequest(
   const now = deps.now ?? Date.now;
   const flattened = litellmBody(req.body);
   const ranked = resolved.routes.filter((route) => route.native !== undefined);
-  const attempts: { key: string; status: number }[] = [];
+  /** The ledger context a LiteLLM-path row for `route` shares with every other. */
+  const candidateCtx = (route: TierRoute): Omit<RecordContext, 'attempts'> => ({
+    startedAt,
+    session,
+    project: tenant.project,
+    tenant: tenant.id,
+    tenantConfig: tenant.config,
+    alias,
+    role: resolved.role,
+    tier: resolved.tier,
+    ...routeFields,
+    key: route.key,
+    effort: route.effort,
+    gateway: route.native!.gateway,
+    ...(route.native!.auth === 'session' ? sessionCredentialField(req.headers) : {}),
+    upstream: 'litellm',
+  });
+  const attempts: LedgerAttempt[] = [];
   let skippedUnavailableLitellm = false;
   // Why LiteLLM-routed candidates are being skipped: serve's own mark at the
   // start of the request, or the child refusing a connection partway through.
@@ -2421,6 +2694,13 @@ async function routeTierRequest(
   // rather than a 529: a request every candidate refuses may really be
   // malformed, and the caller should see the refusal itself.
   let lastMessageless: { at: number; headers: Record<string, string>; body: Buffer; route: TierRoute } | undefined;
+  // The turn withdrawn for an unrecoverable text tool call, if one was. If no
+  // candidate serves after it, it is served after all: the client is no worse
+  // off than before the turn could be withdrawn, and better off than with a
+  // 529 or a later candidate's 400.
+  let lastUnrecoverable: {
+    at: number; turn: WithdrawnTurn; route: TierRoute; counts: TextToolCallCounts;
+  } | undefined;
 
   // Which candidate already served this conversation, if any. Preferring it
   // keeps a multi-turn agent on one model, which is what stops its transcript
@@ -2506,6 +2786,10 @@ async function routeTierRequest(
     // fields for different reasons, and the strip must see the original.
     const body = withEffort(withModel(prepared, direct ? route.native!.id : cool), direct ? undefined : route.effort);
     const variant = joinCandidate(route.key, route.effort);
+    // When this candidate was asked, for a withdrawn turn's own duration.
+    // Until something has been tried, that is when the request started (one
+    // clock read fewer on the common path).
+    const candidateStartedAt = attempts.length === 0 ? startedAt : now();
     const response = direct
       ? await forwardDirect(
         body,
@@ -2556,7 +2840,7 @@ async function routeTierRequest(
       const cooling = !('replaced' in response && response.replaced === true) &&
         deps.gatewayUnavailable?.(tenant, route.native!.gateway) === undefined;
       if (cooling) {
-        cooldowns.set(cool, now() + TIER_COOLDOWN_MS);
+        coolUntil(cool, now() + TIER_COOLDOWN_MS);
         if (gateway !== undefined) providerCooldowns.set(providerCooldownKey(tenant, gateway), now() + TIER_COOLDOWN_MS);
       }
       skippedDropped.push(loginRefusedMessage(deps, tenant, route.native!.gateway));
@@ -2605,7 +2889,7 @@ async function routeTierRequest(
     if (response.status >= 400 && !TERMINAL_STATUSES.has(response.status)) {
       await drainBody(response.body, deps);
       attempts.push({ key: route.key, status: response.status });
-      cooldowns.set(cool, now() + TIER_COOLDOWN_MS);
+      coolUntil(cool, now() + TIER_COOLDOWN_MS);
       // An account-level refusal is about the gateway, not this model, so it
       // cools the gateway too and every sibling on it is skipped rather than
       // asked the same question again. The candidate is cooled as well: it
@@ -2654,7 +2938,7 @@ async function routeTierRequest(
         : undefined;
       if (modelUnservable !== undefined) {
         attempts.push({ key: route.key, status: response.status });
-        cooldowns.set(cool, now() + TIER_COOLDOWN_MS);
+        coolUntil(cool, now() + TIER_COOLDOWN_MS);
         if (conversation !== undefined) stickyDemote(conversation, route.key);
         deps.log?.(`router: ${route.key} refused (400 "${modelUnservable}"), cooling it and trying next`);
         // A refusal every candidate gives may be the request's own fault (a
@@ -2665,7 +2949,7 @@ async function routeTierRequest(
       }
       if (unservable !== undefined) {
         attempts.push({ key: route.key, status: response.status });
-        cooldowns.set(cool, now() + TIER_COOLDOWN_MS);
+        coolUntil(cool, now() + TIER_COOLDOWN_MS);
         const refusingGateway = gatewayOf(route);
         if (refusingGateway !== undefined) {
           providerCooldowns.set(providerCooldownKey(tenant, refusingGateway), now() + TIER_COOLDOWN_MS);
@@ -2697,7 +2981,7 @@ async function routeTierRequest(
         if (seen >= TIER_CAPABILITY_400_THRESHOLD) {
           capability400Counts.delete(counterKey);
           attempts.push({ key: route.key, status: response.status });
-          cooldowns.set(cool, now() + TIER_COOLDOWN_MS);
+          coolUntil(cool, now() + TIER_COOLDOWN_MS);
           deps.log?.(
             `router: ${route.key} cannot serve this request shape ` +
             `(${seen}× 400 "${fingerprint}"), cooling down and trying next`,
@@ -2733,6 +3017,12 @@ async function routeTierRequest(
         `router: ${alias} ${variant} answered ${response.status} (terminal): ` +
         JSON.stringify(bodyBuf.subarray(0, 200).toString()),
       );
+      // A turn was withdrawn earlier in this request: the client is better
+      // off with it than with this refusal, so it is served after all.
+      if (lastUnrecoverable !== undefined) {
+        attempts.push({ key: route.key, status: response.status });
+        break;
+      }
       return withUsageRecording({
         status: response.status,
         headers: response.headers,
@@ -2761,17 +3051,67 @@ async function routeTierRequest(
     }
     // A model whose serving backend has no tool-call parser writes its calls
     // as text and ends the turn; Claude Code then ends the agent. Recover
-    // what parses; an unparsable call still reaches the client as text (it
-    // has started streaming), but cools this candidate so the next request
-    // takes the next one. LiteLLM path only: Anthropic speaks tool_use itself.
+    // what parses. A turn with a call that does not parse is withdrawn and the
+    // next candidate asked, as for a 5xx — unless part of it had already
+    // streamed (a real tool_use came first, a hold limit was hit, or a turn
+    // was already withdrawn in this request), when it reaches the client as
+    // text. Either way the candidate
+    // cools, for much longer once it keeps doing it (`strikeTextToolCall`).
+    // LiteLLM path only: Anthropic speaks tool_use itself.
     const textToolCalls: TextToolCallCounts = { recovered: 0, unparsed: 0 };
-    let servedResponse = response;
+    let servedResponse: RouterResponse = response;
     if (!direct) {
-      servedResponse = await recoverTextToolCalls(response, req, deps, textToolCalls, (n) => {
-        cooldowns.set(cool, now() + TIER_COOLDOWN_MS);
-        deps.log?.(`router: ${alias} ${variant} wrote ${n} tool call(s) as text that could not be recovered; cooling it`);
-      }, { alias, candidate: variant, outbound: body });
-      if (isClientGone(servedResponse)) return servedResponse;
+      const recovered = await recoverTextToolCalls(response, req, deps, textToolCalls, (n) => {
+        const at = now();
+        const coolMs = strikeTextToolCall(tenant, route.key, cool, at, startedAt);
+        coolUntil(cool, at + coolMs);
+        deps.log?.(
+          `router: ${alias} ${variant} wrote ${n} tool call(s) as text that could not be recovered; ` +
+          (coolMs > TIER_COOLDOWN_MS
+            ? `cooling it for ${Math.round(coolMs / 60_000)} min (repeated: its backend likely has no tool-call parser)`
+            : 'cooling it'),
+        );
+      }, { alias, candidate: variant, outbound: body },
+      // One withdrawal per request: later candidates stream through and are
+      // only cooled, so a request waits out at most one hold.
+      withdrawn.length === 0);
+      if (isClientGone(recovered)) {
+        // The client left while the turn was held. The upstream answered and
+        // billed it, so it gets the row a disconnect mid-stream gets: served,
+        // and incomplete, with whatever usage the held bytes carry.
+        const held = (recovered as { held?: HeldBody }).held;
+        if (held !== undefined) {
+          // No `textToolCalls`: the rewriter settles its counts in its
+          // cleanup, after this cancel, from only what it had scanned of a
+          // turn that was cut off — a partial tally, so none is reported (an
+          // absent field, rather than a count that reads as complete). The
+          // cut-off turn is also no strike: `settle` ignores a departed client.
+          await recordHeld(held, { ...candidateCtx(route), attempts, incomplete: true }, deps);
+        }
+        return recovered;
+      }
+      if (isUnrecoverable(recovered)) {
+        attempts.push({ key: route.key, status: recovered.status });
+        if (conversation !== undefined) stickyDemote(conversation, route.key);
+        const turn: WithdrawnTurn = {
+          response: recovered,
+          served: false,
+          ctx: {
+            ...candidateCtx(route),
+            // Its fall-through is on the served row's attempts; repeating it here would count it twice.
+            attempts: [],
+            textToolCalls: { ...textToolCalls },
+            // Its row is written once routing ends; its duration is its own.
+            endedAt: now(),
+            measuredFrom: candidateStartedAt,
+          },
+        };
+        withdrawn.push(turn);
+        lastUnrecoverable = { at: attempts.length, turn, route, counts: { ...textToolCalls } };
+        deps.log?.(`router: ${alias} ${variant} turn withdrawn before reaching the client; trying next`);
+        continue;
+      }
+      servedResponse = recovered;
     }
     // Pin only on a response the client actually receives IN FULL. A 400
     // handed back above is a request this candidate could not serve, and a
@@ -2779,11 +3119,22 @@ async function routeTierRequest(
     // either would make the next turn prefer the model that just failed. The
     // status alone arrives before a single byte of the body, so the decision
     // waits for the body's end.
-    const completed = conversation === undefined
+    // A served turn also clears the candidate's run of unrecoverable text
+    // calls; observed only when there is a run to clear, or a pin to set.
+    const completed = conversation === undefined && !textToolCallStrikes.has(cool)
       ? servedResponse
       : withCompletion(servedResponse, (complete) => {
+        const clean = complete && textToolCalls.unparsed === 0;
+        if (clean) {
+          // Only a turn that began after the latest strike clears the run: one
+          // that started earlier was in flight when the strike landed, and
+          // under fan-out it would wipe a strike the escalation needs.
+          const last = textToolCallStrikes.get(cool)?.at(-1);
+          if (last === undefined || startedAt > last) textToolCallStrikes.delete(cool);
+        }
+        if (conversation === undefined) return;
         // An unparsed tool call is a turn the model never served: record it, but never prefer it again.
-        if (complete && textToolCalls.unparsed === 0) stickySet(conversation, route.key, now());
+        if (clean) stickySet(conversation, route.key, now());
         else stickyIncomplete(conversation, route.key, now());
       });
     deps.log?.(`${req.method} ${req.url} model=${alias} -> ${variant} -> ${direct ? 'direct' : 'litellm'}`);
@@ -2830,6 +3181,38 @@ async function routeTierRequest(
       headers: { 'content-type': 'application/json' },
       body: anthropicErrorBody('router_error', unavailable!),
     };
+  }
+  if (lastUnrecoverable !== undefined) {
+    // Nothing served after the withdrawn turn: serve it, as the router did
+    // before turns could be withdrawn — whatever later candidates answered
+    // (a 5xx, a refusal 400), since the client is better off with a turn it
+    // can read than with their error. Checked before `lastMessageless` for
+    // that reason. Its own attempt comes off the list, because the row is
+    // now the candidate that served.
+    const last = lastUnrecoverable;
+    last.turn.served = true;
+    attempts.splice(last.at - 1, 1);
+    deps.log?.(`router: no other route for ${label} served; returning ${last.route.key}'s turn with its unrecovered text tool call`);
+    if (conversation !== undefined) stickyIncomplete(conversation, last.route.key, now());
+    // A held stream is replayed as a stream, so its usage is read as one.
+    return withUsageRecording(replayHeld(last.turn.response), {
+      startedAt,
+      session,
+      project: tenant.project,
+      tenant: tenant.id,
+      tenantConfig: tenant.config,
+      alias,
+      role: resolved.role,
+      tier: resolved.tier,
+      ...routeFields,
+      key: last.route.key,
+      effort: last.route.effort,
+      gateway: last.route.native!.gateway,
+      ...(last.route.native!.auth === 'session' ? sessionCredentialField(req.headers) : {}),
+      upstream: 'litellm',
+      attempts,
+      textToolCalls: last.counts,
+    }, deps);
   }
   if (lastMessageless !== undefined && lastMessageless.at === attempts.length) {
     const last = lastMessageless;
@@ -3164,31 +3547,34 @@ export async function routeRequest(req: RouterRequest, deps: RouterDeps): Promis
     const textToolCalls: TextToolCallCounts = { recovered: 0, unparsed: 0 };
     // No cooldown here: a bare key has no next candidate to fall through to.
     const served = await recoverTextToolCalls(response, req, deps, textToolCalls, undefined, { alias: alias ?? requested ?? '?', candidate: alias ?? requested ?? 'unknown', outbound: body });
-    if (isClientGone(served)) return served;
-    return withUsageRecording(
-      served,
-      {
-        startedAt,
-        session,
-        project: tenant.project,
+    const ctx: RecordContext = {
+      startedAt,
+      session,
+      project: tenant.project,
       tenant: tenant.id,
       tenantConfig: tenant.config,
-        alias: alias ?? '',
-        // For a direct `--model <key>` request, `alias` IS the config key.
-        // Recording it (and its gateway) is what lets `resolvePrice` price this
-        // request class at all; without it a direct-model row is `source:
-        // 'none'` even when full price config exists for that exact model.
-        // `key` is only set when `alias` is defined, matching how optional
-        // `RecordContext` fields are handled elsewhere — never an own property
-        // with value `undefined`.
-        ...(alias !== undefined ? { key: alias, gateway: deps.resolveGateway?.(alias, tenant) } : {}),
-        effort: bareEffort,
-        upstream: 'litellm',
-        attempts: [],
-        textToolCalls,
-      },
-      deps,
-    );
+      alias: alias ?? '',
+      // For a direct `--model <key>` request, `alias` IS the config key.
+      // Recording it (and its gateway) is what lets `resolvePrice` price this
+      // request class at all; without it a direct-model row is `source:
+      // 'none'` even when full price config exists for that exact model.
+      // `key` is only set when `alias` is defined, matching how optional
+      // `RecordContext` fields are handled elsewhere — never an own property
+      // with value `undefined`.
+      ...(alias !== undefined ? { key: alias, gateway: deps.resolveGateway?.(alias, tenant) } : {}),
+      effort: bareEffort,
+      upstream: 'litellm',
+      attempts: [],
+    };
+    if (isClientGone(served)) {
+      // The client left mid-read of a JSON reply the upstream had answered:
+      // recorded once, served and incomplete, as on the tier path. No text-call
+      // counts — the body was never read whole, so none were found.
+      const held = (served as { held?: HeldBody }).held;
+      if (held !== undefined) await recordHeld(held, { ...ctx, incomplete: true }, deps);
+      return served;
+    }
+    return withUsageRecording(served, { ...ctx, textToolCalls }, deps);
   }
 
   try {
@@ -3293,6 +3679,9 @@ export function createRouterServer(deps: RouterDeps): Server {
           ui: deps.ui !== undefined,
           instanceId: deps.instanceId ?? null, tenants: deps.tenants?.() ?? [],
           problems: deps.healthProblems?.() ?? [],
+          // Candidates cooling for much longer than a failure usually earns,
+          // named with why, for `sonata doctor`.
+          cooldowns: activeTextToolCallCooldowns((deps.now ?? Date.now)()),
         }));
         return;
       }

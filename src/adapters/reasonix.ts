@@ -193,21 +193,36 @@ function interactiveScript(input: PlanInput): string {
     '(',
     // 60 seconds of half-second polls. If the TUI never becomes ready the
     // prompt is simply never typed, and the run stalls visibly rather than
-    // typing a task into whatever is on screen instead.
+    // typing a task into whatever is on screen instead. The exit sentinel is
+    // the other way out of this loop: if the harness died before becoming
+    // ready, there is no composer to type into and typing anyway lands the
+    // task text blind into whatever the pane holds.
     '  for _ in $(seq 1 120); do',
     `    tmux capture-pane -p -t "$SESSION" | grep -qF ${shellQuote(READY_MARKER)} && break`,
+    `    [ -f ${shellQuote(exitPath)} ] && break`,
     '    sleep 0.5',
     '  done',
-    `  tmux send-keys -t "$SESSION" -l ${shellQuote(prompt)}`,
+    // Only type when the composer is actually there. Falling through because
+    // the harness exited means the run is already over; sending the task and
+    // Enter into a dead or unrelated pane answers nothing and can act on
+    // whatever is on screen instead.
+    // remain-on-exit keeps an exited pane's contents (marker included), so the
+    // exit sentinel is checked here too, and again before Enter.
+    `  if [ ! -f ${shellQuote(exitPath)} ] && tmux capture-pane -p -t "$SESSION" | grep -qF ${shellQuote(READY_MARKER)}; then`,
+    `    tmux send-keys -t "$SESSION" -l ${shellQuote(prompt)}`,
     // Enter is sent separately: -l types literally, and the composer needs a
     // beat to register the text before it will submit it.
-    '  sleep 1',
-    '  tmux send-keys -t "$SESSION" Enter',
+    '    sleep 1',
+    `    [ -f ${shellQuote(exitPath)} ] || tmux send-keys -t "$SESSION" Enter`,
+    '  fi',
     // The report is the harness's own "task over" signal. Until it lands, the
     // model may still be working or waiting on an approval, and quitting would
     // throw the run away. If it never lands, this waits forever and the
     // watchdog ends the run — the same outcome as any harness that hangs.
-    `  while [ ! -f ${shellQuote(reportPath)} ]; do sleep 2; done`,
+    // The exit sentinel is the other way out: a run whose harness exits
+    // without a report (a crash before the model wrote one) would otherwise
+    // leave this watcher looping forever, leaking the subshell past the run.
+    `  while [ ! -f ${shellQuote(reportPath)} ] && [ ! -f ${shellQuote(exitPath)} ]; do sleep 2; done`,
     // Ctrl-D, never the documented `exit` + Enter. Typing blind into a TUI
     // races with it: if a selection list happens to be open, the letters are
     // swallowed by the list and the Enter picks whatever row is highlighted.

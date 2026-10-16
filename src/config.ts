@@ -1023,7 +1023,7 @@ export function parseConfig(text: string): SonataConfig {
       tailWindowSeconds: runSeconds(raw.run, 'tail_window_seconds', 20),
       stallTimeoutSeconds: runSeconds(raw.run, 'stall_timeout_seconds', 120),
       runTimeoutSeconds: runSeconds(raw.run, 'run_timeout_seconds', 1800),
-      dispatchWindowSeconds: runSeconds(raw.run, 'dispatch_window_seconds', 1500),
+      dispatchWindowSeconds: runSeconds(raw.run, 'dispatch_window_seconds', 540),
     },
   };
 }

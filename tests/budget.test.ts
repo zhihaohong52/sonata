@@ -45,6 +45,12 @@ describe('spentTodayUsd', () => {
     expect(spentTodayUsd(home, noon)).toBeCloseTo(1.0, 10);
   });
 
+  it('counts a withdrawn turn as spend: the upstream billed it', () => {
+    appendRow(home, row('2026-09-03T01:00:00.000Z', { source: 'model', totalUsd: 0.25 }));
+    appendRow(home, row('2026-09-03T01:00:00.000Z', { source: 'model', totalUsd: 0.5 }, { withdrawn: true }));
+    expect(spentTodayUsd(home, noon)).toBeCloseTo(0.75, 10);
+  });
+
   it('counts a real zero price, which a free tier produces', () => {
     // `source: 'none'` is the unpriced marker; a totalUsd of 0 is a price.
     appendRow(home, row('2026-09-03T01:00:00.000Z', { source: 'model', totalUsd: 0 }));

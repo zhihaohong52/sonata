@@ -91,7 +91,7 @@ describe('codexAdapter.plan — default mode', () => {
   });
 
   it('quits after the model writes its report', () => {
-    expect(p.script).toContain("while [ ! -f '/repo/.sonata/runs/abc123/report.md' ]; do sleep 2; done");
+    expect(p.script).toContain("while [ ! -f '/repo/.sonata/runs/abc123/report.md' ] && [ ! -f '/repo/.sonata/runs/abc123/exit' ]; do sleep 2; done");
     expect(p.script).toContain('tmux send-keys -t "$SESSION" C-u');
     expect(p.script).toContain('tmux send-keys -t "$SESSION" C-d');
     expect(p.script.indexOf('C-u')).toBeLessThan(p.script.indexOf('C-d'));

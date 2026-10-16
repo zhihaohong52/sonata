@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
-import { classifierCostNote, cmdUsage, coveredLabel, spentLabel, type UsageDimension, type UsageReport } from '../../commands/usage.js';
+import { createLedgerReader } from '../../ledger.js';
+import { classifierCostNote, cmdUsage, coveredLabel, spentLabel, type UsageDimension, type UsageMemo, type UsageReport } from '../../commands/usage.js';
 import { usableWidth } from '../theme.js';
 import { fit } from '../components/screen.js';
 import { usePalette } from '../theme-context.js';
@@ -38,6 +39,8 @@ export function UsageScreen({ cwd, home, by: initialBy = 'model', since: initial
   const [failure, setFailure] = useState<string | undefined>(undefined);
   const [at, setAt] = useState<number | undefined>(undefined);
   const [now, setNow] = useState(() => Date.now());
+  const atRef = useRef<number | undefined>(undefined);
+  atRef.current = at;
   const palette = usePalette();
 
   useInput((input) => {
@@ -51,9 +54,12 @@ export function UsageScreen({ cwd, home, by: initialBy = 'model', since: initial
     // A changed axis is a different report: clear the old one so the board
     // never shows last view's buckets under this view's heading.
     setReport(undefined);
+    // Incremental reads and a re-aggregation memo, per effect run (axes change = fresh).
+    const reader = createLedgerReader(home);
+    const memo: UsageMemo = {};
     const sample = async (): Promise<void> => {
       try {
-        const next = await cmdUsage({ home, since, by, project: project ? cwd : undefined, json: false });
+        const next = await cmdUsage({ home, since, by, project: project ? cwd : undefined, json: false, reader, memo });
         if (cancelled) return;
         setReport(next);
         setFailure(undefined);
@@ -66,7 +72,14 @@ export function UsageScreen({ cwd, home, by: initialBy = 'model', since: initial
     void sample();
     const poll = setInterval(() => { void sample(); }, USAGE_POLL_MS);
     // Ticks separately so a stalled poll shows as an ageing "updated" line.
-    const clock = setInterval(() => { setNow(Date.now()); }, 1000);
+    // Re-renders only when the displayed "updated Ns ago" text would change.
+    const clock = setInterval(() => {
+      setNow((prev) => {
+        const next = Date.now();
+        const base = atRef.current;
+        return base !== undefined && agoLabel(next - base) === agoLabel(prev - base) ? prev : next;
+      });
+    }, 1000);
     return () => { cancelled = true; clearInterval(poll); clearInterval(clock); };
   }, [home, cwd, by, since, project]);
 
@@ -85,6 +98,14 @@ export function UsageScreen({ cwd, home, by: initialBy = 'model', since: initial
     if (report.unpriced.requests > 0) {
       notes.push({
         text: `unpriced  ${report.unpriced.requests} requests, ${compactCount(report.unpriced.input)} in, ${compactCount(report.unpriced.output)} out — not in the total`,
+        tone: 'MID',
+      });
+    }
+    if (report.withdrawn.turns > 0) {
+      // Billed, so spend; not served, so not in the total above.
+      const w = report.withdrawn;
+      notes.push({
+        text: `withdrawn ${w.turns} turn${w.turns === 1 ? '' : 's'}, ${money(w.costUsd)}${w.coveredUsd > 0 ? `, ${money(w.coveredUsd)} covered` : ''}${w.unpriced > 0 ? `, ${w.unpriced} unpriced` : ''} — retried on the next model; not in the total, counted toward [budget]`,
         tone: 'MID',
       });
     }

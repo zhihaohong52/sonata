@@ -140,7 +140,7 @@ describe('nativeTomlFor', () => {
     expect(out).toContain('tail_window_seconds = 20');
     expect(out).toContain('stall_timeout_seconds = 120');
     expect(out).toContain('run_timeout_seconds = 1800');
-    expect(out).toContain('dispatch_window_seconds = 1500');
+    expect(out).toContain('dispatch_window_seconds = 540');
   });
 
   it('preserves existing [run] settings when given', () => {
@@ -298,6 +298,25 @@ describe('nativeTomlFor — avoid_gateways', () => {
 
   it('omits the key entirely when nothing is avoided', () => {
     const toml = nativeTomlFor({ code: [candidate] }, {}, undefined, {}, [candidate]);
+    expect(toml).not.toContain('avoid_gateways');
+    expect(parseConfig(toml).avoidGateways).toBeUndefined();
+  });
+
+  it('drops an avoided gateway the file does not write rather than emitting an unparseable name', () => {
+    // parseConfig refuses an unknown gateway name, so a saved avoidance for a
+    // gateway whose every model was deselected this run would make the whole
+    // config fail to load. Same filter gateway_order already carries.
+    const toml = nativeTomlFor(
+      { code: [candidate] }, {}, undefined, {}, [candidate], undefined, ['gone', 'acme'],
+    );
+    expect(toml).not.toContain('gone');
+    expect(parseConfig(toml).avoidGateways).toEqual(['acme']);
+  });
+
+  it('omits the key when every avoided gateway is unwritten', () => {
+    const toml = nativeTomlFor(
+      { code: [candidate] }, {}, undefined, {}, [candidate], undefined, ['gone'],
+    );
     expect(toml).not.toContain('avoid_gateways');
     expect(parseConfig(toml).avoidGateways).toBeUndefined();
   });

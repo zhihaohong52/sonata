@@ -38,6 +38,41 @@ beforeEach(() => {
 
 const opts = () => ({ cwd, home, tier: 'code-simple', task: 'do the thing', rolesDir: '/roles' });
 
+describe('cmdDispatch onLaunch', () => {
+  it('reports each launched run id before blocking, so a cut-off caller can resume', async () => {
+    const seen: Array<{ id: string; modelKey: string }> = [];
+    const outcome = await cmdDispatch({ ...opts(), onLaunch: (id, modelKey) => { seen.push({ id, modelKey }); } }, {
+      run: async () => ({ id: 'r1', session: 's', interactive: false }),
+      wait: async () => ({ id: 'r1', state: 'DONE', report: 'did it', lines: [], degraded: false }) as never,
+    });
+    expect(outcome.id).toBe('r1');
+    expect(seen).toEqual([{ id: 'r1', modelKey: 'flash' }]);
+  });
+
+  it('a throwing onLaunch is not a failed launch and starts no second candidate', async () => {
+    const launched: string[] = [];
+    const outcome = await cmdDispatch({ ...opts(), onLaunch: () => { throw new Error('observer broke'); } }, {
+      run: async (o) => { launched.push(o.model); return { id: `r-${o.model}`, session: 's', interactive: false }; },
+      wait: async (o) => ({ id: o.id, state: 'DONE', report: 'did it', lines: [], degraded: false }) as never,
+    });
+    expect(launched).toEqual(['flash']);
+    expect(outcome.id).toBe('r-flash');
+    expect(outcome.state).toBe('DONE');
+  });
+
+  it('reports every candidate it launches across fallthrough', async () => {
+    const seen: string[] = [];
+    const outcome = await cmdDispatch({ ...opts(), onLaunch: (id) => { seen.push(id); } }, {
+      run: async (o) => ({ id: `r-${o.model}`, session: 's', interactive: false }),
+      wait: async (o) => (o.id === 'r-flash'
+        ? { id: 'r-flash', state: 'DONE', report: '', degraded: true, lines: [] }
+        : { id: 'r-terra', state: 'DONE', report: 'terra did it', degraded: false, lines: [] }) as never,
+    });
+    expect(seen).toEqual(['r-flash', 'r-terra']);
+    expect(outcome.modelKey).toBe('terra');
+  });
+});
+
 describe('cmdDispatch', () => {
   it('returns the first candidate result when it succeeds', async () => {
     const outcome = await cmdDispatch(opts(), {

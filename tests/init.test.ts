@@ -387,6 +387,69 @@ describe('cmdInit (non-interactive)', () => {
       });
       expect(ran).toBe(true);
     });
+
+    it('interactive refuses when the broken file is at the chosen scope, and proceeds otherwise', async () => {
+      // The scope check runs after the wizard answers: a broken project
+      // config must not block a run whose wizard chose global, and vice
+      // versa. The broken file is never rewritten either way.
+      const hostFor = (configScope: 'project' | 'global') => ({
+        runTui: async (data: import('../src/tui-ink/app.js').WizardData) => ({
+          cancelled: false,
+          state: {
+            configScope,
+            providerKeys: ['opencode/opencode'],
+            nativeKeys: ['opencode-deepseek-v4-flash'],
+            roles: ['code'],
+            hookScope: 'skip' as const, routing: 'skip' as const, guidance: 'skip' as const,
+            tiers: data.initialState?.tiers,
+          },
+        }),
+        confirm: async () => true,
+      });
+      const broken = 'avoid_gateways = ["ghost"]\n';
+
+      // Broken project, wizard chooses global: proceeds, project untouched.
+      writeFileSync(join(cwd, 'sonata.toml'), broken);
+      const globalRes = await cmdInit({
+        installLitellm: NO_INSTALL,
+        cwd, home, packageRoot: process.cwd(), detect, write,
+        host: hostFor('global'),
+      });
+      expect(globalRes.configPath).toBe(join(home, '.config', 'sonata', 'sonata.toml'));
+      expect(readFileSync(join(cwd, 'sonata.toml'), 'utf8')).toBe(broken);
+      expect(lines.join('\n')).toMatch(/not reading/);
+    });
+
+    it('interactive refuses when the wizard chooses the broken scope', async () => {
+      const broken = 'avoid_gateways = ["ghost"]\n';
+      writeFileSync(join(cwd, 'sonata.toml'), broken);
+      const res = await cmdInit({
+        installLitellm: NO_INSTALL,
+        cwd, home, packageRoot: process.cwd(), detect, write,
+        host: {
+          runTui: async (data: import('../src/tui-ink/app.js').WizardData) => ({
+            cancelled: false,
+            state: {
+              configScope: 'project',
+              providerKeys: ['opencode/opencode'],
+              nativeKeys: ['opencode-deepseek-v4-flash'],
+              roles: ['code'],
+              hookScope: 'skip' as const, routing: 'skip' as const, guidance: 'skip' as const,
+              tiers: data.initialState?.tiers,
+            },
+          }),
+          confirm: async () => true,
+        },
+      });
+      // Refuses like a cancellation: nothing written, and the refused path
+      // is the project file the wizard chose.
+      expect(res.configPath).toBe(join(cwd, 'sonata.toml'));
+      expect(readFileSync(join(cwd, 'sonata.toml'), 'utf8')).toBe(broken);
+      expect(lines.join('\n')).toMatch(/cannot be read/);
+      // The CLI exits non-zero off an error problem, so the blocked result
+      // must carry one: nothing was written, which is not a success.
+      expect(res.problems.some((p) => p.severity === 'error' && /cannot be read/.test(p.message))).toBe(true);
+    });
   });
 
   it('leaving routing disabled warns in doctor for a tiered config', async () => {
@@ -984,7 +1047,7 @@ describe('cmdInit — allow-list upgrade', () => {
 
     const after = readSettings(settingsPath);
     expect(after.permissions?.allow).toEqual(expect.arrayContaining([
-      'Bash(sonata dispatch:*)', 'Bash(sonata wait:*)', 'Bash(sonata approve:*)',
+      'Bash(sonata dispatch:*)', 'Bash(sonata wait:*)',
     ]));
     // The stale entries are harmless to keep, but the point is the new ones exist.
     expect(after.permissions?.allow).toContain('mcp__sonata__dispatch');

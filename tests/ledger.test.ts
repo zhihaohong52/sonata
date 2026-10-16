@@ -85,6 +85,17 @@ describe('appendRow / readRows', () => {
     expect(rows[0].textToolCalls).toEqual({ recovered: 1, unparsed: 0 });
   });
 
+  it('keeps a withdrawn row and drops one whose withdrawn flag is not true', () => {
+    const base = { ts: new Date().toISOString(), ms: 1, alias: 'a', upstream: 'litellm', status: 200, complete: true,
+      tokens: { input: 1, output: 1, cacheRead: 0, cacheCreation: 0 }, price: { source: 'none' }, attempts: [] };
+    appendRow(home, { ...base, withdrawn: true } as LedgerRow);
+    appendRow(home, { ...base, withdrawn: 'yes' } as unknown as LedgerRow);
+    appendRow(home, { ...base, withdrawn: false } as unknown as LedgerRow);
+    const rows = readRows(home, 0, Date.now() + 1000);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].withdrawn).toBe(true);
+  });
+
   it('N appends produce N whole parseable lines and end with a newline', () => {
     appendRow(home, row());
     appendRow(home, row({ alias: 'sonata-review-simple' }));
