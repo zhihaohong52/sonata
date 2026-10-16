@@ -24,7 +24,7 @@ plan (step 1), `code-auto` for each task and each fix (steps 2–3),
 Sonata chooses the tier per conversation; do not second-guess it by switching
 to an explicit tier. An explicit tier is a manual override only when the user
 asks for one; earlier tier failures in the session do not count. The one
-exception: a task that failed review twice may be re-dispatched on the
+exception: a task that failed review twice is re-run on the
 explicit `-complex` agent, and kept there for that task's fixes — that task
 only (*Escalation*, below). If an
 `-auto` dispatch misbehaves, retry it on `-auto` and report it to the user,

@@ -217,7 +217,7 @@ describe('guidanceBlock with auto-routing', () => {
     expect(block).toContain('earlier tier failures in the session do not count');
     expect(block).toContain('never pin explicit tiers for later');
     // One exception, stated once, and no rival "one tier up" rule beside it.
-    expect(block.replace(/\s+/g, ' ')).toContain("The one exception: a task that failed review twice may be re-dispatched on the explicit `-complex` agent, and kept there for that task's fixes — that task only.");
+    expect(block.replace(/\s+/g, ' ')).toContain("The one exception: a task that failed review twice is re-run on the explicit `-complex` agent, and kept there for that task's fixes — that task only.");
     expect(block).not.toContain('re-run one tier');
     expect(block).not.toContain('`-normal` is the default');
     expect(block.startsWith(GUIDANCE_BEGIN)).toBe(true);

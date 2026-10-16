@@ -299,7 +299,7 @@ Claude's own code.
 `review-auto`, …). Sonata chooses the tier for each task;
 explicit tier agents are a manual override, used only when the user asks
 for a specific tier — earlier tier failures in the session do not count.
-The one exception: a task that failed review twice may be re-dispatched on
+The one exception: a task that failed review twice is re-run on
 the explicit `-complex` agent, and kept there for that task's fixes — that
 task only.
 If an `-auto` dispatch misbehaves, retry it on `-auto` and report it to the
