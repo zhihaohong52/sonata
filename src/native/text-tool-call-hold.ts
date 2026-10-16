@@ -102,13 +102,18 @@ export async function holdForTextToolCalls(
   // Raw upstream bytes count toward `maxBytes` too: a scanner holding an
   // unclosed call emits nothing, so held output alone would never trip it.
   let inputBytes = 0;
-  let overflowed: (() => void) | undefined;
-  const overflow = new Promise<'limit'>((resolve) => { overflowed = () => resolve('limit'); });
+  // The overflow signal is a fresh promise per iteration, not one long-lived
+  // promise raced every time: each race would attach a reaction to it that
+  // retains that iteration's chunk for as long as the promise lives, which on
+  // the release path is the whole stream — a second copy of the held bytes.
+  let overflowedFlag = false;
+  let overflowResolve: ((value: 'limit') => void) | undefined;
+  const overflowed = (): void => { overflowedFlag = true; overflowResolve?.('limit'); };
   async function* tapped(): AsyncIterable<Uint8Array> {
     for await (const chunk of upstream) {
       lastInput = Date.now();
       inputBytes += chunk.length;
-      if (inputBytes > limits.maxBytes) overflowed?.();
+      if (inputBytes > limits.maxBytes) overflowed();
       probe.push(chunk);
       yield chunk;
     }
@@ -163,6 +168,10 @@ export async function holdForTextToolCalls(
       };
       arm();
     });
+    const overflow = new Promise<'limit'>((resolve) => {
+      if (overflowedFlag) { resolve('limit'); return; }
+      overflowResolve = resolve;
+    });
     const aborted = new Promise<'aborted'>((resolve) => {
       if (signal === undefined) return;
       if (signal.aborted) { resolve('aborted'); return; }
@@ -179,6 +188,7 @@ export async function holdForTextToolCalls(
       return release(pending);
     } finally {
       clearTimeout(timer);
+      overflowResolve = undefined;
       if (onAbort !== undefined) signal?.removeEventListener('abort', onAbort);
     }
     if (next === 'aborted') {
