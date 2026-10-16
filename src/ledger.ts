@@ -10,7 +10,7 @@
  * already a documented limitation caused by another tool doing this
  * carelessly, and sonata does not get to repeat it in its own store.
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, rmSync, statSync } from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -262,6 +262,129 @@ export async function readRowsAsync(
     collectRows(raw, sinceMs, now, out);
   }
   return out;
+}
+
+/** One validated row with its parsed timestamp, kept so windowing never re-parses. */
+interface CachedRow { row: LedgerRow; ts: number }
+
+interface CachedFile {
+  rows: CachedRow[];
+  /** Bytes consumed: always the end of the last complete (newline-terminated) line. */
+  offset: number;
+  ino: number;
+  mtimeMs: number;
+}
+
+/**
+ * An incremental ledger reader for screens that poll.
+ *
+ * `readRows` re-reads and re-parses every day file in the window on each call;
+ * a screen polling a 7-day window every few seconds spent ~215 ms and ~30 MB of
+ * fresh allocations per poll on that. This keeps, per day file, the validated
+ * rows plus the byte offset consumed, and reads only what was appended since.
+ *
+ * Only newline-terminated lines are consumed — a trailing partial line (an
+ * append in flight) waits for the next poll, so it is neither dropped nor
+ * counted twice. A file that shrank, or whose inode changed, or whose mtime
+ * moved without growing, is reparsed from 0. Files that left the window or
+ * were deleted are forgotten. The window is applied per call on the row `ts`,
+ * exactly as `readRows` does, so results are identical to a fresh read. The
+ * returned array is the same object while nothing changed, which lets callers
+ * memoise on identity.
+ */
+export interface LedgerReader {
+  read(sinceMs: number, now?: number): LedgerRow[];
+}
+
+export function createLedgerReader(home: string): LedgerReader {
+  const files = new Map<string, CachedFile>();
+  let last: { names: string; since: number; now: number; rows: LedgerRow[]; minTs: number; futureMin: number } | undefined;
+
+  const consume = (path: string, entry: CachedFile, size: number): void => {
+    const len = size - entry.offset;
+    if (len <= 0) return;
+    const buf = Buffer.allocUnsafe(len);
+    let got = 0;
+    const fd = openSync(path, 'r');
+    try {
+      while (got < len) {
+        const n = readSync(fd, buf, got, len - got, entry.offset + got);
+        if (n === 0) break;
+        got += n;
+      }
+    } finally {
+      closeSync(fd);
+    }
+    const end = buf.subarray(0, got).lastIndexOf(0x0a);
+    if (end < 0) return; // only a partial line so far
+    const out: LedgerRow[] = [];
+    collectRows(buf.toString('utf8', 0, end + 1), -Infinity, Infinity, out);
+    for (const row of out) entry.rows.push({ row, ts: Date.parse(row.ts) });
+    entry.offset += end + 1;
+  };
+
+  return {
+    read(sinceMs, now = Date.now()) {
+      const dir = ledgerDir(home);
+      let names: string[];
+      try {
+        names = ledgerFileNames(readdirSync(dir), sinceMs, now);
+      } catch {
+        files.clear();
+        last = undefined;
+        return [];
+      }
+      const keep = new Set(names);
+      let changed = false;
+      for (const key of [...files.keys()]) {
+        if (!keep.has(key)) { files.delete(key); changed = true; }
+      }
+      for (const name of names) {
+        const path = join(dir, name);
+        let st: ReturnType<typeof statSync>;
+        try { st = statSync(path); } catch {
+          if (files.delete(name)) changed = true;
+          continue;
+        }
+        let entry = files.get(name);
+        if (entry !== undefined && (st.size < entry.offset || st.ino !== entry.ino
+          || (st.mtimeMs !== entry.mtimeMs && st.size === entry.offset))) {
+          entry = undefined; // truncated or replaced: start over
+          files.delete(name);
+          changed = true;
+        }
+        if (entry === undefined) {
+          entry = { rows: [], offset: 0, ino: st.ino, mtimeMs: st.mtimeMs };
+          files.set(name, entry);
+          changed = true;
+        }
+        if (st.size > entry.offset) {
+          const before = entry.offset;
+          try { consume(path, entry, st.size); } catch { continue; }
+          if (entry.offset !== before) changed = true;
+        }
+        entry.mtimeMs = st.mtimeMs;
+      }
+      const joined = names.join('\n');
+      if (!changed && last !== undefined && last.names === joined && sinceMs >= last.since && now >= last.now
+        && last.minTs >= sinceMs && last.futureMin > now) {
+        return last.rows;
+      }
+      const rows: LedgerRow[] = [];
+      let minTs = Infinity;
+      let futureMin = Infinity;
+      for (const name of names) {
+        for (const c of files.get(name)?.rows ?? []) {
+          if (c.ts < sinceMs) continue;
+          if (c.ts > now) { if (c.ts < futureMin) futureMin = c.ts; continue; }
+          rows.push(c.row);
+          if (c.ts < minTs) minTs = c.ts;
+        }
+      }
+      last = { names: joined, since: sinceMs, now, rows, minTs, futureMin };
+      return rows;
+    },
+  };
 }
 
 function priceIsValid(price: LedgerRow['price']): boolean {

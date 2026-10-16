@@ -10,14 +10,14 @@
  * usage could not be attributed, which `sonata runs` shows rather than this
  * report guessing at.
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { dirname, join, resolve as resolve0, sep } from 'node:path';
 
 import { configPath, GLOBAL_CONFIG_RELATIVE, KNOWN_ROLES, parseConfig, TIER_NAMES } from '../config.js';
 import { canonicalConfigPath, tenantId } from '../native/tenants.js';
-import { loadModelsDev } from '../modelsdev.js';
-import { readRows, type LedgerRow } from '../ledger.js';
+import { loadModelsDev, modelsDevPath } from '../modelsdev.js';
+import { readRows, type LedgerReader, type LedgerRow } from '../ledger.js';
 import { loadSessions, type SessionRecord } from '../sessions.js';
 
 export type UsageDimension = 'model' | 'role' | 'tier' | 'route' | 'effort' | 'gateway' | 'lane' | 'session' | 'project';
@@ -496,6 +496,34 @@ export function aggregate(
   };
 }
 
+/**
+ * Lets a polling screen skip re-aggregating when the ledger reader returned
+ * the very same rows array. Bounded in age because the label resolvers read
+ * sessions and config files the ledger does not reflect.
+ */
+export interface UsageMemo { entry?: { key: string | undefined; rows: LedgerRow[]; at: number; report: UsageReport } }
+const USAGE_MEMO_MAX_AGE_MS = 30_000;
+
+const fetchedCache = new Map<string, { mtimeMs: number; size: number; fetched: number | undefined }>();
+
+/**
+ * When the models.dev cache was fetched. The cache is a ~1.7 MB JSON file and
+ * only this one field is wanted, so the parse is skipped while the file's size
+ * and mtime are unchanged.
+ */
+function modelsDevFetchedMs(home: string): number | undefined {
+  const path = modelsDevPath(home);
+  let st: ReturnType<typeof statSync>;
+  try { st = statSync(path); } catch { fetchedCache.delete(home); return undefined; }
+  const hit = fetchedCache.get(home);
+  if (hit !== undefined && hit.mtimeMs === st.mtimeMs && hit.size === st.size) return hit.fetched;
+  const cache = loadModelsDev(home);
+  const parsed = cache === undefined ? NaN : Date.parse(cache.fetchedAt);
+  const fetched = Number.isFinite(parsed) ? parsed : undefined;
+  fetchedCache.set(home, { mtimeMs: st.mtimeMs, size: st.size, fetched });
+  return fetched;
+}
+
 export async function cmdUsage(opts: {
   home: string;
   since: string;
@@ -506,9 +534,25 @@ export async function cmdUsage(opts: {
   /** Where the command runs: whose `[auto_route]` the explicit-tier count is about, absent `project`. */
   cwd?: string;
   json: boolean;
+  /** A polling screen's incremental reader; absent means a fresh full read. */
+  reader?: LedgerReader;
+  /** Memo shared across polls of one screen; see `UsageMemo`. */
+  memo?: UsageMemo;
 }): Promise<UsageReport> {
   const now = Date.now();
-  let rows = readRows(opts.home, now - parseDuration(opts.since), now);
+  const since = now - parseDuration(opts.since);
+  const allRows = opts.reader !== undefined ? opts.reader.read(since, now) : readRows(opts.home, since, now);
+  const memoKey = opts.memo === undefined ? undefined
+    : JSON.stringify([opts.home, opts.since, opts.by, opts.session, opts.project, opts.cwd]);
+  const hit = opts.memo?.entry;
+  if (hit !== undefined && hit.key === memoKey && hit.rows === allRows && now - hit.at < USAGE_MEMO_MAX_AGE_MS) {
+    const fetched = modelsDevFetchedMs(opts.home);
+    const report = { ...hit.report };
+    delete report.priceCacheAgeMs;
+    if (fetched !== undefined) report.priceCacheAgeMs = now - fetched;
+    return report;
+  }
+  let rows = allRows;
   if (opts.session !== undefined) rows = rows.filter((row) => row.session === opts.session);
 
   const sessions = loadSessions(opts.home);
@@ -553,10 +597,8 @@ export async function cmdUsage(opts: {
   const configDir = opts.project !== undefined ? resolve0(opts.project) : opts.cwd;
   const autoTenant = configDir === undefined ? undefined : autoRoutedTenant(configDir, opts.home);
   if (autoTenant !== undefined) report.explicitTierUnderAuto = countExplicitTiers(rows, autoTenant);
-  const cache = loadModelsDev(opts.home);
-  if (cache !== undefined) {
-    const fetched = Date.parse(cache.fetchedAt);
-    if (Number.isFinite(fetched)) report.priceCacheAgeMs = now - fetched;
-  }
+  const fetchedMs = modelsDevFetchedMs(opts.home);
+  if (fetchedMs !== undefined) report.priceCacheAgeMs = now - fetchedMs;
+  if (opts.memo !== undefined) opts.memo.entry = { key: memoKey, rows: allRows, at: now, report };
   return report;
 }

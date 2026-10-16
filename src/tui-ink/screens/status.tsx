@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
-import { readRows } from '../../ledger.js';
+import { createLedgerReader } from '../../ledger.js';
 import { projectTenant, recentRoutes, routeCostLabel, routeTotals, scopeRows, type RouteLine } from '../../commands/status.js';
 import { routerPorts } from '../../commands/ports.js';
 import { isSonataRouter, serveHealthUrl } from '../../commands/serve.js';
@@ -37,6 +37,8 @@ export function StatusScreen({ cwd, home, global: initialGlobal = false }: {
   const [routes, setRoutes] = useState<RouteLine[] | undefined>(undefined);
   const [at, setAt] = useState<number | undefined>(undefined);
   const [now, setNow] = useState(() => Date.now());
+  const atRef = useRef<number | undefined>(undefined);
+  atRef.current = at;
   // `routerPorts` throws when the machine config will not parse. The plain
   // CLI catches that and says so; this render path did not, so a malformed
   // config crashed the one screen whose job is to report router trouble.
@@ -47,6 +49,8 @@ export function StatusScreen({ cwd, home, global: initialGlobal = false }: {
 
   useEffect(() => {
     let cancelled = false;
+    // Incremental: only bytes appended since the last tick are parsed.
+    const reader = createLedgerReader(home);
 
     const sample = async (): Promise<void> => {
       // Bounded: a router that accepts the connection and never answers would
@@ -68,7 +72,7 @@ export function StatusScreen({ cwd, home, global: initialGlobal = false }: {
         // every UNATTRIBUTED row through too — which is why this board was
         // full of another context's passthrough traffic.
         const rows = scopeRows(
-          readRows(home, Date.now() - 3_600_000),
+          reader.read(Date.now() - 3_600_000),
           global ? { global: true } : { global: false, tenant },
         );
         setRoutes(recentRoutes(rows, 12));
@@ -89,7 +93,14 @@ export function StatusScreen({ cwd, home, global: initialGlobal = false }: {
     // The "as of" line has to keep ageing between samples, or a stalled
     // poller would show a timestamp frozen at the last success and read as
     // fresh. Ticking the clock separately makes a stall visible.
-    const clock = setInterval(() => { setNow(Date.now()); }, 1000);
+    // Re-renders only when the displayed "updated Ns ago" text would change.
+    const clock = setInterval(() => {
+      setNow((prev) => {
+        const next = Date.now();
+        const base = atRef.current;
+        return base !== undefined && agoLabel(next - base) === agoLabel(prev - base) ? prev : next;
+      });
+    }, 1000);
     return () => { cancelled = true; clearInterval(poll); clearInterval(clock); };
   }, [port, home, cwd, global, tenant]);
 
