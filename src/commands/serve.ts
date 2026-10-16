@@ -2708,7 +2708,12 @@ export async function cmdServe(
             // The second wait is what keeps the retry from racing the dying
             // process for the LiteLLM port.
             if (child === spawned) {
-              await terminateLitellm(spawned, opts.litellmExitTimeoutMs ?? LITELLM_EXIT_TIMEOUT_MS, sleep);
+              // Already gone (the "exited before becoming ready" path): its
+              // onExit has fired, so a fresh listener would never be called
+              // and terminating would wait out both timeouts for nothing.
+              if (!exitedChildren.has(spawned)) {
+                await terminateLitellm(spawned, opts.litellmExitTimeoutMs ?? LITELLM_EXIT_TIMEOUT_MS, sleep);
+              }
               if (child === spawned) child = undefined;
             }
             exitedChildren.delete(spawned);
@@ -3175,7 +3180,9 @@ export async function startServeDaemon(
   const now = deps.now ?? Date.now;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const timeoutMs = deps.timeoutMs ?? 60_000;
-  const fallbackAfterMs = deps.fallbackAfterMs ?? 5_000;
+  // An explicit `undefined` means "fallback off" (cmdRestart); only an absent
+  // key takes the default, which `??` could not tell apart.
+  const fallbackAfterMs = 'fallbackAfterMs' in deps ? deps.fallbackAfterMs : 5_000;
 
   const port = routerPorts(home).router;
 

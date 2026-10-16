@@ -2041,22 +2041,40 @@ context_window = 128000
       spawn: (() => fakeChild) as unknown as typeof spawnType,
       probe: async () => false,
       probeAny: async () => true,
-      sleep: async () => { clock += 500; sleeps += 1; },
+      // The child exits from inside the poll, after the first sleep: that is
+      // what opens the fallback. If the exit listener did nothing, the join
+      // would wait for fallbackAfterMs and the clock assertion below fails.
+      sleep: async () => {
+        clock += 500;
+        sleeps += 1;
+        if (sleeps === 1) listeners.exit!.forEach((cb) => cb());
+      },
       now: () => clock,
       timeoutMs: 60_000,
       fallbackAfterMs: 60_000,
     }, home);
     expect(listeners.exit?.length).toBe(1);
-    // The child's exit is what opens the fallback: before it fires, the poll
-    // keeps waiting even though a healthy router is already answering.
-    expect(sleeps).toBeGreaterThan(0);
-    listeners.exit!.forEach((cb) => cb());
+    // Joined right after the exit, nowhere near the 60 s grace deadline.
+    expect(clock).toBe(500);
     expect(result.port).toBe(4100);
     // A join, not a spawn: the loser's pid and log must not be reported as
     // the router's. The winner's own pid stays in its state file.
     expect(result.joined).toBe(true);
     expect(result.pid).toBeUndefined();
     expect(result.logPath).toBeUndefined();
+  });
+
+  it('an explicit undefined fallbackAfterMs turns the grace fallback off', async () => {
+    let clock = 0;
+    await expect(startServeDaemon(home, ['node', 'cli.js', 'serve'], {
+      spawn: fakeSpawn(),
+      probe: async () => false,
+      probeAny: async () => true,
+      sleep: async () => { clock += 500; },
+      now: () => clock,
+      timeoutMs: 20_000,
+      fallbackAfterMs: undefined,
+    }, home)).rejects.toThrow(/did not answer on port 4100/);
   });
 
   it('falls back to any healthy router after a grace period even when the child lingers', async () => {
@@ -6276,6 +6294,7 @@ litellm = ${litellmPort}
     writeFileSync(join(project, 'sonata.toml'), TENANT('needs-litellm'));
     let spawns = 0;
     let waits = 0;
+    let signalsSent = 0;
     let firstExit: ((code: number | null, signal: NodeJS.Signals | null) => void) | undefined;
     vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
     const handle = await cmdServe({
@@ -6285,7 +6304,8 @@ litellm = ${litellmPort}
         spawns += 1;
         return {
           pid: spawns,
-          kill: () => {},
+          kill: () => { signalsSent += 1; },
+          forceKill: () => { signalsSent += 1; },
           onExit: (cb) => { if (spawns === 1) firstExit = cb; },
         };
       },
@@ -6308,6 +6328,8 @@ litellm = ${litellmPort}
     await request();
     await waitFor(() => spawns === 1, 'the first lazy spawn');
     expect(spawns).toBe(1);
+    // The child had already exited: no SIGTERM/SIGKILL, and no timeout waits.
+    expect(signalsSent).toBe(0);
     const served = await request();
     expect(served.status).toBe(200);
     expect(spawns).toBe(2);
