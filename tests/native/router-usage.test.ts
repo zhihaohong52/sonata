@@ -983,6 +983,42 @@ describe('router — text-form tool calls', () => {
     expect(activeTextToolCallCooldowns(clock)).toEqual([]);
   });
 
+  it('keeps a strike when only requests that started before it complete cleanly', async () => {
+    clearCooldowns();
+    let clock = 1_000;
+    const gates: Array<() => void> = [];
+    let flashCalls = 0;
+    const rows: LedgerRow[] = [];
+    const gated = (text: string): Response => new Response(new ReadableStream<Uint8Array>({
+      async start(controller) {
+        await new Promise<void>((resolve) => { gates.push(resolve); });
+        controller.enqueue(new TextEncoder().encode(stream(text)));
+        controller.close();
+      },
+    }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    const { d } = twoCandidates(rows, (key) => {
+      if (key === 'pro') return sse(stream('from pro'));
+      flashCalls += 1;
+      // The first two requests are in flight together; later ones fail outright.
+      if (flashCalls === 1) return gated(UNPARSED);
+      if (flashCalls === 2) return gated('served');
+      return sse(stream(UNPARSED));
+    }, { now: () => clock });
+    const a = routeRequest(withTools('sonata-code-simple'), d);
+    const b = routeRequest(withTools('sonata-code-simple'), d);
+    while (gates.length < 2) await new Promise((r) => setTimeout(r, 5));
+    // A strikes at 2_000; B, started at 1_000, then finishes clean.
+    clock = 2_000;
+    gates[0]();
+    await drain((await a).body);
+    gates[1]();
+    await drain((await b).body);
+    // Past the ordinary cooldown: the next failure is the second strike, so the long cooldown starts.
+    clock = 2_000 + TIER_COOLDOWN_MS + 1;
+    await drain((await routeRequest(withTools('sonata-code-simple'), d)).body);
+    expect(activeTextToolCallCooldowns(clock).map((c) => c.model)).toEqual(['flash']);
+  });
+
   it('never lets a short cooldown cut a long one short', async () => {
     clearCooldowns();
     let clock = 1_000_000;

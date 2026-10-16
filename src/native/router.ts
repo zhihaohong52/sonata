@@ -3085,7 +3085,13 @@ async function routeTierCandidates(
       ? servedResponse
       : withCompletion(servedResponse, (complete) => {
         const clean = complete && textToolCalls.unparsed === 0;
-        if (clean) textToolCallStrikes.delete(cool);
+        if (clean) {
+          // Only a turn that began after the latest strike clears the run: one
+          // that started earlier was in flight when the strike landed, and
+          // under fan-out it would wipe a strike the escalation needs.
+          const last = textToolCallStrikes.get(cool)?.at(-1);
+          if (last === undefined || startedAt > last) textToolCallStrikes.delete(cool);
+        }
         if (conversation === undefined) return;
         // An unparsed tool call is a turn the model never served: record it, but never prefer it again.
         if (clean) stickySet(conversation, route.key, now());
