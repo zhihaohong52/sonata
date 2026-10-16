@@ -1,5 +1,6 @@
 import { chmodSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 
 import { withSessionLockSync } from '../filelock.js';
 import { readOpencodeCredentials } from './opencode-store.js';
@@ -252,7 +253,7 @@ export function removeSonataKey(home: string, gateway: string): void {
  */
 export function writeFileAtomic(path: string, content: string): void {
   mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.${process.pid}.tmp`;
+  const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
   writeFileSync(tmp, content, { mode: 0o600 });
   chmodSync(tmp, 0o600);
   renameSync(tmp, path);

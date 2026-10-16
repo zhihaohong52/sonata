@@ -170,10 +170,10 @@ describe('loginGateway', () => {
     expect(JSON.parse(readFileSync(join(dir, 'auth.json'), 'utf8'))).toEqual({ access_token: 'stored' });
   });
 
-  it('fixes up the staging directory to 0700/0600 on failure paths too', async () => {
-    // A cancelled or failed run's temp files must not carry a readable
-    // secret on their way out. Proved by mode, not by absence: the fake
-    // writes a 0644 access-token, then the run fails.
+  it('creates no live directory when a login is cancelled', async () => {
+    // A cancelled run must leave no half-login beside the old credential.
+    // This proves absence only; the fake writes no token before hanging, so
+    // the staging directory's permission fix-up is not observable here.
     process.env.FAKE_MODE = 'hang';
     const controller = new AbortController();
     const pending = loginGateway({
