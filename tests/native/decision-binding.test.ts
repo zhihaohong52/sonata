@@ -82,7 +82,7 @@ describe('plain http decision URLs', () => {
   it('never bind a non-loopback plain-http host, even when trusted', () => {
     const home = tmp();
     addTrustBinding(home, 'auto-route', 'decide.example');
-    expect(decisionHostBinding('http://decide.example', home)).toEqual({ bound: false, host: 'decide.example' });
+    expect(decisionHostBinding('http://decide.example', home)).toEqual({ bound: false, host: 'decide.example', insecure: true });
   });
 });
 
@@ -93,6 +93,23 @@ describe('decisionUnboundMessage', () => {
     expect(message).toContain('fallback tier');
     expect(message).toContain('do not trust it');
     expect(message).toContain('sonata auth trust auto-route decide.example');
+  });
+});
+
+describe('decisionUnboundMessage over plain http', () => {
+  it('asks for https and suggests no trust, for a LAN decision server and for a well-known host over http', () => {
+    const lan = decisionHostBinding('http://192.168.1.5:9000', tmp());
+    expect(lan).toMatchObject({ bound: false, insecure: true });
+    const message = decisionUnboundMessage('http://192.168.1.5:9000', '192.168.1.5:9000', '/work/sonata.toml', { insecure: true });
+    expect(message).toContain('https');
+    expect(message).not.toContain('auth trust');
+    expect(decisionHostBinding('http://decide.example', tmp())).toMatchObject({ insecure: true });
+  });
+
+  it('can omit the command for the text that leaves the process', () => {
+    const message = decisionUnboundMessage('https://decide.example', 'decide.example', '/work/sonata.toml', { command: false });
+    expect(message).not.toContain('auth trust');
+    expect(message).toContain('sonata doctor');
   });
 });
 

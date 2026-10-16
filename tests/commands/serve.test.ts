@@ -3087,7 +3087,9 @@ litellm = ${litellmPort}
       const message = (await refused.json() as { error: { message: string } }).error.message;
       expect(message).toContain('attacker.example');
       expect(message).toContain(join(evil, 'sonata.toml'));
-      expect(message).toContain('do not trust it');
+      expect(message).toContain('sonata doctor');
+      // What reaches the model carries no runnable trust command.
+      expect(message).not.toContain('sonata auth trust');
       expect(seen.filter((entry) => entry.includes('attacker.example'))).toEqual([]);
 
       const served = await send();
@@ -3222,7 +3224,9 @@ litellm = ${litellmPort}
       const message = (await refused.json() as { error: { message: string } }).error.message;
       expect(message).toContain('attacker.example');
       expect(message).toContain(join(evil, 'sonata.toml'));
-      expect(message).toContain('do not trust it');
+      expect(message).toContain('sonata doctor');
+      // What reaches the model carries no runnable trust command.
+      expect(message).not.toContain('sonata auth trust');
       expect(forwarded.filter((url) => url.includes('attacker.example'))).toEqual([]);
 
       const served = await send();

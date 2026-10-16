@@ -36,6 +36,21 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ### Security
 
+- **A refused key host no longer tells the model how to trust it.** The router's
+  error for a gateway whose host is not trusted for its key names the config
+  file and points the user at `sonata doctor`; the runnable `sonata auth trust`
+  command stays in serve's log and in `sonata doctor`, with the gateway and host
+  shell-quoted. `sonata auth trust` now needs an interactive terminal and a typed
+  `y`/`yes` (default no); it refuses when stdin is not a TTY. It also runs the
+  upgrade seed first, as `auth untrust` does, so trusting one host first no longer
+  forfeits the seed for the others.
+- **Plain-http gateways off loopback are told to use https.** A keyed
+  `http://192.168.1.5:8000/v1` (or an `[auto_route]` URL like it) can never be
+  bound, so the message now says https is required and suggests no trust, and
+  `sonata auth trust` refuses that host rather than reporting a binding that
+  changes nothing.
+- A rejected `base_url` no longer echoes its userinfo or query into the error.
+
 - **A stored key is now sent only to a host bound to its gateway name.**
   Keys are looked up by gateway name, but the `base_url` they are sent to
   comes from a config — including a cloned repo's project config pointing the

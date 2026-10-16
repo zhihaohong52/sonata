@@ -5,6 +5,8 @@ import { keyReport, removeSonataKey, writeSonataKey } from '../native/credential
 import {
   addTrustBinding,
   gatewayHostBound,
+  type HostBinding,
+  isLoopbackHostname,
   normalizeTrustHost,
   readTrustBindings,
   removeTrustBinding,
@@ -63,7 +65,7 @@ export function unboundConfigUrlNotice(home: string, cwd: string, gateway: strin
   }
   const binding = gatewayTrustFor(home, gateway, baseUrl, machineGateways);
   if (binding === undefined || binding.bound) return undefined;
-  return unboundMessage(gateway, binding.host, file);
+  return unboundMessage(gateway, binding.host, file, binding.insecure);
 }
 
 export function cmdAuthRemove(opts: { home: string; gateway: string }): void {
@@ -73,15 +75,63 @@ export function cmdAuthRemove(opts: { home: string; gateway: string }): void {
 /**
  * Confirm that this gateway's key may be sent to `host`. Recorded in the
  * 0600 trust file beside keys.json; idempotent.
+ *
+ * Trust is the user's decision, never the model's: the gateway and host usually
+ * come from a config the user has not read, so this runs only in an interactive
+ * terminal and only after the user types `y`. `baseUrl` is the URL the config in
+ * effect gives this gateway; a plain-http non-loopback URL on this host can never
+ * be bound, so trusting it is refused rather than pretended.
  */
-export function cmdAuthTrust(opts: { home: string; gateway: string; host: string }): { text: string } {
+export async function cmdAuthTrust(opts: {
+  home: string;
+  gateway: string;
+  host: string;
+  baseUrl?: string;
+  /** Whether stdin and stdout are a terminal. */
+  interactive: boolean;
+  /** Asks the user; resolves to their answer. Only called when `interactive`. */
+  ask: (question: string) => Promise<string>;
+}): Promise<{ text: string }> {
   const host = normalizeTrustHost(opts.host);
+  if (!opts.interactive) {
+    throw new Error(
+      'sonata auth trust needs an interactive terminal to confirm the host: run it yourself in a terminal, ' +
+      'not through a script or an agent.',
+    );
+  }
+  const hostname = new URL(`https://${host}`).hostname;
+  if (opts.baseUrl !== undefined) {
+    try {
+      const url = new URL(opts.baseUrl);
+      if (url.protocol === 'http:' && !isLoopbackHostname(url.hostname) && url.host.toLowerCase() === host) {
+        throw new Error(
+          `sonata auth trust: gateway "${opts.gateway}" is configured with the plain-http URL ${opts.baseUrl}. ` +
+          'A key is sent only over https (plain http is accepted only for a loopback host), so trusting this host would not change anything. ' +
+          `Change the base_url to https://${host}/... first.`,
+        );
+      }
+    } catch (error) {
+      if ((error as Error).message.startsWith('sonata auth trust:')) throw error;
+    }
+  }
+  const answer = (await opts.ask(
+    `Trust host "${host}" for gateway "${opts.gateway}"?\n` +
+    `  The key stored for "${opts.gateway}" will be sent to https://${host} whenever a config names that host.\n` +
+    '  Only continue if you chose this host yourself, not because a project config or an agent named it.\n' +
+    'Type y to confirm [y/N]: ',
+  )).trim().toLowerCase();
+  if (answer !== 'y' && answer !== 'yes') throw new Error('sonata auth trust: not confirmed — nothing was changed.');
+  // The upgrade's seed first: a trust written before it would make the seed read
+  // the file as already decided and skip every other pre-existing gateway.
+  seedTrustBeforeKeyWrite(opts.home);
   addTrustBinding(opts.home, opts.gateway, host);
-  return { text: `${opts.gateway}: key may now be sent to ${host}` };
+  const httpsNote = isLoopbackHostname(hostname) ? '' : ' (https only: a plain-http URL on this host still gets no key)';
+  return { text: `${opts.gateway}: key may now be sent to ${host}${httpsNote}` };
 }
 
 export function cmdAuthUntrust(opts: { home: string; gateway: string; host: string }): { text: string } {
   const host = normalizeTrustHost(opts.host);
+  seedTrustBeforeKeyWrite(opts.home);
   removeTrustBinding(opts.home, opts.gateway, host);
   return { text: `${opts.gateway}: key is no longer sent to ${host}` };
 }
@@ -103,7 +153,7 @@ export function gatewayTrustFor(
   gateway: string,
   baseUrl: string | undefined,
   machineGateways: Record<string, { baseUrl: string }> | undefined,
-): { bound: true } | { bound: false; host: string } | undefined {
+): HostBinding | undefined {
   if (baseUrl === undefined) return undefined;
   return gatewayHostBound(gateway, baseUrl, {
     trusted: readTrustBindings(home)[gateway] ?? [],

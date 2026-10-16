@@ -25,6 +25,7 @@ import { homedir } from 'node:os';
 import { readBuildInfo, stampedVersion } from './build-info.js';
 import { fileURLToPath } from 'node:url';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { createInterface } from 'node:readline/promises';
 import { cmdAuthAdd, cmdAuthList, cmdAuthLogin, cmdAuthRemove, cmdAuthTrust, cmdAuthTrustList, cmdAuthUntrust, unboundConfigUrlNotice } from './commands/auth.js';
 import { cmdServe, cmdRestart, startServeDaemon, isSonataRouter, sonataRouterReady, sonataRouterHasUi } from './commands/serve.js';
 import { routerPorts } from './commands/ports.js';
@@ -818,7 +819,18 @@ export async function main(argv: string[]): Promise<number> {
     }
     if (action === 'trust') {
       if (!gateway || !extra) throw new Error('sonata auth trust requires a gateway and a host: sonata auth trust <gateway> <host>');
-      console.log(cmdAuthTrust({ home: homedir(), gateway, host: extra }).text);
+      let baseUrl = configured[gateway]?.baseUrl;
+      if (gateway === 'auto-route') {
+        try { baseUrl = loadConfig(process.cwd(), homedir()).autoRoute?.baseUrl; } catch { /* no config */ }
+      }
+      const interactive = process.stdin.isTTY === true && process.stdout.isTTY === true;
+      console.log((await cmdAuthTrust({
+        home: homedir(), gateway, host: extra, baseUrl, interactive,
+        ask: async (question) => {
+          const rl = createInterface({ input: process.stdin, output: process.stdout });
+          try { return await rl.question(question); } finally { rl.close(); }
+        },
+      })).text);
       return 0;
     }
     if (action === 'untrust') {

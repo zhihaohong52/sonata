@@ -1,4 +1,4 @@
-import { gatewayHostBound, readTrustBindings, type HostBinding } from './host-bindings.js';
+import { gatewayHostBound, readTrustBindings, trustCommand, type HostBinding } from './host-bindings.js';
 import { decisionGatewayFor } from './auto-route.js';
 
 /**
@@ -16,7 +16,7 @@ export function decisionHostBinding(baseUrl: string, home: string, machineUrl?: 
   if (gateway === 'typesafe' || gateway === 'openrouter') {
     try {
       if (new URL(baseUrl).protocol === 'https:') return { bound: true };
-      return { bound: false, host: new URL(baseUrl).hostname.toLowerCase() };
+      return { bound: false, host: new URL(baseUrl).hostname.toLowerCase(), insecure: true };
     } catch {
       return { bound: false, host: baseUrl };
     }
@@ -35,10 +35,23 @@ export function decisionHostBinding(baseUrl: string, home: string, machineUrl?: 
  * the config that set the URL, and the advice not to trust a URL the user did
  * not set.
  */
-export function decisionUnboundMessage(baseUrl: string, host: string, configFile: string): string {
+export function decisionUnboundMessage(
+  baseUrl: string,
+  host: string,
+  configFile: string,
+  opts: { insecure?: boolean; command?: boolean } = {},
+): string {
+  if (opts.insecure === true) {
+    return `[auto_route] base_url ${baseUrl} (set in ${configFile}): if you did not choose this URL, remove it from ` +
+      `${configFile}. If you did, it needs https: a decision key is sent only over https to a host that receives one ` +
+      '(plain http is accepted only for a loopback host). Until then the decision is skipped, the key and the task text are not ' +
+      'sent, and the fallback tier is used.';
+  }
+  const advice = opts.command === false
+    ? 'If you did, the user can review it with `sonata doctor` in a terminal.'
+    : `If you did, run \`${trustCommand('auto-route', host)}\` in a terminal to allow the decision key there.`;
   return `[auto_route] base_url ${baseUrl} (set in ${configFile}): if you did not choose this URL, remove it from ` +
-    `${configFile} — do not trust it. If you did, run \`sonata auth trust auto-route ${host}\` to allow the decision ` +
-    `key there. Until then host "${host}" is not bound: the decision is skipped, the key and the task text are not ` +
+    `${configFile} — do not trust it. ${advice} Until then host "${host}" is not bound: the decision is skipped, the key and the task text are not ` +
     'sent, and the fallback tier is used.';
 }
 

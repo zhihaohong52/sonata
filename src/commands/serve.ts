@@ -1936,6 +1936,9 @@ export async function cmdServe(
       keyedGateways,
       opts.home,
       tenant.configPath ?? 'the config',
+      // This answer becomes the router's error body, i.e. the model's context:
+      // no runnable trust command. The full one is logged at the credential check.
+      'model',
     );
   };
   const servableTenants = (loaded: ReturnType<TenantRegistry['loadable']> = registry.loadable()) => {
@@ -2850,12 +2853,12 @@ export async function cmdServe(
         // unbound host is never handed the classifier that would send the key.
         const binding = decisionKeyBinding(settings.baseUrl, credential().key, opts.home, machineConfig()?.autoRoute?.baseUrl);
         if (binding !== undefined && !binding.bound) {
-          const message = decisionUnboundMessage(settings.baseUrl, binding.host, tenant.configPath ?? 'the config');
+          const message = decisionUnboundMessage(settings.baseUrl, binding.host, tenant.configPath ?? 'the config', { insecure: binding.insecure });
           if (!loggedDecisionRefusals.has(message)) {
             loggedDecisionRefusals.add(message);
             console.error(`sonata serve: ${message}`);
           }
-          return refusedClassifier(message);
+          return refusedClassifier(decisionUnboundMessage(settings.baseUrl, binding.host, tenant.configPath ?? 'the config', { insecure: binding.insecure, command: false }));
         }
         const id = `${settings.baseUrl}|${settings.model ?? ''}`;
         let classifier = decisionClassifiers.get(id);

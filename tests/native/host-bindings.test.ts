@@ -16,6 +16,8 @@ import {
   refreshHostReasons,
   unboundKeyHosts,
   unboundMessage,
+  unboundMessageForModel,
+  trustCommand,
 } from '../../src/native/host-bindings.js';
 import type { NativeConfig } from '../../src/config.js';
 
@@ -84,7 +86,7 @@ describe('hostBoundToGateway', () => {
 describe('gatewayHostBound', () => {
   it('refuses a non-https base_url, naming it', () => {
     const binding = gatewayHostBound('acme', 'http://proxy.example/v1', {});
-    expect(binding).toEqual({ bound: false, host: 'proxy.example' });
+    expect(binding).toEqual({ bound: false, host: 'proxy.example', insecure: true });
   });
 
   it('refuses a base_url that is not a URL at all', () => {
@@ -198,7 +200,7 @@ describe('unboundMessage', () => {
     expect(unboundMessage('acme', 'proxy.example', CFG)).toBe(
       'gateway "acme": if you did not choose this URL (set in /work/project/sonata.toml, for host "proxy.example"), ' +
       'remove it from /work/project/sonata.toml — do not trust it. If you did, run `sonata auth trust acme proxy.example` ' +
-      'to allow its key there; until then the key is not served to "proxy.example".',
+      'in a terminal to allow its key there; until then the key is not served to "proxy.example".',
     );
   });
 
@@ -206,6 +208,56 @@ describe('unboundMessage', () => {
     const message = unboundMessage('acme', 'proxy.example', CFG);
     expect(message.indexOf('if you did not choose this URL')).toBe(message.indexOf('gateway "acme": ') + 'gateway "acme": '.length);
     expect(message.indexOf('remove it from')).toBeLessThan(message.indexOf('sonata auth trust'));
+  });
+});
+
+describe('the model-facing and quoted forms', () => {
+  const CFG = '/work/project/sonata.toml';
+
+  it('the model message carries no trust command, names the file and sonata doctor, and leads with remove', () => {
+    const message = unboundMessageForModel('acme', 'proxy.example', CFG);
+    expect(message).not.toContain('auth trust');
+    expect(message).toContain(CFG);
+    expect(message).toContain('sonata doctor');
+    expect(message.indexOf('remove it from')).toBeGreaterThan(-1);
+  });
+
+  it('unboundKeyHosts answers the model audience without the command, the user audience with it', () => {
+    const args = [{ acme: gw('https://attacker.example/v1') }, {}, new Set(['acme']), tmp(), CFG] as const;
+    expect(unboundKeyHosts(...args, 'model').get('acme')).not.toContain('auth trust');
+    expect(unboundKeyHosts(...args).get('acme')).toContain('sonata auth trust acme attacker.example');
+  });
+
+  it('quotes a gateway and host so they cannot form another command', () => {
+    expect(trustCommand('acme', 'proxy.example:8443')).toBe('sonata auth trust acme proxy.example:8443');
+    const hostile = trustCommand('a b; rm -rf ~', "$(x)'`y`");
+    expect(hostile).toBe(`sonata auth trust 'a b; rm -rf ~' '$(x)'\\''\`y\`'`.replace('\\`', '`').replace('\\`', '`'));
+    expect(unboundMessage('a;b', 'h.example', CFG)).toContain("sonata auth trust 'a;b' h.example");
+  });
+});
+
+describe('plain http off loopback', () => {
+  const CFG = '/work/project/sonata.toml';
+
+  it.each(['http://192.168.1.5:8000/v1', 'http://ollama_server:11434/v1'])('%s is insecure, never bindable, and no trust is suggested', (url) => {
+    const binding = gatewayHostBound('lan', url, { trusted: [new URL(url).host] });
+    expect(binding).toMatchObject({ bound: false, insecure: true });
+    if (binding.bound) throw new Error('unreachable');
+    const message = unboundMessage('lan', binding.host, CFG, binding.insecure);
+    expect(message).toContain('https');
+    expect(message).not.toContain('auth trust');
+    expect(unboundMessageForModel('lan', binding.host, CFG, true)).not.toContain('auth trust');
+    expect(message.indexOf('remove it from')).toBeGreaterThan(-1);
+  });
+
+  it('unboundKeyHosts gives the https message for a keyed LAN http gateway', () => {
+    const message = unboundKeyHosts({ lan: gw('http://192.168.1.5:8000/v1') }, {}, new Set(['lan']), tmp(), CFG).get('lan');
+    expect(message).toContain('needs https');
+    expect(message).not.toContain('auth trust');
+  });
+
+  it('a loopback http host is not insecure: it can be trusted', () => {
+    expect(gatewayHostBound('local', 'http://localhost:4000/v1', { trusted: [] })).toEqual({ bound: false, host: 'localhost:4000' });
   });
 });
 

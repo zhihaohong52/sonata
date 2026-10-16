@@ -6,6 +6,7 @@ import { WELL_KNOWN_PROVIDER_URLS } from '../detect.js';
 import { resolveKeys, writeFileAtomic } from './credentials.js';
 import { withSessionLockSync } from '../filelock.js';
 import { readOnce } from './read-snapshot.js';
+import { shellQuote } from '../shell.js';
 
 /**
  * Which hosts a stored key may be sent to, per gateway name.
@@ -237,7 +238,11 @@ export function hostBoundToGateway(gateway: string, host: string, ctx: HostBindi
   return false;
 }
 
-export type HostBinding = { bound: true } | { bound: false; host: string };
+/**
+ * `insecure` marks a plain-http URL on a host that is not loopback: it can never
+ * be bound, so trusting its host would change nothing and is never suggested.
+ */
+export type HostBinding = { bound: true } | { bound: false; host: string; insecure?: true };
 
 /** Whether this gateway's `base_url` host may receive its key. */
 export function gatewayHostBound(
@@ -252,7 +257,8 @@ export function gatewayHostBound(
     // trust can bind it (see the header: the implicit rules use https alone).
     const loopbackHttp = parsed.protocol === 'http:' && isLoopbackHostname(parsed.hostname);
     if ((parsed.protocol !== 'https:' && !loopbackHttp) || parsed.hostname === '') {
-      return { bound: false, host: parsed.hostname !== '' ? parsed.host.toLowerCase() : baseUrl };
+      const host = parsed.hostname !== '' ? parsed.host.toLowerCase() : baseUrl;
+      return parsed.protocol === 'http:' && parsed.hostname !== '' ? { bound: false, host, insecure: true } : { bound: false, host };
     }
     host = parsed.host.toLowerCase();
   } catch {
@@ -261,15 +267,50 @@ export function gatewayHostBound(
   return hostBoundToGateway(gateway, host, ctx) ? { bound: true } : { bound: false, host };
 }
 
-/**
- * Why a key is withheld from one host, naming the config that set the URL.
- * The user is told to remove a URL they did not choose rather than trust it:
- * a project config is the usual place a hostile one comes from.
- */
-export function unboundMessage(gateway: string, host: string, configPath: string): string {
+/** An argument as it may appear in a command a user is told to run: bare when plain, else shell-quoted. */
+export function quoteCommandArg(arg: string): string {
+  return /^[A-Za-z0-9._:/@%+=-]+$/.test(arg) ? arg : shellQuote(arg);
+}
+
+/** The command that would trust one (gateway, host) pair, with both quoted so neither can form another command. */
+export function trustCommand(gateway: string, host: string): string {
+  return `sonata auth trust ${quoteCommandArg(gateway)} ${quoteCommandArg(host)}`;
+}
+
+function insecureMessage(gateway: string, host: string, configPath: string): string {
   return `gateway "${gateway}": if you did not choose this URL (set in ${configPath}, for host "${host}"), ` +
-    `remove it from ${configPath} — do not trust it. If you did, run \`sonata auth trust ${gateway} ${host}\` ` +
-    `to allow its key there; until then the key is not served to "${host}".`;
+    `remove it from ${configPath}. If you did, it needs https: a key is sent only over https to a host that receives one ` +
+    `(plain http is accepted only for a loopback host), and trusting the host would not change that. ` +
+    `Until then the key is not served to "${host}".`;
+}
+
+/**
+ * Why a key is withheld from one host, for the user (doctor, serve's log, the
+ * wizard, `auth add`), naming the config that set the URL. The user is told to
+ * remove a URL they did not choose rather than trust it: a project config is
+ * the usual place a hostile one comes from. Carries the trust command; never
+ * send this to the model (see `unboundMessageForModel`).
+ */
+export function unboundMessage(gateway: string, host: string, configPath: string, insecure?: boolean): string {
+  if (insecure === true) return insecureMessage(gateway, host, configPath);
+  return `gateway "${gateway}": if you did not choose this URL (set in ${configPath}, for host "${host}"), ` +
+    `remove it from ${configPath} — do not trust it. If you did, run \`${trustCommand(gateway, host)}\` ` +
+    `in a terminal to allow its key there; until then the key is not served to "${host}".`;
+}
+
+/**
+ * The same refusal as it reaches the model (the router's 502 body). The gateway
+ * name and host come from a config that may be hostile, and this text lands in
+ * the model's context, so it carries no runnable trust command: the user is
+ * pointed at the file and at `sonata doctor`, which prints the command to them.
+ */
+export function unboundMessageForModel(gateway: string, host: string, configPath: string, insecure?: boolean): string {
+  const tail = insecure === true
+    ? 'Plain http is not accepted for a host that receives a key.'
+    : 'The host is not trusted for that key.';
+  return `gateway "${gateway}": the key stored for it is not sent to host "${host}" (set in ${configPath}). ` +
+    `remove it from ${configPath} if the user did not choose this URL. ${tail} ` +
+    'Tell the user to review that file and run `sonata doctor` in a terminal; do not try to change trust yourself.';
 }
 
 /**
@@ -290,6 +331,8 @@ export function unboundKeyHosts(
   keysPresent: ReadonlySet<string>,
   home: string,
   configPath: string,
+  /** `user` (default) carries the trust command; `model` is what the router returns to Claude Code. */
+  audience: 'user' | 'model' = 'user',
 ): Map<string, string> {
   const trust = readTrustBindings(home);
   const out = new Map<string, string>();
@@ -299,7 +342,9 @@ export function unboundKeyHosts(
     // flow, so no failure — the gateway resolves keyless exactly as before.
     if (!keysPresent.has(name)) continue;
     const binding = gatewayHostBound(name, gateway.baseUrl, { trusted: trust[name] ?? [], machineGateways });
-    if (!binding.bound) out.set(name, unboundMessage(name, binding.host, configPath));
+    if (!binding.bound) {
+      out.set(name, (audience === 'model' ? unboundMessageForModel : unboundMessage)(name, binding.host, configPath, binding.insecure));
+    }
   }
   return out;
 }
@@ -330,7 +375,7 @@ export function refreshHostReasons(input: {
       trusted: input.trusted[gateway] ?? [],
       machineGateways: input.machineGateways,
     });
-    if (!binding.bound) out[gateway] = unboundMessage(gateway, binding.host, input.configFile);
+    if (!binding.bound) out[gateway] = unboundMessage(gateway, binding.host, input.configFile, binding.insecure);
   }
   return out;
 }

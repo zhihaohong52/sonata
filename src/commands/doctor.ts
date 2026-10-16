@@ -1035,7 +1035,7 @@ export async function cmdDoctor(
       checks.push({
         name: 'auto route',
         ok: false,
-        detail: `${decisionUnboundMessage(auto.baseUrl, binding.host, resolved ?? 'this config')}\n  ! every -auto request takes the fallback tier until that host is trusted`,
+        detail: `${decisionUnboundMessage(auto.baseUrl, binding.host, resolved ?? 'this config', { insecure: binding.insecure })}\n  ! every -auto request takes the fallback tier until that host is trusted`,
       });
     }
     // A missing key is advisory: auto-routing falls back to the default tier.
@@ -1557,7 +1557,7 @@ export async function cmdDoctor(
         checks.push({
           name: `credential host: ${name}`,
           ok: false,
-          detail: `${unboundMessage(name, binding.host, configPath)}\n  ! serve withholds this gateway's key until that host is trusted`,
+          detail: `${unboundMessage(name, binding.host, configPath, binding.insecure)}\n  ! serve withholds this gateway's key until that host is trusted`,
         });
       };
       for (const { id, gateways } of tenants) {
