@@ -216,6 +216,11 @@ describe('guidanceBlock with auto-routing', () => {
     // An orchestrator that saw one bad -auto turn must report it, not route around -auto.
     expect(block).toContain('earlier tier failures in the session do not count');
     expect(block).toContain('never pin explicit tiers for later');
+    // The exhausted-route recovery from skills/loop/SKILL.md: one failed
+    // dispatch on the named tier (or -normal), later ones back on -auto.
+    expect(block).toContain('all native routes');
+    expect(block).toContain('only on the tier the error names');
+    expect(block).toContain('later dispatches stay on `-auto`');
     // One exception, stated once, and no rival "one tier up" rule beside it.
     expect(block.replace(/\s+/g, ' ')).toContain("The one exception: a task that failed review twice is re-run on the explicit `-complex` agent, and kept there for that task's fixes — that task only.");
     expect(block).not.toContain('re-run one tier');

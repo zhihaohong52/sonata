@@ -174,7 +174,13 @@ async function runInit(
     out('');
     out('  The existing config cannot be read — fix it or move it aside to start over.');
     out('  Nothing written.');
-    return blockedResult(env.problems, opts, broken[0].path);
+    // The parse failure lives in `unreadableConfigs`, not `env.problems`, so
+    // the CLI would read this as success and exit 0 with nothing written.
+    const unreadable: Problem[] = broken.map(({ path, error }) => ({
+      severity: 'error',
+      message: `the existing ${writeScope} config cannot be read: ${path}: ${error}`,
+    }));
+    return blockedResult([...env.problems, ...unreadable], opts, broken[0].path);
   }
 
   // ---- validate ---------------------------------------------------------

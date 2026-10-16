@@ -304,7 +304,9 @@ the explicit `-complex` agent, and kept there for that task's fixes — that
 task only.
 If an `-auto` dispatch misbehaves, retry it on `-auto` and report it to the
 user, naming the agent and what failed; never pin explicit tiers for later
-dispatches.
+dispatches. The one exception: when it fails with "all native routes …
+failed", re-run that failed dispatch only on the tier the error names (or
+`-normal` if it names none); later dispatches stay on `-auto`.
 
 For a manual override, match the tier to the work. `-simple` is writable
 without asking a question (one or two files, no interface change).

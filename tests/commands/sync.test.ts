@@ -1008,6 +1008,8 @@ describe('autoAgentMarkdown — tier trouble is reported, not routed around', ()
 
   it('tells the caller to retry on -auto and report a misbehaving dispatch', () => {
     expect(description).toContain('If this agent misbehaves, retry it and report it to the user');
+    expect(description).toContain('all native routes');
+    expect(description).toContain('only on the tier the error names');
     expect(description).toContain('rather than pinning an explicit tier');
   });
 

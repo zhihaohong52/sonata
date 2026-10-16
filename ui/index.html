@@ -221,7 +221,7 @@ async function loadDashboard(generation) {
   // Turns withdrawn for an unrecoverable text tool call: billed, so spend
   // (and counted toward [budget]), but never served, so in no figure above.
   const w = r.withdrawn || { turns: 0, costUsd: 0, coveredUsd: 0, unpriced: 0 };
-  $('t-withdrawn').textContent = int(w.turns) + ' turns, ' + usd(w.costUsd) +
+  $('t-withdrawn').textContent = int(w.turns) + (w.turns === 1 ? ' turn, ' : ' turns, ') + usd(w.costUsd) +
     (w.coveredUsd ? ', ' + usd(w.coveredUsd) + ' covered' : '') +
     (w.unpriced ? ', ' + int(w.unpriced) + ' unpriced' : '');
 

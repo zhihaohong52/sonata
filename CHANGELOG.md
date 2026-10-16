@@ -173,6 +173,25 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ### Fixed
 
+- **Generated `-auto` guidance keeps the exhausted-route recovery.** When an
+  `-auto` dispatch fails with "all native routes … failed", the agent now re-runs
+  that dispatch on the tier the error names (or `-normal`) and keeps later
+  dispatches on `-auto`, matching `sonata-loop`. Run `sonata init` to refresh the
+  block.
+- **A `sonata init` blocked by an unreadable config now exits non-zero.** The
+  interactive wizard printed the refusal and exited 0.
+- **`route auto` no longer leaves routing on after a settle.** A subagent that
+  started and stopped inside the settle slack interval kept the routing env for
+  good; a completed settle is now recorded and no longer counts as settling.
+- **A watchdog whose wrapper was killed now terminates the surviving harness**
+  instead of exiting and leaving it with no timeout.
+- **A permission mode that is not a string in a session file is refused** instead
+  of being coerced to an alias.
+- **`sonata restart` no longer joins a router it did not start** after the grace
+  period, and a lazy LiteLLM child that exited before becoming ready is no longer
+  terminated a second time (about 10 s of extra wait).
+- **The dashboard says "1 turn"** for a single withdrawn turn.
+
 - **An idle `sonata` TUI no longer grows to gigabytes.** A shell left open for
   6.5 h reached 1.2 GB RSS at ~14% idle CPU. The usage screen re-read and
   re-parsed the whole 7-day ledger every 5 s (~215 ms CPU, ~30 MB of fresh

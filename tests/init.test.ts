@@ -446,6 +446,9 @@ describe('cmdInit (non-interactive)', () => {
       expect(res.configPath).toBe(join(cwd, 'sonata.toml'));
       expect(readFileSync(join(cwd, 'sonata.toml'), 'utf8')).toBe(broken);
       expect(lines.join('\n')).toMatch(/cannot be read/);
+      // The CLI exits non-zero off an error problem, so the blocked result
+      // must carry one: nothing was written, which is not a success.
+      expect(res.problems.some((p) => p.severity === 'error' && /cannot be read/.test(p.message))).toBe(true);
     });
   });
 
