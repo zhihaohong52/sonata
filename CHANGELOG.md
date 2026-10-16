@@ -10,6 +10,13 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ### Fixed
 
+- **Codex (ChatGPT) prompt cache now hits across a conversation's turns.**
+  The router sent LiteLLM no session id, so its chatgpt provider invented a
+  new random `session_id` per request and the upstream cache keyed on it
+  almost never hit (~15% vs ~99% on other gateways). Each turn was billed as
+  an uncached prompt, draining the ChatGPT plan's usage several times
+  faster. The router now also sends `x-litellm-session-id` set to the
+  per-conversation key (else Claude Code's session id).
 - **`sonata init` lists models for every provider you select.** A provider
   picked without typing a key — its key already stored by sonata or held by
   opencode, as Mistral, Google and OpenRouter usually are — has no models in

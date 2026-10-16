@@ -3179,6 +3179,29 @@ describe('OpenCode session header', () => {
     expect(session).toBe('cc-123');
   });
 
+  it('sends LiteLLM x-litellm-session-id equal to the conversation key, distinct per conversation', async () => {
+    // LiteLLM's chatgpt (codex) provider turns this into the upstream
+    // session_id header, which the ChatGPT prompt cache keys on; without it a
+    // fresh uuid is invented per request and the cache rarely hits.
+    const ids: (string | undefined)[] = [];
+    const deps = {
+      fetch: (async (_url: string, init: RequestInit) => {
+        ids.push((init.headers as Record<string, string>)['x-litellm-session-id']);
+        return new Response('{}', { status: 200 });
+      }) as unknown as typeof fetch,
+      litellmBase: 'http://litellm', litellmKey: 'k',
+      resolveTier: () => ROUTES_2GW,
+    };
+    const other = { role: 'user', content: 'a different task' };
+    await routeRequest(turn([opener]), deps);
+    await routeRequest(turn([opener, { role: 'assistant', content: 'ok' }, { role: 'user', content: 'more' }]), deps);
+    await routeRequest(turn([other]), deps);
+    expect(ids[0]).toBe(conversationKey(turn([opener]).body, DEFAULT_TENANT.id, 'sonata-review-normal'));
+    expect(ids[1]).toBe(ids[0]);
+    expect(ids[2]).toBeDefined();
+    expect(ids[2]).not.toBe(ids[0]);
+  });
+
   it('sends LiteLLM no client x-* header but the session, since it forwards them upstream', async () => {
     // Forwarding is switched on for opencode.ai model groups, and LiteLLM then
     // hands the upstream every client `x-*` header. The session is the one it
@@ -3192,7 +3215,7 @@ describe('OpenCode session header', () => {
       litellmBase: 'http://litellm', litellmKey: 'k',
       resolveTier: () => ROUTES_2GW,
     });
-    expect(Object.keys(sent).filter((name) => name.toLowerCase().startsWith('x-'))).toEqual(['x-opencode-session']);
+    expect(Object.keys(sent).filter((name) => name.toLowerCase().startsWith('x-')).sort()).toEqual(['x-litellm-session-id', 'x-opencode-session']);
     expect(sent['anthropic-version']).toBe('2023-06-01');
     expect(sent.authorization).toBe('Bearer k');
   });

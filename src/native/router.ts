@@ -2430,6 +2430,8 @@ async function forwardToLitellm(
   }
 }
 
+const LITELLM_SESSION_HEADER = 'x-litellm-session-id';
+
 function litellmHeaders(headers: Record<string, string>, litellmKey: string): Record<string, string> {
   const out = { ...headers };
   for (const name of Object.keys(out)) {
@@ -2452,6 +2454,12 @@ function litellmHeaders(headers: Record<string, string>, litellmKey: string): Re
  * session id; failing both, nothing, and the upstream's refusal reaches the
  * fallback below.
  *
+ * The same value goes to LiteLLM as `x-litellm-session-id`, which its proxy
+ * reads into `litellm_session_id`. LiteLLM's chatgpt (codex OAuth) provider
+ * sends that as the upstream `session_id` header, which is what ChatGPT's
+ * prompt cache keys on; without it LiteLLM invents a fresh uuid4 per request
+ * and the cache almost never hits.
+ *
  * Every other `x-*` header is dropped, AFTER the session is read from them:
  * for those model groups LiteLLM forwards every client `x-*` header upstream,
  * and Claude Code's session id and metadata are not a third party's business.
@@ -2466,7 +2474,10 @@ function withSessionHeader(
   const out = Object.fromEntries(
     Object.entries(headers).filter(([name]) => !name.toLowerCase().startsWith('x-')),
   );
-  if (session !== undefined) out[OPENCODE_SESSION_HEADER] = session;
+  if (session !== undefined) {
+    out[OPENCODE_SESSION_HEADER] = session;
+    out[LITELLM_SESSION_HEADER] = session;
+  }
   return out;
 }
 
