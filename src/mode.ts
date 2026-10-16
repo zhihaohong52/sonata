@@ -57,7 +57,10 @@ export function readPermissionMode(
     const parsed = JSON.parse(readFileSync(path, 'utf8')) as { permissionMode?: string };
     const raw = parsed.permissionMode;
     if (!raw) return 'default';
-    if (ALIASES[raw]) return ALIASES[raw];
+    if (typeof raw !== 'string') {
+      throw new Error(`sonata: unknown permission mode ${JSON.stringify(raw)} — refusing rather than guessing.`);
+    }
+    if (Object.hasOwn(ALIASES, raw)) return ALIASES[raw];
     // `dontAsk` auto-denies anything not allow-listed — the read-only end of
     // the spectrum, so it maps to `plan`. Treating it as `default` instead
     // gave codex workspace-write, which is the most permissive end: exactly

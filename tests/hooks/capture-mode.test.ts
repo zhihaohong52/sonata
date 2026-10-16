@@ -134,6 +134,28 @@ describe('readPermissionMode — machine-level session file', () => {
     expect(readPermissionMode(bare, 'abc', home)).toBe('acceptEdits');
   });
 
+  it('refuses a non-string mode instead of coercing an array to an alias', () => {
+    const home = mkdtempSync(join(tmpdir(), 'sonata-home-'));
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(
+      join(home, '.config', 'sonata', 'session-arr.json'),
+      JSON.stringify({ permissionMode: ['auto'] }),
+    );
+    const bare = mkdtempSync(join(tmpdir(), 'sonata-bare-'));
+    expect(() => readPermissionMode(bare, 'arr', home)).toThrow(/unknown permission mode/);
+  });
+
+  it('does not treat an inherited property name as an alias', () => {
+    const home = mkdtempSync(join(tmpdir(), 'sonata-home-'));
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(
+      join(home, '.config', 'sonata', 'session-ctor.json'),
+      JSON.stringify({ permissionMode: 'constructor' }),
+    );
+    const bare = mkdtempSync(join(tmpdir(), 'sonata-bare-'));
+    expect(() => readPermissionMode(bare, 'ctor', home)).toThrow(/unknown permission mode/);
+  });
+
   it('prefers the project session file over the machine one', () => {
     const local = mkdtempSync(join(tmpdir(), 'sonata-local-'));
     const home = mkdtempSync(join(tmpdir(), 'sonata-home-'));

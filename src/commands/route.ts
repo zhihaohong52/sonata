@@ -317,6 +317,13 @@ export function routeSessionsFile(
 export interface SessionEntry {
   id: string;
   startedAt: number;
+  /**
+   * Set once a settle has taken the routing env out. Past that point the
+   * session's window is over whatever the clock says: a subagent that starts
+   * and stops inside the one-second slack must still clear the env it wrote,
+   * because no later settle exists to do it.
+   */
+  settled?: boolean;
 }
 
 export function readSessions(file: string): string[] {
@@ -348,7 +355,12 @@ export function readSessionEntries(file: string): SessionEntry[] {
         typeof (item as { id?: unknown }).id === 'string' &&
         typeof (item as { startedAt?: unknown }).startedAt === 'number'
       ) {
-        out.push({ id: (item as { id: string }).id, startedAt: (item as { startedAt: number }).startedAt });
+        const entry: SessionEntry = {
+          id: (item as { id: string }).id,
+          startedAt: (item as { startedAt: number }).startedAt,
+        };
+        if ((item as { settled?: unknown }).settled === true) entry.settled = true;
+        out.push(entry);
       }
     }
     return out;
@@ -881,6 +893,10 @@ export async function cmdRouteSettle(
     // only the `sessionsSettling` question the subagent stop asks.
     if (registered[registered.length - 1]?.id !== sessionId) return;
     await routeOffKeepingRegistries(opts, scope);
+    // The env is out, so every registered session's window is over — older
+    // entries whose own settles returned early included. Recorded so
+    // `sessionsSettling` stops counting them during the slack interval.
+    writeSessionEntries(registry, registered.map((entry) => ({ ...entry, settled: true })));
   });
 }
 
@@ -1199,7 +1215,7 @@ export function sessionsSettling(
   now: number = Date.now(),
 ): boolean {
   return readSessionEntries(routeSessionsFile(opts.cwd, scope, opts.home))
-    .some((entry) => now - entry.startedAt <= ROUTE_SETTLE_MS + SETTLE_SLACK_MS);
+    .some((entry) => entry.settled !== true && now - entry.startedAt <= ROUTE_SETTLE_MS + SETTLE_SLACK_MS);
 }
 
 export interface SubagentDeps {

@@ -61,7 +61,17 @@ export function wrapWithTimeout(input: WatchdogInput): string {
     // `sonata-run-*/cmd.sh` processes after test runs.
     `  END=$((SECONDS + ${input.timeoutSeconds}))`,
     '  while [ $SECONDS -lt $END ]; do',
-    '    kill -0 $WRAPPER_PID 2>/dev/null || exit 0',
+    // The wrapper being gone does not mean the harness is: it has its own
+    // process group, so a wrapper killed on its own leaves it running with no
+    // timeout. Take down whatever survives before this watchdog exits.
+    '    if ! kill -0 $WRAPPER_PID 2>/dev/null; then',
+    '      if kill -0 $HARNESS_PID 2>/dev/null; then',
+    '        kill -TERM -$HARNESS_PID 2>/dev/null || kill -TERM $HARNESS_PID 2>/dev/null',
+    '        sleep 5',
+    '        kill -KILL -$HARNESS_PID 2>/dev/null || kill -KILL $HARNESS_PID 2>/dev/null',
+    '      fi',
+    '      exit 0',
+    '    fi',
     '    sleep 1',
     '  done',
     '  if kill -0 $HARNESS_PID 2>/dev/null; then',

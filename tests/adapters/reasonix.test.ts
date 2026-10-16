@@ -136,7 +136,7 @@ describe('reasonixAdapter.plan — default mode uses the TUI', () => {
     expect(readyLoop).toBeGreaterThan(-1);
     expect(sendLiteral).toBeGreaterThan(readyLoop);
     expect(p.script.slice(sendLiteral - 200, sendLiteral)).toContain('grep -qF');
-    expect(p.script).toContain('if tmux capture-pane');
+    expect(p.script).toContain('tmux capture-pane');
   });
 
   it('seeds the composer by addressing its own tmux session', () => {
@@ -167,6 +167,11 @@ describe('reasonixAdapter.plan — default mode uses the TUI', () => {
   it('quits the TUI once the report lands, so the run can finish', () => {
     expect(p.script).toContain("while [ ! -f '/repo/.sonata/runs/abc123/report.md' ] && [ ! -f '/repo/.sonata/runs/abc123/exit' ]; do sleep 2; done");
     expect(p.script).toContain('tmux send-keys -t "$SESSION" C-d');
+  });
+
+  it('does not type the task or send Enter once the exit sentinel exists', () => {
+    expect(p.script).toContain("if [ ! -f '/repo/.sonata/runs/abc123/exit' ] && tmux capture-pane");
+    expect(p.script).toContain("[ -f '/repo/.sonata/runs/abc123/exit' ] || tmux send-keys -t \"$SESSION\" Enter");
   });
 
   it('clears the composer before each Ctrl-D retry', () => {

@@ -206,12 +206,14 @@ function interactiveScript(input: PlanInput): string {
     // the harness exited means the run is already over; sending the task and
     // Enter into a dead or unrelated pane answers nothing and can act on
     // whatever is on screen instead.
-    `  if tmux capture-pane -p -t "$SESSION" | grep -qF ${shellQuote(READY_MARKER)}; then`,
+    // remain-on-exit keeps an exited pane's contents (marker included), so the
+    // exit sentinel is checked here too, and again before Enter.
+    `  if [ ! -f ${shellQuote(exitPath)} ] && tmux capture-pane -p -t "$SESSION" | grep -qF ${shellQuote(READY_MARKER)}; then`,
     `    tmux send-keys -t "$SESSION" -l ${shellQuote(prompt)}`,
     // Enter is sent separately: -l types literally, and the composer needs a
     // beat to register the text before it will submit it.
     '    sleep 1',
-    '    tmux send-keys -t "$SESSION" Enter',
+    `    [ -f ${shellQuote(exitPath)} ] || tmux send-keys -t "$SESSION" Enter`,
     '  fi',
     // The report is the harness's own "task over" signal. Until it lands, the
     // model may still be working or waiting on an approval, and quitting would

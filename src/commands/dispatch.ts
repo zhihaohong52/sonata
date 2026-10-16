@@ -174,7 +174,6 @@ export async function cmdDispatch(
       };
       launched = await run(runOpts);
       lastId = launched.id;
-      opts.onLaunch?.(launched.id, modelKey);
     } catch (err) {
       attempts.push({
         modelKey, state: 'FAILED', degraded: true,
@@ -182,6 +181,12 @@ export async function cmdDispatch(
       });
       continue;
     }
+
+    // A throwing observer is not a failed launch: the run is live, so trying
+    // the next candidate would race it on the same tree.
+    try {
+      opts.onLaunch?.(launched.id, modelKey);
+    } catch { /* observer errors never affect the dispatch */ }
 
     let result: WaitResult;
     try {

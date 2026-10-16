@@ -49,6 +49,17 @@ describe('cmdDispatch onLaunch', () => {
     expect(seen).toEqual([{ id: 'r1', modelKey: 'flash' }]);
   });
 
+  it('a throwing onLaunch is not a failed launch and starts no second candidate', async () => {
+    const launched: string[] = [];
+    const outcome = await cmdDispatch({ ...opts(), onLaunch: () => { throw new Error('observer broke'); } }, {
+      run: async (o) => { launched.push(o.model); return { id: `r-${o.model}`, session: 's', interactive: false }; },
+      wait: async (o) => ({ id: o.id, state: 'DONE', report: 'did it', lines: [], degraded: false }) as never,
+    });
+    expect(launched).toEqual(['flash']);
+    expect(outcome.id).toBe('r-flash');
+    expect(outcome.state).toBe('DONE');
+  });
+
   it('reports every candidate it launches across fallthrough', async () => {
     const seen: string[] = [];
     const outcome = await cmdDispatch({ ...opts(), onLaunch: (id) => { seen.push(id); } }, {

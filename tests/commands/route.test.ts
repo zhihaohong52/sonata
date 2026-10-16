@@ -528,6 +528,20 @@ describe('the session registry', () => {
     expect(sessionsSettling(o, 'project', 10_000 + ROUTE_SETTLE_MS + SETTLE_SLACK_MS + 1)).toBe(false);
   });
 
+  it('a completed settle is not "settling" even inside the slack interval', async () => {
+    writeFileSync(join(cwd, 'sonata.toml'), NATIVE_TOML);
+    const o = { cwd, home, packageRoot: PACKAGE_ROOT, serveArgv: ['node', 'cli.js', 'serve'] };
+    const deps = { probe: async () => true, startDaemon: async () => ({}) };
+    await cmdRouteSession('start', 's1', o, { ...deps, settle: () => {} });
+    const file = routeSessionsFile(cwd, 'project', home);
+    const startedAt = readSessionEntries(file)[0].startedAt;
+    const insideSlack = startedAt + ROUTE_SETTLE_MS + 500;
+    expect(sessionsSettling({ cwd, home }, 'project', insideSlack)).toBe(true);
+    await cmdRouteSettle('s1', o, { delay: async () => {} });
+    expect(sessionsSettling({ cwd, home }, 'project', insideSlack)).toBe(false);
+    expect(readSessionEntries(file)).toEqual([{ id: 's1', startedAt, settled: true }]);
+  });
+
   it('a stale s1 settle cannot end s2\'s window', async () => {
     // Newest-wins by position, not by timestamp: s1 and s2 registering in the
     // same millisecond still order, and s1's settle returns early.

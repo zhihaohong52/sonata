@@ -94,6 +94,16 @@ describe('wrapWithTimeout', () => {
     expect(script).toContain('kill -KILL $HARNESS_PID');
   });
 
+  it('takes down a surviving harness when the wrapper is gone, before exiting', () => {
+    const gone = script.indexOf('if ! kill -0 $WRAPPER_PID');
+    expect(gone).toBeGreaterThan(-1);
+    const block = script.slice(gone, script.indexOf('sleep 1', gone));
+    expect(block).toContain('kill -0 $HARNESS_PID');
+    expect(block).toContain('kill -TERM -$HARNESS_PID');
+    expect(block).toContain('kill -KILL -$HARNESS_PID');
+    expect(block.indexOf('kill -KILL')).toBeLessThan(block.indexOf('exit 0'));
+  });
+
   it('waits for the harness and kills the watchdog on completion', () => {
     expect(script).toContain('wait $HARNESS_PID');
     expect(script).toContain('kill $WATCHDOG_PID');
