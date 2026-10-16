@@ -142,8 +142,12 @@ async function loadRows(generation) {
       cell(tr, int(row.input), 'num');
       cell(tr, int(row.output), 'num');
       // Withdrawn turns were billed too; shown beside the cost, not inside it.
-      const c = cell(tr, usd(row.costUsd) + (row.withdrawnTurns ? ' +' + usd(row.withdrawnUsd) + ' withdrawn' : ''), 'num');
-      if (row.unpricedRequests) c.title = row.unpricedRequests + ' unpriced request(s) not included';
+      const c = cell(tr, usd(row.costUsd) + (row.withdrawnTurns ? ' +' + usd(row.withdrawnUsd) + ' withdrawn' + (row.withdrawnUnpriced ? ' (+' + row.withdrawnUnpriced + ' unpriced)' : '') : ''), 'num');
+      // Unknown is never shown as zero: unpriced volume is named beside the priced figure.
+      const notes = [];
+      if (row.unpricedRequests) notes.push(row.unpricedRequests + ' unpriced request(s) not included');
+      if (row.withdrawnUnpriced) notes.push(row.withdrawnUnpriced + ' unpriced withdrawn turn(s) not included');
+      if (notes.length) c.title = notes.join('; ');
       // Covered is its own figure, never folded into cost: a subscription-backed
       // session would otherwise read $0.0000, identical to one that truly cost
       // nothing. Same separation the dashboard already keeps.

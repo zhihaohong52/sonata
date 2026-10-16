@@ -88,6 +88,14 @@ describe('sessionRows', () => {
     expect(s3).toMatchObject({ project: '/proj/c', requests: 0, costUsd: 0, withdrawnTurns: 2, withdrawnUsd: 0.25, withdrawnCoveredUsd: 2, models: [] });
   });
 
+  it('counts unpriced withdrawn turns apart instead of showing them as zero', async () => {
+    const usage = join(home, '.config', 'sonata', 'usage');
+    const day = new Date().toISOString().slice(0, 10);
+    writeFileSync(join(usage, `${day}.jsonl`), row({ key: 'mimo', session: 's3', project: '/proj/c', withdrawn: true, price: { source: 'none' } }) + '\n', { flag: 'a' });
+    const s3 = (await sessionRows(deps(), all)).find((r) => r.id === 's3')!;
+    expect(s3).toMatchObject({ withdrawnTurns: 1, withdrawnUsd: 0, withdrawnUnpriced: 1 });
+  });
+
   it('lists the distinct candidates that served it', async () => {
     const s1 = (await sessionRows(deps(), all)).find((r) => r.id === 's1')!;
     expect(s1.models.sort()).toEqual(['flash', 'terra']);

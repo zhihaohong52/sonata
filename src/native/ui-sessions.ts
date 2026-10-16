@@ -32,6 +32,8 @@ export interface SessionRow {
   withdrawnUsd: number;
   /** Withdrawn turns on a subscription: list value, like `coveredUsd`, never billed. */
   withdrawnCoveredUsd: number;
+  /** Withdrawn turns with no price: their cost is unknown, not zero, and in no USD figure above. */
+  withdrawnUnpriced: number;
   models: string[];
 }
 
@@ -49,15 +51,16 @@ export async function sessionRows(deps: UiDeps, filters: UiFilters): Promise<Ses
 
   const report = aggregate(rows, 'session', sessions, resolve);
   const servedBySession = new Map<string, Set<string>>();
-  const withdrawnBySession = new Map<string, { turns: number; usd: number; coveredUsd: number }>();
+  const withdrawnBySession = new Map<string, { turns: number; usd: number; coveredUsd: number; unpriced: number }>();
   for (const row of rows) {
     const id = row.session;
     if (id === undefined) continue;
     if (row.withdrawn === true) {
-      const w = withdrawnBySession.get(id) ?? { turns: 0, usd: 0, coveredUsd: 0 };
+      const w = withdrawnBySession.get(id) ?? { turns: 0, usd: 0, coveredUsd: 0, unpriced: 0 };
       w.turns += 1;
       if (row.price.source === 'covered') w.coveredUsd += row.price.totalUsd ?? 0;
       else if (row.price.source !== 'none' && row.price.totalUsd !== undefined) w.usd += row.price.totalUsd;
+      else w.unpriced += 1;
       withdrawnBySession.set(id, w);
       continue;
     }
@@ -97,6 +100,7 @@ export async function sessionRows(deps: UiDeps, filters: UiFilters): Promise<Ses
         withdrawnTurns: withdrawn?.turns ?? 0,
         withdrawnUsd: withdrawn?.usd ?? 0,
         withdrawnCoveredUsd: withdrawn?.coveredUsd ?? 0,
+        withdrawnUnpriced: withdrawn?.unpriced ?? 0,
         models: [...(servedBySession.get(id) ?? new Set<string>())].sort(),
       };
     })
