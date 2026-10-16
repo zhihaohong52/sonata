@@ -78,7 +78,7 @@ describe('wrapWithTimeout', () => {
   });
 
   it('embeds the timeout value and its log line', () => {
-    expect(script).toContain('sleep 42');
+    expect(script).toContain('END=$((SECONDS + 42))');
     expect(script).toContain("sonata: run timeout after 42s");
     expect(script).toContain(">> '/tmp/sonata/harness.log'");
     expect(script).toContain("> '/tmp/sonata/timeout'");

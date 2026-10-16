@@ -173,6 +173,32 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ### Fixed
 
+- **An idle `sonata` TUI no longer grows to gigabytes.** A shell left open for
+  6.5 h reached 1.2 GB RSS at ~14% idle CPU. The usage screen re-read and
+  re-parsed the whole 7-day ledger every 5 s (~215 ms CPU, ~30 MB of fresh
+  allocations per poll on a 23 MB ledger) and the status screen did the same
+  every 2 s. Both now use an incremental ledger reader (`createLedgerReader`):
+  per day file it keeps the parsed rows and the byte offset consumed, parses
+  only newly appended complete lines, reparses a file that shrank or was
+  replaced, drops files that left the window, and returns the same array while
+  nothing changed so the usage report is not re-aggregated either. The models.dev
+  cache age is read from a stat-keyed cache instead of re-parsing a 1.7 MB file
+  each poll. Windowing is exact on the row timestamp, as before; budget, doctor
+  and the CLI keep `readRows`.
+- **The init wizard no longer re-parses the models.dev and Artificial Analysis
+  caches on every keypress.** They were loaded in the render body; they are now
+  loaded through a file-identity cache (path, size, mtime), so the object is
+  stable between renders (which lets the family cache hit) and a mid-wizard
+  refresh that rewrites the file is still seen.
+- **The TUI clocks re-render only when the text changes.** The status and usage
+  screens ticked state every second for an "updated Ns ago" label; they now
+  skip the render when the label is unchanged.
+- **A run's timeout watchdog no longer outlives its wrapper.** If the tmux
+  session was killed, the watchdog's single `sleep <run_timeout_seconds>` kept
+  running (ppid 1) for up to the full timeout, which left `sonata-run-*/cmd.sh`
+  processes behind after test runs. It now sleeps in one-second steps and exits
+  once the wrapper is gone.
+
 - **Codex (ChatGPT) prompt cache now hits across a conversation's turns.**
   The router sent LiteLLM no session id, so its chatgpt provider invented a
   new random `session_id` per request and the upstream cache keyed on it
