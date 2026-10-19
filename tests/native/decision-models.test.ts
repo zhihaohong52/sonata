@@ -149,3 +149,27 @@ describe('ModelListCache', () => {
     expect(f).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('AA Decision Index entries', () => {
+  const aa: DecisionCatalog = {
+    fetchedAt: '2026-10-19T00:00:00Z', revision: 'Decision Index v1.0',
+    systems: [
+      { key: 'typesafe_jev-1-13', display: 'Jev 1.13', capability: 57.5, usdPer1000: 0.0415, msPerTask: 127 },
+      { key: 'a_slow', display: 'Slow', capability: 50, usdPer1000: 0.02, msPerTask: 400 },
+      { key: 'b_fast', display: 'Fast', capability: 50, usdPer1000: 0.02, msPerTask: 100 },
+      { key: 'c_cheap', display: 'Cheap', capability: 50, usdPer1000: 0.01, msPerTask: 900 },
+    ],
+  };
+  it('matches a dotted listing id to AA\'s dashed slug', () => {
+    expect(scoreFor('typesafe/jev-1.13', aa)?.capability).toBe(57.5);
+    expect(scoreFor('~typesafe/jev-latest', aa)).toBeUndefined();
+  });
+  it('breaks a score tie on AA cost per task, then time per task, when the listing has no price', () => {
+    const choice = chooseDecisionModel({
+      baseUrl: 'https://x.example', catalog: aa,
+      listed: [{ id: 'slow' }, { id: 'fast' }, { id: 'cheap' }],
+    });
+    expect(choice.ranked.map((r) => r.id)).toEqual(['cheap', 'fast', 'slow']);
+    expect(choice.reason).toBe('Decision Index 50.0');
+  });
+});

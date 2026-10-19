@@ -437,7 +437,15 @@ export const reasonixAdapter: HarnessAdapter = {
   versionCommand: ['reasonix', '--version'],
   supportedVersions: '>=1.26.0 <2.0.0',
   pathPrepend: [],
-  update: { npmPackage: 'reasonix', command: ['reasonix', 'upgrade'] },
+  update: {
+    npmPackage: 'reasonix',
+    command: ['reasonix', 'upgrade'],
+    // `reasonix upgrade` fetches from GitHub releases (probed 2026-10-19: a
+    // 1.17.21 install got `GitHub API: 403 Forbidden`), so the registry is the
+    // dependable second route. It is pinned to the looked-up version in
+    // `offerHarnessUpdates` rather than `@latest`, which would race the lookup.
+    fallback: ['npm', 'install', '-g', 'reasonix'],
+  },
   plan: buildScript,
   canPromptForApproval: true,
   promptPatterns: PROMPT_PATTERNS,

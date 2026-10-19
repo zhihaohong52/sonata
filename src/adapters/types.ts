@@ -163,8 +163,13 @@ export interface HarnessAdapter {
    * the one source that is current (codex's own `version.json` lagged by five
    * releases). `command` is the harness's own updater, which knows how it was
    * installed. Absent means sonata never offers to update it.
+   *
+   * `fallback` runs when `command` failed or left the harness short of the
+   * release looked up — reasonix's updater reads GitHub's release API, which
+   * 403s when rate-limited and can trail the npm registry, so it exits 0
+   * (or non-zero) without reaching the version npm already lists.
    */
-  update?: { npmPackage: string; command: string[] };
+  update?: { npmPackage: string; command: string[]; fallback?: string[] };
   /**
    * The tokens a finished run spent, read from the harness's own store.
    *

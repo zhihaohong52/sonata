@@ -8,6 +8,25 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Changed
+
+- **Decision models are ranked by Artificial Analysis's Decision Index** instead
+  of JevBench. `sonata catalog update` reads the index leaderboard
+  (`artificialanalysis.ai/evaluations/artificial-analysis-decision-index`) — AA's
+  v2 API has no decision models, so the page's embedded data is the source — and
+  caches each decision model's index score, cost per task and time per task. The
+  highest score wins; a tie goes to the listing's price, then AA's cost per task,
+  then its time per task. AA's `jev-1-13` slugs now match a listing's `jev-1.13`.
+  An update that finds no decision models fails and keeps the previous cache.
+
+### Fixed
+
+- **`sonata init` now gets reasonix to the latest release when `reasonix
+  upgrade` does not.** That updater reads GitHub's release API (a 403 there
+  ended the upgrade, and an exit 0 could leave the old version), so when
+  reasonix is still behind npm's latest afterwards, init retries with `npm
+  install -g reasonix@<latest>` and reports the version actually reached.
+
 ## [0.16.6] - 2026-10-16
 
 ### Breaking
