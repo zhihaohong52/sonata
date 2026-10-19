@@ -15,7 +15,7 @@ const run = promisify(execFile);
  *
  * Reasonix is the second harness after codex that can genuinely ask a human for
  * approval, so it is the second that can honour `default` mode instead of
- * refusing it. Everything below was probed against reasonix v1.26.0; the
+ * refusing it. Everything below was probed against reasonix v1.26.0 and, for the headless path and the ready marker, v2.45.0; the
  * captured panes are in tests/fixtures/panes/reasonix-*.txt.
  *
  * The mode mapping is not the obvious one:
@@ -66,11 +66,16 @@ const PROMPT_HEAD = /^\s*(will call tool\b|⏸\s*plan ready above)/i;
 /**
  * The pane text reasonix prints only when it is idle and ready for input.
  *
+ * An extended regex for `grep -E`. 1.x prints `Shift+Tab ask/auto/plan`; 2.x
+ * (probed on 2.45.0, tests/fixtures/panes/reasonix-2x-ready.txt) prints
+ * `Shift+Tab read-only/ask/auto/YOLO/plan`, so the old fixed string matched
+ * only 1.x and an interactive 2.x launch would never type its task.
+ *
  * Used by the interactive launch script to know when the composer exists.
  * Matching the composer glyph instead would fire on any selection list, which
  * also draws `❯`.
  */
-const READY_MARKER = 'Shift+Tab ask/auto/plan';
+const READY_MARKER = 'Shift\\+Tab (read-only/)?ask/auto/(YOLO/)?plan';
 
 function shellQuote(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
@@ -198,7 +203,7 @@ function interactiveScript(input: PlanInput): string {
     // ready, there is no composer to type into and typing anyway lands the
     // task text blind into whatever the pane holds.
     '  for _ in $(seq 1 120); do',
-    `    tmux capture-pane -p -t "$SESSION" | grep -qF ${shellQuote(READY_MARKER)} && break`,
+    `    tmux capture-pane -p -t "$SESSION" | grep -qE ${shellQuote(READY_MARKER)} && break`,
     `    [ -f ${shellQuote(exitPath)} ] && break`,
     '    sleep 0.5',
     '  done',
@@ -208,7 +213,7 @@ function interactiveScript(input: PlanInput): string {
     // whatever is on screen instead.
     // remain-on-exit keeps an exited pane's contents (marker included), so the
     // exit sentinel is checked here too, and again before Enter.
-    `  if [ ! -f ${shellQuote(exitPath)} ] && tmux capture-pane -p -t "$SESSION" | grep -qF ${shellQuote(READY_MARKER)}; then`,
+    `  if [ ! -f ${shellQuote(exitPath)} ] && tmux capture-pane -p -t "$SESSION" | grep -qE ${shellQuote(READY_MARKER)}; then`,
     `    tmux send-keys -t "$SESSION" -l ${shellQuote(prompt)}`,
     // Enter is sent separately: -l types literally, and the composer needs a
     // beat to register the text before it will submit it.
@@ -435,7 +440,7 @@ export function reasonixUsage(query: UsageQuery): UsageResult {
 export const reasonixAdapter: HarnessAdapter = {
   name: 'reasonix',
   versionCommand: ['reasonix', '--version'],
-  supportedVersions: '>=1.26.0 <2.0.0',
+  supportedVersions: '>=1.26.0 <3.0.0',
   pathPrepend: [],
   update: {
     npmPackage: 'reasonix',

@@ -135,13 +135,22 @@ describe('reasonixAdapter.plan — default mode uses the TUI', () => {
     const sendLiteral = p.script.indexOf('tmux send-keys -t "$SESSION" -l');
     expect(readyLoop).toBeGreaterThan(-1);
     expect(sendLiteral).toBeGreaterThan(readyLoop);
-    expect(p.script.slice(sendLiteral - 200, sendLiteral)).toContain('grep -qF');
+    expect(p.script.slice(sendLiteral - 200, sendLiteral)).toContain('grep -qE');
     expect(p.script).toContain('tmux capture-pane');
+  });
+
+  it('its ready marker matches the 1.x footer and the 2.x footer captured from 2.45.0', () => {
+    const marker = /grep -qE '([^']+)'/.exec(p.script)?.[1];
+    expect(marker).toBeDefined();
+    const re = new RegExp(marker!);
+    expect(re.test('Shift+Tab ask/auto/plan')).toBe(true);
+    expect(re.test(readFileSync(join(process.cwd(), 'tests/fixtures/panes/reasonix-2x-ready.txt'), 'utf8'))).toBe(true);
+    expect(re.test('↑/↓ navigate · Enter select')).toBe(false);
   });
 
   it('seeds the composer by addressing its own tmux session', () => {
     expect(p.script).toContain(`SESSION="$(tmux display-message -p '#S')"`);
-    expect(p.script).toContain('Shift+Tab ask/auto/plan');
+    expect(p.script).toContain(`grep -qE 'Shift\\+Tab (read-only/)?ask/auto/(YOLO/)?plan'`);
     expect(p.script).toContain('tmux send-keys -t "$SESSION" -l');
     expect(p.script).toContain('tmux send-keys -t "$SESSION" Enter');
   });
@@ -356,7 +365,7 @@ describe('adapter registry', () => {
   it('declares the supported version range', () => {
     const adapter = getAdapter('reasonix');
     expect(adapter.versionCommand).toEqual(['reasonix', '--version']);
-    expect(adapter.supportedVersions).toBe('>=1.26.0 <2.0.0');
+    expect(adapter.supportedVersions).toBe('>=1.26.0 <3.0.0');
     expect(adapter.pathPrepend).toEqual([]);
   });
 });
