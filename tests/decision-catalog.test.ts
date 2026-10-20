@@ -34,6 +34,15 @@ describe('update and load', () => {
     const home = mkdtempSync(join(tmpdir(), 'dc-'));
     await expect(updateDecisionCatalog(home, (async () => new Response('x', { status: 503 })) as any, {})).rejects.toThrow(/HTTP 503/);
   });
+  it('loads nothing from a cache written by another source, such as the old JevBench one', () => {
+    const home = mkdtempSync(join(tmpdir(), 'dc-'));
+    mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
+    writeFileSync(decisionCatalogPath(home), JSON.stringify({
+      fetchedAt: '2026-10-01T00:00:00.000Z', revision: 'v1.5.4',
+      systems: [{ key: 'jev-1.13.0', display: 'Jev', capability: 80 }],
+    }));
+    expect(loadDecisionCatalog(home)).toBeUndefined();
+  });
   it('loads nothing from an absent or corrupt cache', () => {
     const home = mkdtempSync(join(tmpdir(), 'dc-'));
     expect(loadDecisionCatalog(home)).toBeUndefined();

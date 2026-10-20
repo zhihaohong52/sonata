@@ -26,8 +26,10 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   stale: 2.x's composer footer reads `Shift+Tab read-only/ask/auto/YOLO/plan`,
   and the interactive launch waited for the 1.x string `Shift+Tab ask/auto/plan`,
   so a `default`-mode reasonix run would never have typed its task. The marker
-  is now a regex matching both footers, with a pane captured from 2.45.0 as a
-  fixture. Headless `run` flags and `--permission-mode` refusals were probed on
+  is now a regex matching both footers, and the launch also waits while a
+  setup dialog or selection list is open (2.x draws its footer under them too),
+  with panes captured from 2.45.0 as fixtures. A decision-model cache written by
+  the old JevBench source is ignored rather than ranked as Decision Index scores. Headless `run` flags and `--permission-mode` refusals were probed on
   2.45.0 and are unchanged.
 - **`sonata init` now gets reasonix to the latest release when `reasonix
   upgrade` does not.** That updater reads GitHub's release API (a 403 there

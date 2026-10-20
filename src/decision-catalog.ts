@@ -98,7 +98,11 @@ export function loadDecisionCatalog(home: string): DecisionCatalog | undefined {
   if (!existsSync(path)) return undefined;
   try {
     const doc = JSON.parse(readFileSync(path, 'utf8')) as DecisionCatalog;
-    if (typeof doc.fetchedAt !== 'string' || !Array.isArray(doc.systems)) return undefined;
+    // A cache from another source (the JevBench one, 'v1.5.4') has the same
+    // shape, so without this its scores would be ranked and labelled as Decision
+    // Index scores. The file is left alone; the next update overwrites it.
+    if (typeof doc.fetchedAt !== 'string' || doc.revision !== DECISION_INDEX_REVISION
+      || !Array.isArray(doc.systems)) return undefined;
     const systems = doc.systems.filter((e) => e !== null && typeof e === 'object'
       && typeof e.key === 'string' && finite(e.capability));
     return { ...doc, systems };
