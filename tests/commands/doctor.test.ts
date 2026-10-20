@@ -242,7 +242,7 @@ complex = ["b"]
     writeFileSync(join(cwd, '.claude', 'agents', 'code-auto.md'), code?.content ?? '');
     mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
     writeFileSync(join(home, '.config', 'sonata', 'decision-catalog.json'), JSON.stringify({
-      fetchedAt: new Date().toISOString(), revision: 'v1.5.4',
+      fetchedAt: new Date().toISOString(), revision: 'Decision Index v1.0',
       systems: [{ key: 'jev-1.13.0', display: 'Jev', capability: 80 }, { key: 'kev-4b', display: 'kev', capability: 55 }],
     }));
     const listing = { data: [
@@ -251,7 +251,7 @@ complex = ["b"]
     ] };
     const { checks } = await cmdDoctor({ ...NO_CLIENT, cwd, home, fetch: (async () => new Response(JSON.stringify(listing))) as any });
     const detail = checks.filter((c) => c.name === 'auto route').map((c) => c.detail).join('\n');
-    expect(detail).toMatch(/model typesafe\/jev-1\.13 — JevBench capability 80\.0/);
+    expect(detail).toMatch(/model typesafe\/jev-1\.13 — Decision Index 80\.0/);
     expect(detail).toMatch(/runner-up jaredpalmer\/kev-4b 55\.0/);
   });
 
@@ -264,7 +264,7 @@ complex = ["b"]
     writeSonataKey(home, 'typesafe', 'k');
     mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
     writeFileSync(join(home, '.config', 'sonata', 'decision-catalog.json'), JSON.stringify({
-      fetchedAt: '2026-10-01T00:00:00.000Z', revision: 'v1.5.4',
+      fetchedAt: '2026-10-01T00:00:00.000Z', revision: 'Decision Index v1.0',
       systems: [{ key: 'jev-1.13.0', display: 'Jev', capability: 80 }],
     }));
     const listing = (async () => new Response('{}', { status: 404 })) as any;
@@ -272,7 +272,7 @@ complex = ["b"]
       ...NO_CLIENT, cwd, home, fetch: listing, now: () => new Date('2026-10-01T06:00:00.000Z'),
     });
     expect(checks.find((c) => c.name === 'auto route'
-      && /decision-model catalog: JevBench v1\.5\.4, 0 day\(s\) old/.test(c.detail))).toBeDefined();
+      && /decision-model catalog: Decision Index v1\.0, 0 day\(s\) old/.test(c.detail))).toBeDefined();
   });
 
   it('with a pinned model it fetches no listing and says nothing about the catalog', async () => {
@@ -286,7 +286,7 @@ complex = ["b"]
     writeFileSync(join(cwd, '.claude', 'agents', 'code-auto.md'), code?.content ?? '');
     mkdirSync(join(home, '.config', 'sonata'), { recursive: true });
     writeFileSync(join(home, '.config', 'sonata', 'decision-catalog.json'), JSON.stringify({
-      fetchedAt: '2026-10-01T00:00:00.000Z', revision: 'v1.5.4',
+      fetchedAt: '2026-10-01T00:00:00.000Z', revision: 'Decision Index v1.0',
       systems: [{ key: 'jev-1.13.0', display: 'Jev', capability: 80 }],
     }));
     const listing = vi.fn(async () => new Response('{}', { status: 404 })) as any;

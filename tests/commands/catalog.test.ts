@@ -6,7 +6,7 @@ import { cmdCatalogUpdate, validateAaKey } from '../../src/commands/catalog.js';
 import { aaCatalogPath, loadAaCatalog } from '../../src/catalog.js';
 import { MODELS_DEV_URL, modelsDevPath } from '../../src/modelsdev.js';
 import { cmdAuthAdd } from '../../src/commands/auth.js';
-import { JEVBENCH_URL, decisionCatalogPath } from '../../src/decision-catalog.js';
+import { DECISION_INDEX_URL, decisionCatalogPath } from '../../src/decision-catalog.js';
 
 // Both response fixtures are synthetic and hand-written, never API redistributions.
 let home: string;
@@ -34,13 +34,13 @@ function bothFixtures(input: string | URL | Request, init?: RequestInit): Respon
 }
 
 describe('cmdCatalogUpdate', () => {
-  it('also caches the JevBench decision catalog, independently of AA and models.dev', async () => {
-    const jevbench = JSON.parse(readFileSync(join(process.cwd(), 'tests/fixtures/jevbench/v1.5.4-sample.json'), 'utf8'));
+  it('also caches the Decision Index catalog, independently of AA and models.dev', async () => {
+    const leaderboard = readFileSync(join(process.cwd(), 'tests/fixtures/decision-index/leaderboard-sample.html'), 'utf8');
     const result = await cmdCatalogUpdate(home, {
-      fetch: async (input) => String(input) === JEVBENCH_URL ? response(jevbench) : response({}, 503),
+      fetch: async (input) => String(input) === DECISION_INDEX_URL ? new Response(leaderboard) : response({}, 503),
       now: () => new Date('2026-10-01T00:00:00.000Z'),
     });
-    expect(result.decisions).toEqual({ systems: 3, path: decisionCatalogPath(home), fetchedAt: '2026-10-01T00:00:00.000Z', revision: 'v1.5.4' });
+    expect(result.decisions).toEqual({ systems: 2, path: decisionCatalogPath(home), fetchedAt: '2026-10-01T00:00:00.000Z', revision: 'Decision Index v1.0' });
     expect(result.aa).toHaveProperty('error');
     expect(result.modelsDev).toHaveProperty('error');
   });
@@ -83,12 +83,12 @@ describe('cmdCatalogUpdate', () => {
       fetch: async (input, init) => {
         calls.push(String(input));
         // The decision catalog is fetched alongside; only models.dev is asked without options.
-        if (String(input) === JEVBENCH_URL) return response({ systems: [] });
+        if (String(input) === DECISION_INDEX_URL) return new Response('<html></html>');
         expect(init).toBeUndefined();
         return response(modelsDevFixture());
       },
     });
-    expect(calls.filter((url) => url !== JEVBENCH_URL)).toEqual([MODELS_DEV_URL]);
+    expect(calls.filter((url) => url !== DECISION_INDEX_URL)).toEqual([MODELS_DEV_URL]);
     expect(result.aa).toHaveProperty('error');
     expect(result.modelsDev).not.toHaveProperty('error');
     expect(readFileSync(modelsDevPath(home), 'utf8')).toContain('deepseek-v4-flash');
@@ -268,7 +268,7 @@ describe('updateAaCatalog page fetches', () => {
     const inits: (RequestInit | undefined)[] = [];
     const result = await cmdCatalogUpdate(home, {
       fetch: async (input, init) => {
-        if (String(input) === JEVBENCH_URL) return response({ systems: [] });
+        if (String(input) === DECISION_INDEX_URL) return new Response('<html></html>');
         if (isModelsDev(input)) return response(modelsDevFixture());
         inits.push(init);
         return String(input).endsWith('page=1') ? response(pageOne) : response(pageTwo);
@@ -293,7 +293,7 @@ describe('updateAaCatalog page fetches', () => {
     let pages = 0;
     const result = await cmdCatalogUpdate(home, {
       fetch: async (input) => {
-        if (String(input) === JEVBENCH_URL) return response({ systems: [] });
+        if (String(input) === DECISION_INDEX_URL) return new Response('<html></html>');
         if (isModelsDev(input)) return response(modelsDevFixture());
         pages += 1;
         return response(endless);

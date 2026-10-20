@@ -135,13 +135,30 @@ describe('reasonixAdapter.plan — default mode uses the TUI', () => {
     const sendLiteral = p.script.indexOf('tmux send-keys -t "$SESSION" -l');
     expect(readyLoop).toBeGreaterThan(-1);
     expect(sendLiteral).toBeGreaterThan(readyLoop);
-    expect(p.script.slice(sendLiteral - 200, sendLiteral)).toContain('grep -qF');
+    expect(p.script.slice(sendLiteral - 200, sendLiteral)).toContain('ready;');
     expect(p.script).toContain('tmux capture-pane');
+  });
+
+  it('is ready on the 1.x and 2.x composer footers, and not on a 2.x setup dialog that shows the same footer', async () => {
+    // Evaluate the script's own `ready` function against captured panes.
+    const { execFileSync } = await import('node:child_process');
+    const fn = /^ready\(\) \{.*\}$/m.exec(p.script)?.[0];
+    expect(fn).toBeDefined();
+    const readyOn = (pane: string): boolean => {
+      try {
+        execFileSync('bash', ['-c', `tmux() { cat "$PANE"; }; ${fn}; ready`], { env: { ...process.env, PANE: pane } });
+        return true;
+      } catch { return false; }
+    };
+    const fixture = (name: string): string => join(process.cwd(), 'tests/fixtures/panes', name);
+    expect(readyOn(fixture('reasonix-2x-composer.txt'))).toBe(true);
+    expect(readyOn(fixture('reasonix-2x-setup-dialog.txt'))).toBe(false);
+    expect(readyOn(fixture('reasonix-tool-approval.txt'))).toBe(false);
   });
 
   it('seeds the composer by addressing its own tmux session', () => {
     expect(p.script).toContain(`SESSION="$(tmux display-message -p '#S')"`);
-    expect(p.script).toContain('Shift+Tab ask/auto/plan');
+    expect(p.script).toContain(`grep -qE 'Shift\\+Tab (read-only/)?ask/auto/(YOLO/)?plan'`);
     expect(p.script).toContain('tmux send-keys -t "$SESSION" -l');
     expect(p.script).toContain('tmux send-keys -t "$SESSION" Enter');
   });
@@ -170,7 +187,7 @@ describe('reasonixAdapter.plan — default mode uses the TUI', () => {
   });
 
   it('does not type the task or send Enter once the exit sentinel exists', () => {
-    expect(p.script).toContain("if [ ! -f '/repo/.sonata/runs/abc123/exit' ] && tmux capture-pane");
+    expect(p.script).toContain("if [ ! -f '/repo/.sonata/runs/abc123/exit' ] && ready; then");
     expect(p.script).toContain("[ -f '/repo/.sonata/runs/abc123/exit' ] || tmux send-keys -t \"$SESSION\" Enter");
   });
 
@@ -356,7 +373,7 @@ describe('adapter registry', () => {
   it('declares the supported version range', () => {
     const adapter = getAdapter('reasonix');
     expect(adapter.versionCommand).toEqual(['reasonix', '--version']);
-    expect(adapter.supportedVersions).toBe('>=1.26.0 <2.0.0');
+    expect(adapter.supportedVersions).toBe('>=1.26.0 <3.0.0');
     expect(adapter.pathPrepend).toEqual([]);
   });
 });

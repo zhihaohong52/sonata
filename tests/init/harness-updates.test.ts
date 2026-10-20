@@ -215,6 +215,57 @@ describe('offerHarnessUpdates', () => {
     expect(text).not.toContain('updated to 0.87.1');
   });
 
+  it('retries reasonix through npm when its own updater exits 0 but stays behind', async () => {
+    let version = '1.26.0';
+    const ran: string[] = [];
+    const d: UpdateDeps = {
+      installedVersion: async (h) => (h === 'reasonix' ? version : undefined),
+      latestVersion: async (pkg) => (pkg === 'reasonix' ? '2.45.0' : undefined),
+      run: async (command) => {
+        ran.push(command.join(' '));
+        if (command[0] === 'npm') version = '2.45.0';
+        return true;
+      },
+    };
+    const lines: string[] = [];
+    await offerHarnessUpdates({ interactive: true, ask: async () => true, out: (l) => lines.push(l), deps: d });
+    expect(ran).toEqual(['reasonix upgrade', 'npm install -g reasonix@2.45.0']);
+    expect(lines.join('\n')).toContain('reasonix updated to 2.45.0');
+  });
+
+  it('falls back to npm when reasonix refuses to self-upgrade an npm install', async () => {
+    // Probed on a real machine, reasonix 2.37.0: "installed through a package
+    // manager, which must do the upgrade … npm install -g reasonix@latest".
+    let version = '2.37.0';
+    const ran: string[] = [];
+    const d: UpdateDeps = {
+      installedVersion: async (h) => (h === 'reasonix' ? version : undefined),
+      latestVersion: async (pkg) => (pkg === 'reasonix' ? '2.46.0' : undefined),
+      run: async (command, out) => {
+        ran.push(command.join(' '));
+        if (command[0] === 'reasonix') { out('error: installed through a package manager'); return false; }
+        version = '2.46.0';
+        return true;
+      },
+    };
+    const lines: string[] = [];
+    await offerHarnessUpdates({ interactive: true, ask: async () => true, out: (l) => lines.push(l), deps: d });
+    expect(ran).toEqual(['reasonix upgrade', 'npm install -g reasonix@2.46.0']);
+    expect(lines.join('\n')).toContain('✓ reasonix updated to 2.46.0');
+  });
+
+  it('does not run the npm fallback when the reasonix updater reached the latest', async () => {
+    let version = '1.26.0';
+    const ran: string[] = [];
+    const d: UpdateDeps = {
+      installedVersion: async (h) => (h === 'reasonix' ? version : undefined),
+      latestVersion: async (pkg) => (pkg === 'reasonix' ? '2.45.0' : undefined),
+      run: async (command) => { ran.push(command[0]); version = '2.45.0'; return true; },
+    };
+    await offerHarnessUpdates({ interactive: true, ask: async () => true, out: () => {}, deps: d });
+    expect(ran).toEqual(['reasonix']);
+  });
+
   it('continues on the old version when the updater fails', async () => {
     const d = deps(
       { codex: '0.156.1' },

@@ -8,6 +8,35 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Changed
+
+- **Decision models are ranked by Artificial Analysis's Decision Index** instead
+  of JevBench. `sonata catalog update` reads the index leaderboard
+  (`artificialanalysis.ai/evaluations/artificial-analysis-decision-index`) — AA's
+  v2 API has no decision models, so the page's embedded data is the source — and
+  caches each decision model's index score, cost per task and time per task. The
+  highest score wins; a tie goes to the listing's price, then AA's cost per task,
+  then its time per task. AA's `jev-1-13` slugs now match a listing's `jev-1.13`.
+  An update that finds no decision models fails and keeps the previous cache.
+
+### Fixed
+
+- **reasonix 2.x is inside the tested range, and its interactive launch works.**
+  The `>=1.26.0 <2.0.0` warning is gone (now `<3.0.0`). The cap was real, not
+  stale: 2.x's composer footer reads `Shift+Tab read-only/ask/auto/YOLO/plan`,
+  and the interactive launch waited for the 1.x string `Shift+Tab ask/auto/plan`,
+  so a `default`-mode reasonix run would never have typed its task. The marker
+  is now a regex matching both footers, and the launch also waits while a
+  setup dialog or selection list is open (2.x draws its footer under them too),
+  with panes captured from 2.45.0 as fixtures. A decision-model cache written by
+  the old JevBench source is ignored rather than ranked as Decision Index scores. Headless `run` flags and `--permission-mode` refusals were probed on
+  2.45.0 and are unchanged.
+- **`sonata init` now gets reasonix to the latest release when `reasonix
+  upgrade` does not.** That updater reads GitHub's release API (a 403 there
+  ended the upgrade, and an exit 0 could leave the old version), so when
+  reasonix is still behind npm's latest afterwards, init retries with `npm
+  install -g reasonix@<latest>` and reports the version actually reached.
+
 ## [0.16.6] - 2026-10-16
 
 ### Breaking

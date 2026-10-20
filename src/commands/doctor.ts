@@ -1095,12 +1095,12 @@ export async function cmdDoctor(
       if (decisionCatalog === undefined) {
         checks.push({ name: 'auto route', ok: true, detail: 'no decision-model catalog — run `sonata catalog update` so the best model can be chosen' });
       } else if (age !== undefined && age > AA_CATALOG_MAX_AGE_DAYS) {
-        checks.push({ name: 'auto route', ok: true, detail: `decision-model catalog is ${age} days old (JevBench ${decisionCatalog.revision}) — run \`sonata catalog update\`` });
+        checks.push({ name: 'auto route', ok: true, detail: `decision-model catalog is ${age} days old (${decisionCatalog.revision}) — run \`sonata catalog update\`` });
       } else if (age !== undefined) {
         // Its age and revision are part of the report, not just its absence or
         // its staleness: a ranking is only as trustworthy as the data it came
         // from, and a catalog nobody dates is a catalog nobody refreshes.
-        checks.push({ name: 'auto route', ok: true, detail: `decision-model catalog: JevBench ${decisionCatalog.revision}, ${age} day(s) old` });
+        checks.push({ name: 'auto route', ok: true, detail: `decision-model catalog: ${decisionCatalog.revision}, ${age} day(s) old` });
       }
     }
 

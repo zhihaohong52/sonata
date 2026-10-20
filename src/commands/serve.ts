@@ -2888,7 +2888,7 @@ export async function cmdServe(
       // router serves them all. With no key it throws per call and the router
       // falls back, which is the documented off-by-default-key behaviour.
       // One classifier per URL + pin; the model is chosen per call from the
-      // URL's listed decision models and the cached JevBench scores, so a
+      // URL's listed decision models and the cached Decision Index scores, so a
       // `sonata catalog update` or a new model at the URL needs no restart.
       classifierFor: (settings, tenant) => {
         const credential = () => decisionKeyFor(settings.baseUrl, {
