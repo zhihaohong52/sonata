@@ -5,11 +5,11 @@
  * the highest capability wins and cost only breaks a tie. Matching is exact
  * after normalisation — a guessed match would rank a model on another
  * model's score, the failure the AA lookup rules exist to prevent. With no
- * scored model, OpenRouter defaults to `~typesafe/jev-latest`, TypeSafe to
- * `jev-latest` (required by its endpoint), and other hosts receive no model.
+ * scored model, a named provider gets its `DECISION_PROVIDERS` default
+ * (TypeSafe requires one) and other hosts receive no model.
  */
 import type { DecisionCatalog, DecisionCatalogEntry } from '../decision-catalog.js';
-import { OPENROUTER_DEFAULT_DECISION_MODEL, TYPESAFE_DEFAULT_DECISION_MODEL } from '../config.js';
+import { decisionProviderFor } from './decision-providers.js';
 
 export interface ListedDecisionModel { id: string; pricePerToken?: number }
 
@@ -55,15 +55,9 @@ export function scoreFor(id: string, catalog: DecisionCatalog | undefined): Deci
     });
 }
 
+/** The model a URL is asked for when no listed model is scored: its named provider's default, else none. */
 export function defaultDecisionModel(baseUrl: string): string | undefined {
-  try {
-    const hostname = new URL(baseUrl).hostname;
-    if (hostname === 'openrouter.ai') return OPENROUTER_DEFAULT_DECISION_MODEL;
-    if (hostname === 'api.typesafe.ai') return TYPESAFE_DEFAULT_DECISION_MODEL;
-    return undefined;
-  } catch {
-    return undefined;
-  }
+  return decisionProviderFor(baseUrl)?.defaultModel;
 }
 
 export interface DecisionChoice { model: string | undefined; reason: string; ranked: Array<{ id: string; capability?: number }> }

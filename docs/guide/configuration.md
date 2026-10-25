@@ -144,9 +144,12 @@ Jev is asked wherever `base_url` points — any http(s) URL speaking its API:
 
 - TypeSafe directly (the default, `https://api.typesafe.ai`). Store the key with `sonata auth add typesafe`.
 - OpenRouter (`base_url = "https://openrouter.ai/api"`), using the key your `openrouter` gateway already uses (`sonata auth add openrouter`, or one opencode holds). No TypeSafe account is needed.
+- One of your own `[native.gateways]` that serves decision models — its `base_url` without the trailing `/v1`, e.g. `base_url = "https://gw.acme.example"` for a gateway at `https://gw.acme.example/v1`. The decision call uses that gateway's own key, under the gateway's name, and only when exactly one api-key gateway sits on that host. Its host is bound exactly as the gateway's own traffic is (a project config's gateway needs `sonata auth trust <gateway> <host>`).
 - A self-hosted `jev-compatible-server`, e.g. `base_url = "http://localhost:8000"`. A local server usually needs no key, and then it works as it is. A keyed one needs no trust in your machine config, which is trusted by definition; in a project config it needs `sonata auth trust auto-route localhost:8000` (the host with its port). Any other host takes a key stored with `sonata auth add auto-route`.
 
-The key follows the host and is only ever sent to it: the OpenRouter key goes to `openrouter.ai`, the TypeSafe key to `api.typesafe.ai`. The key is read when each classification is made and is never logged.
+The key follows the host and is only ever sent to it: the OpenRouter key goes to `openrouter.ai`, the TypeSafe key to `api.typesafe.ai`, a gateway's key to that gateway's host. The key is read when each classification is made and is never logged.
+
+`sonata init` asks all of this in its Auto-route step. It offers the named providers, each configured gateway whose `/v1/models` lists decision models, and a custom URL. Then it asks for the key if none is stored. Last comes the decision model: **Automatic** (the default, described below), or one of the models the provider lists, ranked by JevBench score. Picking a model writes it as `model`. Named providers live in one table, `DECISION_PROVIDERS` in `src/native/decision-providers.ts`.
 
 ```toml
 [auto_route]

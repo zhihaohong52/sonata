@@ -205,6 +205,16 @@ describe('resolveDecisionKey — the one decision-key policy', () => {
     opencodeAuth(both, { openrouter: { key: 'oc-or' } });
     expect(resolveDecisionKey('openrouter', both)).toEqual({ key: 'sonata-or', source: 'sonata' });
   });
+
+  it('looks up a configured gateway\'s key as the router does, honouring a pinned credential_source', () => {
+    const home = tmp();
+    opencodeAuth(home, { acme: { key: 'oc-acme' } });
+    expect(resolveDecisionKey('acme', home)).toEqual({ key: 'oc-acme', source: 'opencode' });
+    // Pinned to sonata's store: opencode's copy is not consulted.
+    expect(resolveDecisionKey('acme', home, { credentialSource: 'sonata' })).toBeUndefined();
+    writeSonataKey(home, 'acme', 'sonata-acme');
+    expect(resolveDecisionKey('acme', home, { credentialSource: 'opencode' })).toEqual({ key: 'oc-acme', source: 'opencode' });
+  });
 });
 
 describe('the opencode v2 credential table', () => {

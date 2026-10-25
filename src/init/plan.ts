@@ -16,6 +16,7 @@ import { reconcilePerRoleModels, reconcileTierList, gatewayNamesOf, avoidedKeysO
 import { configPathFor, agentsDirFor } from './helpers.js';
 import { resolveKeyFromSource, keyReport } from '../native/credentials.js';
 import { isLoopbackHostname } from '../native/host-bindings.js';
+import { autoRoutePin } from '../native/decision-providers.js';
 import { credentialDir, credentialFileFor } from '../native/oauth-login.js';
 import { readChatGptOAuth } from '../native/codex-auth.js';
 import { GLOBAL_CONFIG_RELATIVE } from '../config.js';
@@ -292,8 +293,7 @@ export function plan(
       : {
         classifier: 'jev' as const,
         baseUrl: state.autoRoute.baseUrl,
-        // A pinned model belongs to its URL; changing the URL drops it.
-        ...(savedAutoRoute?.model !== undefined && savedAutoRoute.baseUrl === state.autoRoute.baseUrl ? { model: savedAutoRoute.model } : {}),
+        ...((pin) => (pin === undefined ? {} : { model: pin }))(autoRoutePin(state.autoRoute, savedAutoRoute?.baseUrl, savedAutoRoute?.model)),
         minConfidence: savedAutoRoute?.minConfidence ?? AUTO_ROUTE_DEFAULT_MIN_CONFIDENCE,
       };
 
@@ -425,12 +425,10 @@ export function plan(
     ? undefined
     : state.autoRoute === null
       ? (savedAutoRoute === undefined ? undefined : 'auto-route: removed')
-      // `model` survives only on an unchanged URL — the same rule the write
-      // above applies — so the line names a pin exactly when one will exist.
+      // The same rule the write above applies, so the line names a pin
+      // exactly when one will exist.
       : `auto-route: ${state.autoRoute.baseUrl}` +
-        (savedAutoRoute?.model !== undefined && savedAutoRoute.baseUrl === state.autoRoute.baseUrl
-          ? ` (model ${savedAutoRoute.model})`
-          : '');
+        ((pin) => (pin === undefined ? '' : ` (model ${pin})`))(autoRoutePin(state.autoRoute, savedAutoRoute?.baseUrl, savedAutoRoute?.model));
 
   const summary: string[] = [
     '  Summary',

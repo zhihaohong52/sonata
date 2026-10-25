@@ -5,6 +5,7 @@ import {
   AutoRouteStep, choiceForUrl, initialChoiceFor, keyPromptFor,
 } from '../../src/tui-ink/components/auto-route-step.js';
 import type { InitState } from '../../src/tui-ink/types.js';
+import type { DecisionChoice } from '../../src/native/decision-models.js';
 import { tick, until } from './ink-wait.js';
 
 const ENTER = '\r';
@@ -19,6 +20,10 @@ function renderStep(over: {
   state?: InitState;
   storedKeys?: Record<string, string>;
   savedBaseUrl?: string;
+  savedModel?: string;
+  gateways?: Record<string, { baseUrl: string }>;
+  keyBound?: (baseUrl: string) => boolean;
+  listModels?: (baseUrl: string, key: string | undefined) => Promise<DecisionChoice | undefined>;
 } = {}) {
   let state: InitState = over.state ?? {};
   let done = 0;
@@ -27,6 +32,10 @@ function renderStep(over: {
     state,
     storedKeys: over.storedKeys ?? {},
     savedBaseUrl: over.savedBaseUrl,
+    savedModel: over.savedModel,
+    gateways: over.gateways,
+    keyBound: over.keyBound,
+    listModels: over.listModels,
     onChange: (update) => { state = update(state); },
     onDone: () => { done += 1; },
     onBack: () => { backed += 1; },
@@ -279,5 +288,107 @@ describe('AutoRouteStep', () => {
     expect(w.state().autoRoute).toEqual({ baseUrl: 'https://api.typesafe.ai' });
     expect(w.state().decisionKey).toBeUndefined();
     w.unmount();
+  });
+});
+
+describe('choosing the decision model', () => {
+  const ranked: DecisionChoice = {
+    model: 'jev-1.13.0',
+    reason: 'JevBench capability 80.0',
+    ranked: [{ id: 'jev-1.13.0', capability: 80 }, { id: 'cygnet', capability: 79 }, { id: 'mystery' }],
+  };
+
+  it('lists the provider\'s models ranked by JevBench and pins the one picked', async () => {
+    const asked: Array<[string, string | undefined]> = [];
+    const step = renderStep({
+      storedKeys: { typesafe: 'sk-ts' },
+      listModels: async (baseUrl, key) => { asked.push([baseUrl, key]); return ranked; },
+    });
+    await step.press(DOWN, ENTER); // TypeSafe — key stored, so straight to the model screen
+    await until(() => step.lastFrame().includes('JevBench 80.0'), 'the ranked models');
+    expect(step.lastFrame()).toContain('Automatic');
+    expect(step.lastFrame()).toContain('now jev-1.13.0');
+    expect(step.lastFrame()).toContain('not scored by JevBench');
+    expect(asked).toEqual([['https://api.typesafe.ai', 'sk-ts']]);
+    await step.press(DOWN, DOWN, ENTER); // cygnet
+    expect(step.state().autoRoute).toEqual({ baseUrl: 'https://api.typesafe.ai', model: 'cygnet' });
+    expect(step.done()).toBe(1);
+  });
+
+  it('records Automatic as an answer that drops a saved pin', async () => {
+    const step = renderStep({
+      storedKeys: { typesafe: 'sk-ts' },
+      savedBaseUrl: 'https://api.typesafe.ai',
+      savedModel: 'cygnet',
+      listModels: async () => ranked,
+    });
+    await step.press(ENTER); // the saved TypeSafe row
+    await until(() => step.lastFrame().includes('JevBench 80.0'), 'the ranked models');
+    // Opens on the saved pin.
+    expect(step.lastFrame()).toMatch(/› cygnet/);
+    await step.press('\x1B[A', '\x1B[A', ENTER); // past jev-1.13.0 to Automatic
+    expect(step.state().autoRoute).toEqual({ baseUrl: 'https://api.typesafe.ai', model: null });
+  });
+
+  it('goes on with the model chosen at decision time when the provider lists nothing', async () => {
+    const step = renderStep({ storedKeys: { typesafe: 'sk-ts' }, listModels: async () => undefined });
+    await step.press(DOWN, ENTER);
+    await until(() => step.lastFrame().includes('listed no decision models'), 'the empty listing');
+    await step.press(ENTER);
+    expect(step.state().autoRoute).toEqual({ baseUrl: 'https://api.typesafe.ai' });
+    expect(step.done()).toBe(1);
+  });
+
+  it('lists with the key just typed on the key screen', async () => {
+    const asked: Array<string | undefined> = [];
+    const step = renderStep({ listModels: async (_, key) => { asked.push(key); return ranked; } });
+    await step.press(DOWN, DOWN, ENTER); // OpenRouter, no key held
+    await step.type('sk-or');
+    await step.press(ENTER);
+    await until(() => step.lastFrame().includes('JevBench 80.0'), 'the ranked models');
+    expect(asked).toEqual(['sk-or']);
+  });
+});
+
+describe('a configured gateway as the decision provider', () => {
+  const gateways = {
+    acme: { baseUrl: 'https://gw.acme.example/v1' },
+    plain: { baseUrl: 'https://chat.example/v1' },
+  };
+  const serving: DecisionChoice = { model: 'decider-4b', reason: 'x', ranked: [{ id: 'decider-4b', capability: 70 }] };
+
+  it('offers each gateway that lists decision models, and keys it with its own key', async () => {
+    const asked: Array<[string, string | undefined]> = [];
+    const step = renderStep({
+      storedKeys: { acme: 'sk-acme' },
+      gateways,
+      keyBound: () => true,
+      listModels: async (baseUrl, key) => {
+        asked.push([baseUrl, key]);
+        return baseUrl === 'https://gw.acme.example' ? serving : undefined;
+      },
+    });
+    await until(() => step.lastFrame().includes('acme (gw.acme.example)'), 'the serving gateway row');
+    expect(step.lastFrame()).toContain('1 decision model');
+    expect(step.lastFrame()).not.toContain('plain');
+    await step.press(DOWN, DOWN, DOWN, ENTER); // Off, TypeSafe, OpenRouter, acme
+    await until(() => step.lastFrame().includes('JevBench 70.0'), 'the gateway models');
+    await step.press(DOWN, ENTER);
+    expect(step.state().autoRoute).toEqual({ baseUrl: 'https://gw.acme.example', model: 'decider-4b' });
+    expect(asked).toContainEqual(['https://gw.acme.example', 'sk-acme']);
+    expect(step.state().decisionKey).toBeUndefined();
+  });
+
+  it('never asks a gateway whose stored key may not go to its host', async () => {
+    const asked: string[] = [];
+    const step = renderStep({
+      storedKeys: { acme: 'sk-acme' },
+      gateways: { acme: gateways.acme },
+      keyBound: () => false,
+      listModels: async (baseUrl) => { asked.push(baseUrl); return serving; },
+    });
+    await tick(50);
+    expect(asked).toEqual([]);
+    expect(step.lastFrame()).not.toContain('acme');
   });
 });

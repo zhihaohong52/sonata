@@ -32,6 +32,33 @@ describe('decisionHostBinding', () => {
   });
 });
 
+describe('a configured gateway as the decision provider', () => {
+  const tenant = { acme: { baseUrl: 'https://gw.acme.example/v1', auth: 'api-key' as const } };
+
+  it('binds its host exactly as the gateway itself is bound — by its own trust entry', () => {
+    const home = tmp();
+    expect(decisionHostBinding('https://gw.acme.example', home, undefined, { tenant })).toEqual({ bound: false, host: 'gw.acme.example' });
+    // An auto-route trust does not lend the gateway's key to its host.
+    addTrustBinding(home, 'auto-route', 'gw.acme.example');
+    expect(decisionHostBinding('https://gw.acme.example', home, undefined, { tenant }).bound).toBe(false);
+    addTrustBinding(home, 'acme', 'gw.acme.example');
+    expect(decisionHostBinding('https://gw.acme.example', home, undefined, { tenant })).toEqual({ bound: true });
+  });
+
+  it('binds a machine config gateway by definition', () => {
+    expect(decisionHostBinding('https://gw.acme.example', tmp(), undefined, { tenant, machine: tenant })).toEqual({ bound: true });
+  });
+
+  it('refuses plain http to the gateway host even when the gateway is https', () => {
+    expect(decisionHostBinding('http://gw.acme.example', tmp(), undefined, { tenant, machine: tenant })).toMatchObject({ bound: false, insecure: true });
+  });
+
+  it('names the gateway in the trust command it suggests', () => {
+    expect(decisionUnboundMessage('https://gw.acme.example', 'gw.acme.example', 'sonata.toml', { gateway: 'acme' }))
+      .toContain('sonata auth trust acme gw.acme.example');
+  });
+});
+
 describe('the well-known decision hosts compare the port too', () => {
   it('does not treat TypeSafe or OpenRouter on another port as the well-known host', () => {
     const home = tmp();

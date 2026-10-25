@@ -45,7 +45,7 @@ import { CURRENT_SCHEMA_VERSION } from '../migrations.js';
 import { mainWorktreeDir } from '../git-worktree.js';
 import { keyReport, resolveDecisionKey, resolveKeyDetail } from '../native/credentials.js';
 import { gatewayHostBound, readTrustBindings, unboundMessage } from '../native/host-bindings.js';
-import { decisionKeyFor } from '../native/auto-route.js';
+import { decisionKeyFor, decisionKeyRequired } from '../native/auto-route.js';
 import { seedTrustOnUpgrade } from '../native/trust-seed.js';
 import { decisionKeyBinding, decisionUnboundMessage } from '../native/decision-binding.js';
 import { ModelListCache, chooseDecisionModel } from '../native/decision-models.js';
@@ -1007,36 +1007,37 @@ export async function cmdDoctor(
 
   if (config.autoRoute !== undefined) {
     const auto = config.autoRoute;
-    // The key the decision URL needs, chosen by host. Only TypeSafe and
-    // OpenRouter require one; a local or custom server may need none, so a
-    // missing key there is not reported.
-    const credential = decisionKeyFor(auto.baseUrl, {
-      openrouter: () => resolveDecisionKey('openrouter', home)?.key,
-      typesafe: () => resolveDecisionKey('typesafe', home)?.key,
-      other: () => resolveDecisionKey('auto-route', home)?.key,
-    });
-    let decisionHost = '';
-    try { decisionHost = new URL(auto.baseUrl).host; } catch { /* other */ }
-    const keyRequired = decisionHost === 'openrouter.ai' || decisionHost === 'api.typesafe.ai';
+    // The key the decision URL needs, chosen by host. Only a named hosted
+    // provider requires one; a configured gateway, local or custom server may
+    // need none, so a missing key there is not reported.
+    const tenantGateways = config.native?.gateways;
+    const credential = decisionKeyFor(
+      auto.baseUrl,
+      (gateway) => resolveDecisionKey(gateway, home, tenantGateways?.[gateway])?.key,
+      tenantGateways,
+    );
+    const keyRequired = decisionKeyRequired(auto.baseUrl);
     // An unbound host is refused outright: serve sends it neither the key nor
     // the task text, and every -auto request takes the fallback tier.
     // The machine config's own [auto_route] URL is trusted by definition.
-    const machineAutoUrl = (() => {
+    const machineConfigForAuto = (() => {
       try {
         const machine = join(home, GLOBAL_CONFIG_RELATIVE);
-        if (resolved !== null && canonicalConfigPath(resolved) === canonicalConfigPath(machine)) return config.autoRoute?.baseUrl;
+        if (resolved !== null && canonicalConfigPath(resolved) === canonicalConfigPath(machine)) return config;
         if (!existsSync(machine)) return undefined;
-        return parseConfig(readFileSync(machine, 'utf8')).autoRoute?.baseUrl;
+        return parseConfig(readFileSync(machine, 'utf8'));
       } catch {
         return undefined;
       }
     })();
-    const binding = decisionKeyBinding(auto.baseUrl, credential.key, home, machineAutoUrl);
+    const binding = decisionKeyBinding(auto.baseUrl, credential.key, home, machineConfigForAuto?.autoRoute?.baseUrl, {
+      tenant: tenantGateways, machine: machineConfigForAuto?.native?.gateways,
+    });
     if (binding !== undefined && !binding.bound) {
       checks.push({
         name: 'auto route',
         ok: false,
-        detail: `${decisionUnboundMessage(auto.baseUrl, binding.host, resolved ?? 'this config', { insecure: binding.insecure })}\n  ! every -auto request takes the fallback tier until that host is trusted`,
+        detail: `${decisionUnboundMessage(auto.baseUrl, binding.host, resolved ?? 'this config', { insecure: binding.insecure, gateway: credential.gateway })}\n  ! every -auto request takes the fallback tier until that host is trusted`,
       });
     }
     // A missing key is advisory: auto-routing falls back to the default tier.

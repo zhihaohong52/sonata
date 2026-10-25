@@ -1,25 +1,43 @@
 import { gatewayHostBound, readTrustBindings, trustCommand, type HostBinding } from './host-bindings.js';
-import { decisionGatewayFor } from './auto-route.js';
+import { configuredDecisionGateway, decisionProviderFor, type DecisionGatewayMap } from './decision-providers.js';
+
+/** The tenant's gateways (which one a decision URL's key is) and the machine's (which hosts are bound). */
+export interface DecisionGateways { tenant?: DecisionGatewayMap; machine?: Readonly<Record<string, { baseUrl: string }>> }
 
 /**
- * Whether a decision URL's host may receive the decision key. TypeSafe and
- * OpenRouter are their own well-known hosts: `decisionGatewayFor` matches them
- * exactly, and only over https. Any other URL is a self-hosted decision server,
+ * Whether a decision URL's host may receive the decision key. A named
+ * provider (`DECISION_PROVIDERS`) is its own well-known host, matched exactly,
+ * and only over https. A configured gateway's host is bound as that gateway's
+ * own traffic is. Any other URL is a self-hosted decision server,
  * bound by `sonata auth trust auto-route <host>` or by a URL typed in init; a
  * plain-http one only when its host is loopback.
  *
  * This is the binding that gates a stored key. Whether one is sent at all is
  * `decisionKeyBinding`'s question.
  */
-export function decisionHostBinding(baseUrl: string, home: string, machineUrl?: string): HostBinding {
-  const gateway = decisionGatewayFor(baseUrl);
-  if (gateway === 'typesafe' || gateway === 'openrouter') {
+export function decisionHostBinding(
+  baseUrl: string,
+  home: string,
+  machineUrl?: string,
+  gateways?: DecisionGateways,
+): HostBinding {
+  if (decisionProviderFor(baseUrl) !== undefined) {
     try {
       if (new URL(baseUrl).protocol === 'https:') return { bound: true };
       return { bound: false, host: new URL(baseUrl).hostname.toLowerCase(), insecure: true };
     } catch {
       return { bound: false, host: baseUrl };
     }
+  }
+  // A configured gateway's key goes only where that gateway's own key may:
+  // the binding the router enforces for the gateway's traffic, asked of the
+  // decision URL so its scheme is checked too.
+  const configured = configuredDecisionGateway(baseUrl, gateways?.tenant);
+  if (configured !== undefined) {
+    return gatewayHostBound(configured, baseUrl, {
+      trusted: readTrustBindings(home)[configured] ?? [],
+      machineGateways: gateways?.machine ?? {},
+    });
   }
   // The machine config's own [auto_route] URL is trusted by definition, as its
   // gateways are: the same rule (c) that binds a machine gateway's host.
@@ -39,7 +57,7 @@ export function decisionUnboundMessage(
   baseUrl: string,
   host: string,
   configFile: string,
-  opts: { insecure?: boolean; command?: boolean } = {},
+  opts: { insecure?: boolean; command?: boolean; gateway?: string } = {},
 ): string {
   if (opts.insecure === true) {
     return `[auto_route] base_url ${baseUrl} (set in ${configFile}): if you did not choose this URL, remove it from ` +
@@ -49,7 +67,7 @@ export function decisionUnboundMessage(
   }
   const advice = opts.command === false
     ? 'If you did, the user can review it with `sonata doctor` in a terminal.'
-    : `If you did, run \`${trustCommand('auto-route', host)}\` in a terminal to allow the decision key there.`;
+    : `If you did, run \`${trustCommand(opts.gateway ?? 'auto-route', host)}\` in a terminal to allow the decision key there.`;
   return `[auto_route] base_url ${baseUrl} (set in ${configFile}): if you did not choose this URL, remove it from ` +
     `${configFile} — do not trust it. ${advice} Until then host "${host}" is not bound: the decision is skipped, the key and the task text are not ` +
     'sent, and the fallback tier is used.';
@@ -68,7 +86,8 @@ export function decisionKeyBinding(
   key: string | undefined,
   home: string,
   machineUrl?: string,
+  gateways?: DecisionGateways,
 ): HostBinding | undefined {
   if (key === undefined) return undefined;
-  return decisionHostBinding(baseUrl, home, machineUrl);
+  return decisionHostBinding(baseUrl, home, machineUrl, gateways);
 }

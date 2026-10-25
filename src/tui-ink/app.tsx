@@ -6,6 +6,10 @@ import { ProvidersStep } from './components/providers-step.js';
 import { ModelsStep } from './components/models-step.js';
 import { refreshHostReasons } from '../native/host-bindings.js';
 import { AutoRouteStep } from './components/auto-route-step.js';
+import { autoRoutePin, configuredDecisionGateway } from '../native/decision-providers.js';
+import { decisionHostBinding } from '../native/decision-binding.js';
+import { chooseDecisionModel, type DecisionChoice, type ListedDecisionModel } from '../native/decision-models.js';
+import { loadDecisionCatalog } from '../decision-catalog.js';
 import { candidateFacts, candidateLabel, reasoningOf, expandCandidates, proposeTiers, taskCostedCandidates, unpinnedVariants } from '../catalog.js';
 import { type ModelsDevCache } from '../modelsdev.js';
 import { loadAaCatalogCached, loadModelsDevCached } from './cached-loads.js';
@@ -121,6 +125,11 @@ export interface WizardData {
   savedAutoRouteModels?: Partial<Record<'project' | 'global', string>>;
   /** Injected so tests never reach the network. */
   fetchModels?: typeof defaultFetchModels;
+  /**
+   * A decision URL's `/v1/models` listing, for the Auto-route step's gateway
+   * probe and model screen. Absent skips both, which is how tests stay offline.
+   */
+  listDecisionModels?: (baseUrl: string, key: string | undefined) => Promise<ListedDecisionModel[] | undefined>;
   /** Cached models.dev catalogue, injected so provider screens stay pure. */
   modelsDevCache?: ModelsDevCache;
   /** OAuth login seam for the provider wizard. */
@@ -189,16 +198,15 @@ function Summary({ state, savedBaseUrl, savedModel, onDone, onBack }: {
   const autoRoute = state.autoRoute === undefined
     ? (savedBaseUrl === undefined ? undefined : { baseUrl: savedBaseUrl })
     : state.autoRoute;
-  // The pin survives exactly when plan() keeps it: an untouched step carries
-  // the whole table, and a re-picked URL keeps `model` — a changed URL drops
-  // it, because a pinned model belongs to the URL that serves it.
-  const pinKept = savedModel !== undefined
-    && (state.autoRoute === undefined || (state.autoRoute !== null && state.autoRoute.baseUrl === savedBaseUrl));
+  // The pin plan() will write (`autoRoutePin`): an untouched step carries the
+  // whole table, a model screen's answer wins, and otherwise a changed URL
+  // drops a saved pin, because a pinned model belongs to the URL that serves it.
+  const pin = autoRoute === undefined || autoRoute === null ? undefined : autoRoutePin(autoRoute, savedBaseUrl, savedModel);
   const autoRouteLine = autoRoute === undefined
     ? undefined
     : autoRoute === null
       ? 'Auto-route: off'
-      : `Auto-route: ${autoRoute.baseUrl} (${pinKept ? `pinned model ${savedModel}` : 'model chosen automatically'})`;
+      : `Auto-route: ${autoRoute.baseUrl} (${pin !== undefined ? `pinned model ${pin}` : 'model chosen automatically'})`;
   useInput((_, key) => {
     if (key.escape) onDone({ cancelled: true, state });
     if (key.leftArrow) onBack();
@@ -234,6 +242,71 @@ function Summary({ state, savedBaseUrl, savedModel, onDone, onBack }: {
       <Text color={palette.MUTED}>{hasModels ? 'enter confirm' : '← back to select models'}   ← back   esc cancel</Text>
     </Box>
   );
+}
+
+/**
+ * Every gateway URL the wizard knows for the scope being edited, as the
+ * canonical href the router would send (`canonicalBaseUrl`): a BYOK provider's
+ * well-known URL, under any URL a config sets, under any typed this run
+ * (`addedBaseUrls`). A URL that is not plain is left out, so nothing asks it.
+ */
+function wizardGatewayUrls(data: WizardData, state: InitState): {
+  addedBaseUrls: Record<string, string>; gatewayBaseUrls: Record<string, string>;
+} {
+  const addedBaseUrls = Object.fromEntries(
+    (state.customProviders ?? []).map((provider) => [provider.name, provider.url]),
+  );
+  const gatewayBaseUrls = Object.fromEntries(Object.entries({
+    ...Object.fromEntries(data.byokProviders.map((provider) => [provider.name, provider.url])),
+    ...((state.configScope !== undefined ? data.gatewayBaseUrlsByScope?.[state.configScope] : undefined)
+      ?? data.gatewayBaseUrls),
+    ...addedBaseUrls,
+  }).flatMap(([gateway, url]) => {
+    const canonical = canonicalBaseUrlOrUndefined(url);
+    return canonical === undefined ? [] : [[gateway, canonical] as const];
+  }));
+  return { addedBaseUrls, gatewayBaseUrls };
+}
+
+/**
+ * What the Auto-route step needs to offer configured gateways and decision
+ * models: the api-key gateways' URLs, the binding a stored key needs before it
+ * is sent (serve's rule — a URL typed this run is the user's own choice), and
+ * a lister that ranks a URL's decision models by the cached JevBench scores.
+ */
+function autoRouteStepInputs(data: WizardData, state: InitState): {
+  gateways: Record<string, { baseUrl: string }>;
+  keyBound: (baseUrl: string) => boolean;
+  listModels?: (baseUrl: string, key: string | undefined) => Promise<DecisionChoice | undefined>;
+} {
+  const { addedBaseUrls, gatewayBaseUrls } = wizardGatewayUrls(data, state);
+  // The user's gateways only: one this scope's config names, one typed this
+  // run, or a well-known BYOK provider a key is held for. The rest of the
+  // BYOK list is every provider sonata knows, and is never probed.
+  const configured = new Set(Object.keys(
+    (state.configScope !== undefined ? data.gatewayBaseUrlsByScope?.[state.configScope] : undefined) ?? data.gatewayBaseUrls ?? {},
+  ));
+  const gateways = Object.fromEntries(Object.entries(gatewayBaseUrls)
+    .filter(([gateway]) => configured.has(gateway) || Object.hasOwn(addedBaseUrls, gateway)
+      || data.storedKeys[gateway] !== undefined || state.byokKeys?.[gateway] !== undefined)
+    .filter(([gateway]) => (data.gatewayAuth?.[gateway] ?? 'api-key') === 'api-key')
+    .map(([gateway, baseUrl]) => [gateway, { baseUrl, auth: 'api-key' as const }]));
+  const keyBound = (baseUrl: string): boolean => {
+    const gateway = configuredDecisionGateway(baseUrl, gateways);
+    if (gateway !== undefined && Object.hasOwn(addedBaseUrls, gateway)) return true;
+    return decisionHostBinding(baseUrl, data.home, data.savedAutoRouteBaseUrls?.global, {
+      tenant: gateways, machine: data.refreshBindings.machineGateways,
+    }).bound;
+  };
+  const list = data.listDecisionModels;
+  // No lister, no model screen: the model is then chosen at decision time.
+  if (list === undefined) return { gateways, keyBound };
+  const listModels = async (baseUrl: string, key: string | undefined): Promise<DecisionChoice | undefined> => {
+    const listed = await list(baseUrl, key);
+    if (listed === undefined || listed.length === 0) return undefined;
+    return chooseDecisionModel({ baseUrl, listed, catalog: loadDecisionCatalog(data.home) });
+  };
+  return { gateways, keyBound, listModels };
 }
 
 /**
@@ -343,9 +416,7 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       if (!hasModelsToPick(candidates, addedGateways)) {
         return <Summary state={state} savedBaseUrl={savedAutoRouteBaseUrl} savedModel={savedAutoRouteModel} onDone={onDone} onBack={back} />;
       }
-      const addedBaseUrls = Object.fromEntries(
-        (state.customProviders ?? []).map((provider) => [provider.name, provider.url]),
-      );
+      const { addedBaseUrls, gatewayBaseUrls } = wizardGatewayUrls(data, state);
       // A pick made on a provider's own screen can be drawn here under a
       // different key (a codex harness row is keyed by bare id while the OAuth
       // pick is `codex-<id>`), so both the checkbox set and the keys kept
@@ -353,19 +424,6 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
       // writes is the pick's provider-screen key wherever one matches, so
       // that screen's later deselect — `applyStep` step 5 — can still undo it.
       const selection = modelsStepSelection(state, candidates);
-      // Every URL the refresh asks is the canonical href of a plain URL
-      // (`canonicalBaseUrl`), the string the router would send. A URL that is
-      // not plain is not asked at all.
-      const gatewayBaseUrls = Object.fromEntries(Object.entries({
-        // A BYOK provider's well-known URL, under any URL a config sets.
-        ...Object.fromEntries(data.byokProviders.map((provider) => [provider.name, provider.url])),
-        ...((state.configScope !== undefined ? data.gatewayBaseUrlsByScope?.[state.configScope] : undefined)
-          ?? data.gatewayBaseUrls),
-        ...addedBaseUrls,
-      }).flatMap(([gateway, url]) => {
-        const canonical = canonicalBaseUrlOrUndefined(url);
-        return canonical === undefined ? [] : [[gateway, canonical] as const];
-      }));
       const keys = { ...data.storedKeys, ...state.byokKeys };
       const scope = state.configScope ?? 'project';
       // Required on WizardData: without it no host can be checked, so the refresh
@@ -611,6 +669,8 @@ export function InitWizard({ data, onDone }: InitWizardProps): React.ReactElemen
         state={state}
         storedKeys={data.storedKeys}
         savedBaseUrl={savedAutoRouteBaseUrl}
+        savedModel={savedAutoRouteModel}
+        {...autoRouteStepInputs(data, state)}
         onChange={setState}
         onDone={() => setStep(6)}
         onBack={() => setStep(4)}

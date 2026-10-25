@@ -1,14 +1,15 @@
-import { decisionGatewayFor } from '../../native/auto-route.js';
+import { decisionKeyRequired } from '../../native/auto-route.js';
 
 export interface KeyRow { gateway: string; source: string; hasKey: boolean }
 
 /**
  * The row for the key `[auto_route]`'s decision server needs, reported under
- * the gateway its host files one under (`typesafe`, `openrouter` or the shared
- * `auto-route`).
+ * the gateway its host files one under (a named provider, a configured
+ * gateway on that host, or the shared `auto-route`).
  *
- * `hasKey` is false only for a hosted server that insists on a credential and
- * has none: a self-hosted or loopback one is asked for nothing, and "no key
+ * `hasKey` is false only for a named hosted provider that insists on a
+ * credential and has none: a configured gateway, self-hosted or loopback one
+ * is asked for nothing, and "no key
  * needed" is the truth about it — flagging it as a missing credential is the
  * same misread `keyRows` exists to rule out for subscription gateways.
  */
@@ -17,7 +18,7 @@ export function autoRouteKeyRow(baseUrl: string, source: string | null): KeyRow 
   try { host = new URL(baseUrl).hostname; } catch { /* the URL itself names it */ }
   const gateway = `auto-route → ${host}`;
   if (source !== null) return { gateway, source, hasKey: true };
-  const required = decisionGatewayFor(baseUrl) !== 'auto-route';
+  const required = decisionKeyRequired(baseUrl);
   return required
     ? { gateway, source: 'no key', hasKey: false }
     : { gateway, source: 'no key needed', hasKey: true };

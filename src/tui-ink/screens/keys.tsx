@@ -34,7 +34,9 @@ export function KeysScreen({ cwd, home }: { cwd: string; home: string }): React.
     // Resolved through `resolveDecisionKey`, the same policy serve and doctor
     // use — a key only another harness holds is not one the router will send,
     // so the row says "no key" here exactly as the decisions fail there.
-    rows.push(autoRouteKeyRow(baseUrl, resolveDecisionKey(decisionGatewayFor(baseUrl), home)?.source ?? null));
+    const gateways = loaded.config.native?.gateways;
+    const gateway = decisionGatewayFor(baseUrl, gateways);
+    rows.push(autoRouteKeyRow(baseUrl, resolveDecisionKey(gateway, home, gateways?.[gateway])?.source ?? null));
   }
   const missing = new Set(gatewaysMissingKeys(rows));
   // Capped at 40% of the page. Grown to the longest identifier it let one

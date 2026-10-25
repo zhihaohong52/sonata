@@ -699,11 +699,27 @@ describe('URL-based decision classifier', () => {
   });
 
   it('picks the key by host and never sends the OpenRouter key elsewhere', () => {
-    const keys = { openrouter: () => 'OR', typesafe: () => 'TS', other: () => 'OTHER' };
-    expect(decisionKeyFor('https://openrouter.ai/api', keys)).toEqual({ key: 'OR', hint: 'sonata auth add openrouter' });
-    expect(decisionKeyFor('https://api.typesafe.ai', keys)).toEqual({ key: 'TS', hint: 'sonata auth add typesafe' });
-    expect(decisionKeyFor('http://localhost:8000', keys)).toEqual({ key: 'OTHER', hint: 'sonata auth add auto-route' });
+    const store: Record<string, string> = { openrouter: 'OR', typesafe: 'TS', 'auto-route': 'OTHER', acme: 'ACME' };
+    const keys = (gateway: string) => store[gateway];
+    expect(decisionKeyFor('https://openrouter.ai/api', keys)).toEqual({ key: 'OR', hint: 'sonata auth add openrouter', gateway: 'openrouter' });
+    expect(decisionKeyFor('https://api.typesafe.ai', keys)).toEqual({ key: 'TS', hint: 'sonata auth add typesafe', gateway: 'typesafe' });
+    expect(decisionKeyFor('http://localhost:8000', keys)).toEqual({ key: 'OTHER', hint: 'sonata auth add auto-route', gateway: 'auto-route' });
     expect(decisionKeyFor('https://evil.example/openrouter.ai', keys).key).toBe('OTHER');
+  });
+
+  it('lends a configured gateway its own key on its host, and only there', () => {
+    const store: Record<string, string> = { 'auto-route': 'OTHER', acme: 'ACME' };
+    const keys = (gateway: string) => store[gateway];
+    const gateways = { acme: { baseUrl: 'https://gw.acme.example/v1', auth: 'api-key' as const } };
+    expect(decisionKeyFor('https://gw.acme.example', keys, gateways)).toEqual({ key: 'ACME', hint: 'sonata auth add acme', gateway: 'acme' });
+    // Another port is another server.
+    expect(decisionKeyFor('https://gw.acme.example:8443', keys, gateways).gateway).toBe('auto-route');
+    // A subscription gateway has no bearer key to lend.
+    expect(decisionKeyFor('https://gw.acme.example', keys, { acme: { ...gateways.acme, auth: 'codex-oauth' as const } }).gateway).toBe('auto-route');
+    // Two gateways on one host is ambiguous: neither key is guessed.
+    expect(decisionKeyFor('https://gw.acme.example', keys, { ...gateways, other: { baseUrl: 'https://gw.acme.example/v2' } }).gateway).toBe('auto-route');
+    // A named provider's host is always its own row, whatever a config calls it.
+    expect(decisionKeyFor('https://openrouter.ai/api', keys, { mine: { baseUrl: 'https://openrouter.ai/api/v1' } }).gateway).toBe('openrouter');
   });
 
   it('recognises loopback hosts', () => {

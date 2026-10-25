@@ -246,6 +246,22 @@ describe('the summary’s auto-route line', () => {
     expect(w.lastFrame()).toContain('Auto-route: https://openrouter.ai/api (model chosen automatically)');
     expect(w.lastFrame()).not.toContain('pinned model');
   });
+
+  it('pins a model picked on the model screen, listed with the stored key', async () => {
+    const asked: Array<[string, string | undefined]> = [];
+    const w = renderWizard({
+      ...withSavedPin(),
+      listDecisionModels: async (baseUrl, key) => { asked.push([baseUrl, key]); return [{ id: 'jev-latest' }, { id: 'jev-1.14' }]; },
+    });
+    await toAutoRoute(w);
+    await w.press(ENTER); // the saved TypeSafe row
+    await until(() => w.lastFrame().includes('Decision model') && w.lastFrame().includes('jev-1.14'), 'the model screen');
+    expect(asked).toEqual([['https://api.typesafe.ai', 'sk-stored']]);
+    // The saved pin is no longer listed, and is still offered — the cursor opens on it.
+    expect(w.lastFrame()).toMatch(/› jev-1\.13 {2}· pinned — not listed by this provider/);
+    await w.press('\x1B[A', ENTER); // up to jev-1.14
+    expect(w.lastFrame()).toContain('Auto-route: https://api.typesafe.ai (pinned model jev-1.14)');
+  });
 });
 
 /**

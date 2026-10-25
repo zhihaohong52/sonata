@@ -591,6 +591,25 @@ describe('plan — [auto_route] from the Setup step', () => {
     });
   });
 
+  it('pins the model the model screen chose, on any URL', () => {
+    const p = plan(withSaved(savedAutoRoute), {
+      ...state, autoRoute: { baseUrl: 'https://openrouter.ai/api', model: '~typesafe/jev-1.13.0' },
+    }, noCredentials, opts);
+    expect(parseConfig(p.configToml).autoRoute).toEqual({
+      classifier: 'jev', baseUrl: 'https://openrouter.ai/api', model: '~typesafe/jev-1.13.0', minConfidence: 0.3,
+    });
+    expect(p.summary.join('\n')).toContain('auto-route: https://openrouter.ai/api (model ~typesafe/jev-1.13.0)');
+  });
+
+  it('drops a saved pin when the model screen answered Automatic, even on an unchanged URL', () => {
+    const p = plan(withSaved(savedAutoRoute), {
+      ...state, autoRoute: { baseUrl: 'https://api.typesafe.ai', model: null },
+    }, noCredentials, opts);
+    expect(parseConfig(p.configToml).autoRoute).toEqual({
+      classifier: 'jev', baseUrl: 'https://api.typesafe.ai', minConfidence: 0.3,
+    });
+  });
+
   it('writes a first [auto_route] at the default min_confidence, and follows the guidance flag', () => {
     const p = plan(withSaved(), {
       ...state, autoRoute: { baseUrl: 'http://localhost:8000' },

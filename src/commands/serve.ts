@@ -2891,25 +2891,32 @@ export async function cmdServe(
       // URL's listed decision models and the cached JevBench scores, so a
       // `sonata catalog update` or a new model at the URL needs no restart.
       classifierFor: (settings, tenant) => {
-        const credential = () => decisionKeyFor(settings.baseUrl, {
-          openrouter: () => resolveDecisionKey('openrouter', opts.home)?.key,
-          typesafe: () => resolveDecisionKey('typesafe', opts.home)?.key,
-          other: () => resolveDecisionKey('auto-route', opts.home)?.key,
-        });
+        // A configured gateway on the decision URL's host lends its key, by
+        // the same host rule its own traffic keeps (`decisionGatewayFor`).
+        const tenantGateways = tenant.config?.native?.gateways;
+        const credential = () => decisionKeyFor(
+          settings.baseUrl,
+          (gateway) => resolveDecisionKey(gateway, opts.home, tenantGateways?.[gateway])?.key,
+          tenantGateways,
+        );
         // A stored decision key goes to the URL's host, so that host must be
         // bound first; with no key there is nothing to protect. Checked per
         // request, not cached: a trust change takes effect at once, and an
         // unbound host is never handed the classifier that would send the key.
-        const binding = decisionKeyBinding(settings.baseUrl, credential().key, opts.home, machineConfig()?.autoRoute?.baseUrl);
+        const binding = decisionKeyBinding(settings.baseUrl, credential().key, opts.home, machineConfig()?.autoRoute?.baseUrl, {
+          tenant: tenantGateways, machine: machineConfig()?.native?.gateways,
+        });
         if (binding !== undefined && !binding.bound) {
-          const message = decisionUnboundMessage(settings.baseUrl, binding.host, tenant.configPath ?? 'the config', { insecure: binding.insecure });
+          const message = decisionUnboundMessage(settings.baseUrl, binding.host, tenant.configPath ?? 'the config', { insecure: binding.insecure, gateway: credential().gateway });
           if (!loggedDecisionRefusals.has(message)) {
             loggedDecisionRefusals.add(message);
             console.error(`sonata serve: ${message}`);
           }
-          return refusedClassifier(decisionUnboundMessage(settings.baseUrl, binding.host, tenant.configPath ?? 'the config', { insecure: binding.insecure, command: false }));
+          return refusedClassifier(decisionUnboundMessage(settings.baseUrl, binding.host, tenant.configPath ?? 'the config', { insecure: binding.insecure, command: false, gateway: credential().gateway }));
         }
-        const id = `${settings.baseUrl}|${settings.model ?? ''}`;
+        // The key's gateway is part of the id: the same URL keyed by another
+        // gateway (a project that configures one on that host) is another classifier.
+        const id = `${settings.baseUrl}|${settings.model ?? ''}|${credential().gateway}`;
         let classifier = decisionClassifiers.get(id);
         if (classifier === undefined) {
           classifier = decisionClassifier(settings, {

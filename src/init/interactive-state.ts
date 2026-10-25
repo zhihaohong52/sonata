@@ -23,6 +23,8 @@ import {
   KNOWN_ROLES, configPath,
 } from '../config.js';
 import { resolveDecisionKey, resolveKeys } from '../native/credentials.js';
+import { DECISION_PROVIDERS, SELF_HOSTED_DECISION_GATEWAY } from '../native/decision-providers.js';
+import { ModelListCache } from '../native/decision-models.js';
 import { seedTrustOnUpgrade } from '../native/trust-seed.js';
 import { readTrustBindings } from '../native/host-bindings.js';
 import { credentialAvailabilityFor, nativeLabel, deriveInitState, configPathFor, type NativeCandidate } from './helpers.js';
@@ -139,13 +141,22 @@ export async function interactiveState(
       opts.home,
     ).map((source) => [source.gateway, source.key]),
   );
-  // `openrouter` is a provider gateway too, so this is the same lookup the
-  // list above makes for it; `typesafe` and `auto-route` are decision-only and
-  // must never fall through to another harness's store.
-  for (const gateway of ['typesafe', 'auto-route', 'openrouter'] as const) {
+  // A provider gateway (`openrouter`) keeps the same lookup the list above
+  // makes for it; `typesafe` and `auto-route` are decision-only and must never
+  // fall through to another harness's store. A configured gateway on a
+  // decision URL's host lends its key too, so each saved one is looked up as
+  // serve would look it up — by its pinned `credential_source` if it has one.
+  for (const gateway of [...DECISION_PROVIDERS.map((p) => p.gateway), SELF_HOSTED_DECISION_GATEWAY]) {
     const found = resolveDecisionKey(gateway, opts.home);
     if (found === undefined) delete storedKeys[gateway];
     else storedKeys[gateway] = found.key;
+  }
+  for (const scope of ['project', 'global'] as const) {
+    for (const [gateway, config] of Object.entries(env.configsByScope[scope]?.native?.gateways ?? {})) {
+      if (storedKeys[gateway] !== undefined || (config.auth ?? 'api-key') !== 'api-key') continue;
+      const found = resolveDecisionKey(gateway, opts.home, config);
+      if (found !== undefined) storedKeys[gateway] = found.key;
+    }
   }
 
   const data: WizardData = {
@@ -156,6 +167,11 @@ export async function interactiveState(
     roles: [...KNOWN_ROLES],
     byokProviders: env.byokProviders,
     storedKeys,
+    // A person is waiting rather than a request, so a longer ceiling than serve's.
+    listDecisionModels: (() => {
+      const cache = new ModelListCache(fetch, { timeoutMs: 5_000 });
+      return (baseUrl: string, key: string | undefined) => cache.list(baseUrl, key);
+    })(),
     credentialAvailability: credentialAvailabilityFor(
       env.offered,
       env.gatewayAuth,

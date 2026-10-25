@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { withSessionLockSync } from '../filelock.js';
 import { readOpencodeCredentials } from './opencode-store.js';
 import { readOnce } from './read-snapshot.js';
+import { DECISION_PROVIDERS, SELF_HOSTED_DECISION_GATEWAY } from './decision-providers.js';
 
 export interface KeySource {
   gateway: string;
@@ -184,20 +185,24 @@ export function resolveKeys(gateways: string[], home: string): KeySource[] {
 
 /**
  * The key a decision server's gateway name resolves to, with its store — the
- * one policy serve, doctor, Setup and the Keys screen all use. `openrouter`
- * is a provider gateway too, so it keeps the provider lookup (sonata, then
- * opencode); `typesafe` and `auto-route` exist only for auto-routing and live
- * in sonata's own store, never another harness's.
+ * one policy serve, doctor, Setup and the Keys screen all use. A provider
+ * gateway (`openrouter`, or a configured gateway that serves decisions) keeps
+ * the provider lookup, honouring a pinned `credential_source`; `typesafe`,
+ * `auto-route` and any other decision-only name live in sonata's own store,
+ * never another harness's.
  */
 export function resolveDecisionKey(
-  gateway: 'typesafe' | 'openrouter' | 'auto-route',
+  gateway: string,
   home: string,
+  configured?: { credentialSource?: string },
 ): { key: string; source: string } | undefined {
-  if (gateway === 'openrouter') {
-    const found = resolveKeys(['openrouter'], home)[0];
-    return found === undefined ? undefined : { key: found.key, source: found.source };
-  }
-  return resolveKeyDetail(gateway, home, 'sonata');
+  const named = DECISION_PROVIDERS.find((p) => p.gateway === gateway);
+  const decisionOnly = gateway === SELF_HOSTED_DECISION_GATEWAY || named?.keyStore === 'sonata';
+  if (decisionOnly) return resolveKeyDetail(gateway, home, 'sonata');
+  const pinned = configured?.credentialSource;
+  if (pinned === 'sonata' || pinned === 'opencode') return resolveKeyDetail(gateway, home, pinned);
+  const found = resolveKeys([gateway], home)[0];
+  return found === undefined ? undefined : { key: found.key, source: found.source };
 }
 
 export function keyReport(gateways: string[], home: string): KeyReport[] {

@@ -8,6 +8,22 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
 
 ## [Unreleased]
 
+### Added
+
+- **Choose the auto-route decision provider and model in `sonata init`.** The
+  Auto-route step lists the named providers (TypeSafe, OpenRouter, from the new
+  `DECISION_PROVIDERS` table), each configured `[native.gateways]` entry whose
+  `/v1/models` lists decision models, and a custom URL. A new model screen then
+  lists the provider's decision models ranked by JevBench, with **Automatic**
+  as the default. Picking a model writes `[auto_route] model`; picking
+  Automatic removes a saved pin.
+- **A configured gateway can serve auto-route decisions with its own key.**
+  When `[auto_route] base_url` is on the host of exactly one api-key gateway,
+  the decision call uses that gateway's key under the gateway's name. Before,
+  it used the shared `auto-route` key. The host must be bound the same way the
+  gateway's own traffic is bound. `serve`, `doctor` and the Keys screen all
+  resolve the key this way.
+
 ## [0.16.6] - 2026-10-16
 
 ### Breaking

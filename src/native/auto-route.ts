@@ -16,6 +16,7 @@
 import type { Tier } from '../commands/agents.js';
 import type { AutoRouteRecord } from '../ledger.js';
 import type { AutoRouteConfig } from '../config.js';
+import { SELF_HOSTED_DECISION_GATEWAY, configuredDecisionGateway, decisionProviderFor } from './decision-providers.js';
 
 export const JEV_ENDPOINT = 'https://api.typesafe.ai/v1/systemone';
 export const JEV_ATTEMPT_MS = 1_500;
@@ -279,28 +280,30 @@ export function isLoopbackUrl(baseUrl: string): boolean {
 
 /**
  * The key-store name a decision URL's key is filed under, by host — a key is
- * only ever sent to the host it belongs to. `auto-route` is every other host:
- * a self-hosted decision server, keyed under one shared name.
+ * only ever sent to the host it belongs to. A named provider's host takes its
+ * own name (`DECISION_PROVIDERS`); the host of exactly one configured api-key
+ * gateway takes that gateway's; `auto-route` is every other host: a
+ * self-hosted decision server, keyed under one shared name.
  */
-export function decisionGatewayFor(baseUrl: string): 'typesafe' | 'openrouter' | 'auto-route' {
-  // `host`, not `hostname`: the well-known host is that host on its default
-  // port only. `https://api.typesafe.ai:8443` is a different server.
-  let host = '';
-  try { host = new URL(baseUrl).host; } catch { /* other */ }
-  if (host === 'api.typesafe.ai') return 'typesafe';
-  if (host === 'openrouter.ai') return 'openrouter';
-  return 'auto-route';
+export function decisionGatewayFor(baseUrl: string, gateways?: Parameters<typeof configuredDecisionGateway>[1]): string {
+  return decisionProviderFor(baseUrl)?.gateway
+    ?? configuredDecisionGateway(baseUrl, gateways)
+    ?? SELF_HOSTED_DECISION_GATEWAY;
 }
 
 /** The key a decision URL needs, by host — a key is only ever sent to the host it belongs to. */
 export function decisionKeyFor(
   baseUrl: string,
-  keys: { openrouter: () => string | undefined; typesafe: () => string | undefined; other: () => string | undefined },
-): { key: string | undefined; hint: string } {
-  const gateway = decisionGatewayFor(baseUrl);
-  if (gateway === 'openrouter') return { key: keys.openrouter(), hint: 'sonata auth add openrouter' };
-  if (gateway === 'typesafe') return { key: keys.typesafe(), hint: 'sonata auth add typesafe' };
-  return { key: keys.other(), hint: 'sonata auth add auto-route' };
+  resolve: (gateway: string) => string | undefined,
+  gateways?: Parameters<typeof configuredDecisionGateway>[1],
+): { key: string | undefined; hint: string; gateway: string } {
+  const gateway = decisionGatewayFor(baseUrl, gateways);
+  return { key: resolve(gateway), hint: `sonata auth add ${gateway}`, gateway };
+}
+
+/** Whether a decision URL refuses an unauthenticated call: a named hosted provider does. */
+export function decisionKeyRequired(baseUrl: string): boolean {
+  return decisionProviderFor(baseUrl) !== undefined;
 }
 
 /** A classifier that refuses every question with `reason`: the decision fails open and the ledger keeps why. */
@@ -313,15 +316,11 @@ export function decisionClassifier(
   settings: Pick<AutoRouteConfig, 'baseUrl'>,
   deps: { fetch: typeof fetch; key: () => string | undefined; keyHint: string; model: (signal: AbortSignal) => Promise<string | undefined> },
 ): TierClassifier {
-  // `host`, port included, as the well-known check is: `openrouter.ai:8443` is a
-  // different server that takes no TypeSafe or OpenRouter key.
-  let host = '';
-  try { host = new URL(settings.baseUrl).host; } catch { /* treated as other */ }
   return jevClassifier({
     fetch: deps.fetch,
     key: deps.key,
     keyHint: deps.keyHint,
-    keyRequired: host === 'openrouter.ai' || host === 'api.typesafe.ai',
+    keyRequired: decisionKeyRequired(settings.baseUrl),
     endpoint: `${settings.baseUrl}/v1/systemone`,
     model: deps.model,
     loopbackFree: isLoopbackUrl(settings.baseUrl),
