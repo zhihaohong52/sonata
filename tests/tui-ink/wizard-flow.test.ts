@@ -255,7 +255,7 @@ describe('the summary’s auto-route line', () => {
     });
     await toAutoRoute(w);
     await w.press(ENTER); // the saved TypeSafe row
-    await until(() => w.lastFrame().includes('Decision model') && w.lastFrame().includes('jev-1.14'), 'the model screen');
+    await until(() => (w.lastFrame() ?? '').includes('Decision model') && (w.lastFrame() ?? '').includes('jev-1.14'), 'the model screen');
     expect(asked).toEqual([['https://api.typesafe.ai', 'sk-stored']]);
     // The saved pin is no longer listed, and is still offered — the cursor opens on it.
     expect(w.lastFrame()).toMatch(/› jev-1\.13 {2}· pinned — not listed by this provider/);
