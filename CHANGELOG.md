@@ -23,6 +23,12 @@ and this project uses [Semantic Versioning](https://semver.org/) informally
   it used the shared `auto-route` key. The host must be bound the same way the
   gateway's own traffic is bound. `serve`, `doctor` and the Keys screen all
   resolve the key this way.
+- **`sonata init --yes --auto-route <off|provider|gateway|url>
+  --auto-route-model <id|auto>`** gives unattended runs the same answers.
+  `auto` removes a saved pin, and `--auto-route-model` alone re-pins on the
+  saved URL. Neither flag fetches anything. A named provider with no stored key
+  is refused before anything is written. Passing either flag without `--yes` is
+  refused rather than ignored.
 
 ## [0.16.6] - 2026-10-16
 

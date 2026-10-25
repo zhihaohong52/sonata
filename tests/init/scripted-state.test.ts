@@ -92,4 +92,27 @@ describe('scriptedState', () => {
     const { state } = scriptedState(richEnv, opts({ models: ['a-m'] }));
     expect(state.gatewayOrder).toBeUndefined();
   });
+
+  const withModel = (configsByScope: InitEnvironment['configsByScope'] = {}) => env({
+    offered: [{ harness: 'opencode', provider: 'a', key: 'opencode/a', count: 1 }],
+    allNativeCandidates: [{ key: 'a-m', gateway: 'a', id: 'm', contextWindow: 128000, baseUrl: 'https://a.example/v1', auth: 'api-key' as const }],
+    configsByScope,
+  });
+
+  it('carries --auto-route and --auto-route-model onto the state the wizard would build', () => {
+    const config = {
+      models: {}, unifiedModels: {},
+      native: { models: {}, gateways: { acme: { baseUrl: 'https://gw.acme.example/v1', auth: 'api-key' } }, ports: { router: 1, litellm: 2 }, generate: {} },
+    } as unknown as NonNullable<InitEnvironment['configsByScope']['project']>;
+    const { state } = scriptedState(
+      withModel({ project: config }),
+      opts({ providers: ['opencode/a'], models: ['a-m'], autoRoute: 'acme', autoRouteModel: 'decider-4b' }),
+    );
+    expect(state.autoRoute).toEqual({ baseUrl: 'https://gw.acme.example', model: 'decider-4b' });
+  });
+
+  it('leaves autoRoute unanswered without the flags, so the saved table is kept', () => {
+    const { state } = scriptedState(withModel(), opts({ providers: ['opencode/a'], models: ['a-m'] }));
+    expect(state).not.toHaveProperty('autoRoute');
+  });
 });

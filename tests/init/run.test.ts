@@ -163,3 +163,28 @@ describe('front-end parity', () => {
       .toEqual(plan(env, scripted, credentials, opts));
   });
 });
+
+describe('--auto-route and --auto-route-model', () => {
+  it('writes, re-pins, keeps and removes [auto_route] the way the wizard would', async () => {
+    await cmdInit({ ...base(), autoRoute: 'acme', autoRouteModel: 'decider-4b' });
+    expect(loadConfig(cwd, home).autoRoute).toEqual({
+      classifier: 'jev', baseUrl: 'https://acme.example', model: 'decider-4b', minConfidence: 0.5,
+    });
+
+    // `auto` drops the pin and keeps the provider.
+    await cmdInit({ ...base(), autoRouteModel: 'auto' });
+    expect(loadConfig(cwd, home).autoRoute).toEqual({ classifier: 'jev', baseUrl: 'https://acme.example', minConfidence: 0.5 });
+
+    // No flag: the saved table is carried forward untouched.
+    await cmdInit(base());
+    expect(loadConfig(cwd, home).autoRoute?.baseUrl).toBe('https://acme.example');
+
+    await cmdInit({ ...base(), autoRoute: 'off' });
+    expect(loadConfig(cwd, home).autoRoute).toBeUndefined();
+  });
+
+  it('refuses a named provider with no stored key and writes nothing', async () => {
+    await expect(cmdInit({ ...base(), autoRoute: 'typesafe' })).rejects.toThrow(/sonata auth add typesafe/);
+    expect(existsSync(join(cwd, 'sonata.toml'))).toBe(false);
+  });
+});

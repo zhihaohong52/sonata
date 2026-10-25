@@ -18,7 +18,8 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { KNOWN_ROLES } from '../config.js';
 import { byokCandidateKey } from '../native/models.js';
-import { resolveKeys } from '../native/credentials.js';
+import { resolveDecisionKey, resolveKeys } from '../native/credentials.js';
+import { autoRouteFromFlags } from './auto-route-flags.js';
 import { byokProviderName } from '../tui-ink/app-state.js';
 import {
   preTickedNative, deriveInitState, configPathFor, parseCredentialSourceFlags,
@@ -148,6 +149,23 @@ export function scriptedState(
     }
   }
 
+  // `--auto-route`: keyed by the gateways this config will name — the saved
+  // ones plus those of the models chosen this run — as serve will key it.
+  const autoRoute = autoRouteFromFlags(
+    { autoRoute: opts.autoRoute, autoRouteModel: opts.autoRouteModel },
+    {
+      saved: parsedConfig?.autoRoute,
+      gateways: {
+        ...Object.fromEntries(nativeKeys.flatMap((key) => {
+          const candidate = inScopeNativeByKey.get(key);
+          return candidate === undefined ? [] : [[candidate.gateway, { baseUrl: candidate.baseUrl, auth: candidate.auth }]];
+        })),
+        ...parsedConfig?.native?.gateways,
+      },
+      keyFor: (gateway) => resolveDecisionKey(gateway, opts.home, parsedConfig?.native?.gateways[gateway])?.key,
+    },
+  );
+
   // Unknown model check (needs inScopeNativeByKey which is built after BYOK candidates added)
   const unknown = nativeKeys.filter((k) => !inScopeNativeByKey.has(k));
   if (unknown.length > 0) {
@@ -175,6 +193,7 @@ export function scriptedState(
       customWireFormats: {},
       byokKeys: {},
       tiers: d.tiers,
+      ...(autoRoute === undefined ? {} : { autoRoute }),
     },
     nativeByKey,
   };

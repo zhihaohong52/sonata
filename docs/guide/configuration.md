@@ -151,6 +151,13 @@ The key follows the host and is only ever sent to it: the OpenRouter key goes to
 
 `sonata init` asks all of this in its Auto-route step. It offers the named providers, each configured gateway whose `/v1/models` lists decision models, and a custom URL. Then it asks for the key if none is stored. Last comes the decision model: **Automatic** (the default, described below), or one of the models the provider lists, ranked by JevBench score. Picking a model writes it as `model`. Named providers live in one table, `DECISION_PROVIDERS` in `src/native/decision-providers.ts`.
 
+Unattended runs set the same two answers with flags, and both need `--yes`. `--auto-route` takes `off`, a provider name (`typesafe`, `openrouter`), a configured gateway's name, or a URL. `--auto-route-model` takes a model id to pin, or `auto`, which removes a saved pin. `--auto-route-model` alone re-pins on the saved URL. With neither flag, the saved `[auto_route]` is kept. Nothing is fetched: the model id is written as given, and a named provider without a stored key is refused (`sonata auth add <provider>`).
+
+```bash
+sonata init --yes --auto-route openrouter --auto-route-model '~typesafe/jev-1.13.0'
+sonata init --yes --auto-route-model auto     # back to automatic selection
+```
+
 ```toml
 [auto_route]
 classifier = "jev"

@@ -86,6 +86,12 @@ const USAGE = `sonata — foreign-model subagents for Claude Code
     --prune                    delete stale sonata agent files
     --repropose-tiers          discard saved [tiers] rankings and re-rank from
                                the catalog (a hand-tuned order is otherwise kept)
+    --auto-route off|typesafe|openrouter|<gateway>|<url>
+                               turn tier auto-routing off, or ask this decision
+                               provider (a configured gateway by name, or a URL)
+    --auto-route-model <id>|auto
+                               pin a decision model, or let sonata choose the best
+                               JevBench-scored one (drops a saved pin)
 `;
 
 /** `--wait` wins; otherwise use the configured tail window. */
@@ -245,8 +251,16 @@ export async function main(argv: string[]): Promise<number> {
         // through to the interactive prompt. `false` would suppress it.
         prune: { type: 'boolean' },
         'repropose-tiers': { type: 'boolean', default: false },
+        'auto-route': { type: 'string' },
+        'auto-route-model': { type: 'string' },
       },
     });
+
+    // The wizard asks these in its Auto-route step; a flag it would not read
+    // is refused rather than silently ignored.
+    if (!values.yes && (values['auto-route'] !== undefined || values['auto-route-model'] !== undefined)) {
+      throw new Error('sonata init: --auto-route and --auto-route-model need --yes (the wizard asks them in its Auto-route step)');
+    }
 
     const scope = values.scope as HookScope | 'skip' | undefined;
     if (scope && !['project', 'global', 'skip'].includes(scope)) {
@@ -289,6 +303,8 @@ export async function main(argv: string[]): Promise<number> {
         configScope,
         prune: values.prune,
         reproposeTiers: values['repropose-tiers'] === true,
+        autoRoute: values['auto-route'],
+        autoRouteModel: values['auto-route-model'],
       });
       if (res.cancelled) return 1;
       return res.problems.some((p) => p.severity === 'error') ? 1 : 0;

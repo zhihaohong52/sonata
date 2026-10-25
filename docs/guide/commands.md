@@ -7,7 +7,7 @@ mistyped command suggests the nearest real one.
 
 | Command | Purpose |
 |---|---|
-| `sonata init` | Set up sonata in this project (interactive). Every prompt has a flag for unattended use: `--yes`, `--providers`, `--models`, `--roles`, `--config-scope`, `--scope`, `--routing`, `--guidance`, `--credential-source`; `--repropose-tiers` re-ranks from the catalog, discarding a hand-tuned order; `--prune` removes stale generated agents |
+| `sonata init` | Set up sonata in this project (interactive). Every prompt has a flag for unattended use: `--yes`, `--providers`, `--models`, `--roles`, `--config-scope`, `--scope`, `--routing`, `--guidance`, `--credential-source`, `--auto-route` and `--auto-route-model` (both need `--yes`); `--repropose-tiers` re-ranks from the catalog, discarding a hand-tuned order; `--prune` removes stale generated agents |
 | `sonata` / `sonata tui` | Open the configuration UI. `sonata status`, `sonata usage`, `sonata agents` and `sonata init` open it at their own screen when run in a terminal |
 | `sonata agents [--list] [--json]` | Every generated tier agent, what each ranked candidate resolves to, its context window, and whether the alias carries `[1m]`. In a terminal it is also the editor: re-rank a tier without walking the whole wizard |
 | `sonata sync [--prune]` | Regenerate agent files from `sonata.toml`; `--prune` removes stale generated agents |

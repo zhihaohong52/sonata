@@ -180,6 +180,10 @@ export interface InitOptions {
    * would make `--yes` and the wizard write different configs.
    */
   reproposeTiers?: boolean;
+  /** `--auto-route`: off, a named decision provider, a configured gateway, or a URL. Scripted path only. */
+  autoRoute?: string;
+  /** `--auto-route-model`: a decision model id to pin, or `auto`. Scripted path only. */
+  autoRouteModel?: string;
   /**
    * Test seam for the LiteLLM install. The suite must not reach PyPI: 46
    * init tests were silently running `uv pip install` on any machine that
