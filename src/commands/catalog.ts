@@ -52,7 +52,7 @@ export interface CatalogUpdateFailure {
 export interface CatalogUpdateResult {
   aa: CatalogUpdateSuccess | CatalogUpdateFailure;
   modelsDev: CatalogUpdateSuccess | CatalogUpdateFailure;
-  /** JevBench's decision-model scores, which rank `[auto_route]`'s decision models. */
+  /** AA's Decision Index scores, which rank `[auto_route]`'s decision models. */
   decisions: { systems: number; path: string; fetchedAt: string; revision: string } | CatalogUpdateFailure;
 }
 

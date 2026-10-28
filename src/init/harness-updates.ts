@@ -38,6 +38,8 @@ export interface HarnessUpdate {
   installed: string;
   latest: string;
   command: string[];
+  /** Tried when `command` fails or leaves the harness behind `latest`; see `HarnessAdapter.update`. */
+  fallback?: string[];
   /** The adapter's tested range, when `latest` falls outside it. */
   outsideTested: string | undefined;
 }
@@ -75,6 +77,7 @@ export async function findHarnessUpdates(deps: UpdateDeps): Promise<HarnessUpdat
       installed,
       latest,
       command: adapter.update.command,
+      ...(adapter.update.fallback === undefined ? {} : { fallback: adapter.update.fallback }),
       outsideTested: checkVersion(latest, adapter.supportedVersions) ? undefined : adapter.supportedVersions,
     };
     return update;
@@ -133,13 +136,31 @@ export async function offerHarnessUpdates(opts: {
     // is a warning that leaves the rest alone.
     await Promise.all(updates.map(async (u) => {
       const buffered: string[] = [];
-      let ok = false;
-      try {
-        ok = await deps.run(u.command, (line) => buffered.push(line));
-      } catch {
-        ok = false;
+      const attempt = async (command: string[]): Promise<boolean> => {
+        try {
+          return await deps.run(command, (line) => buffered.push(line));
+        } catch {
+          return false;
+        }
+      };
+      let ok = await attempt(u.command);
+      let now = cleanVersion(await deps.installedVersion(u.harness).catch(() => undefined));
+      // The first updater can fail, or exit 0 and leave the old version in
+      // place. Only a harness with a second route is retried, and only on a
+      // *known* shortfall: an unreadable version is never a reason to run a
+      // second installer.
+      const behind = now !== undefined && cmp(triple(now), triple(u.latest)) < 0;
+      if (u.fallback !== undefined && (!ok || behind)) {
+        buffered.push(`${u.command.join(' ')} did not reach ${u.latest}; trying \`${u.fallback.join(' ')}@${u.latest}\``);
+        const [cmd, ...args] = u.fallback;
+        ok = await attempt([cmd, ...args.slice(0, -1), `${args[args.length - 1]}@${u.latest}`]);
+        now = cleanVersion(await deps.installedVersion(u.harness).catch(() => undefined));
+        if (ok && now !== undefined && cmp(triple(now), triple(u.latest)) < 0) {
+          for (const line of buffered) out(`    ${line}`);
+          out(`  ! ${u.harness} is still ${now} after updating to ${u.latest}; another install of it may be first on PATH`);
+          return;
+        }
       }
-      const now = cleanVersion(await deps.installedVersion(u.harness).catch(() => undefined));
       for (const line of buffered) out(`    ${line}`);
       if (!ok) {
         out(`  ! ${u.harness} update did not complete; continuing with ${now ?? u.installed}`);

@@ -1,10 +1,12 @@
 /**
  * Which decision model a URL serves best (spec 2026-10-01-decision-model-selection).
  *
- * A URL lists its decision models (`GET /v1/models`); JevBench scores them;
+ * A URL lists its decision models (`GET /v1/models`); AA's Decision Index scores them;
  * the highest capability wins and cost only breaks a tie. Matching is exact
  * after normalisation — a guessed match would rank a model on another
- * model's score, the failure the AA lookup rules exist to prevent. With no
+ * model's score, the failure the AA lookup rules exist to prevent. AA writes
+ * versions with dashes (`jev-1-13`) where a listing writes dots (`jev-1.13`), so
+ * the comparison also folds `.`, `_` and spaces to `-`. With no
  * scored model, OpenRouter defaults to `~typesafe/jev-latest`, TypeSafe to
  * `jev-latest` (required by its endpoint), and other hosts receive no model.
  */
@@ -45,10 +47,17 @@ export function normalizeDecisionId(id: string): string {
 
 const repoTail = (repo: string | undefined): string | undefined => repo?.replace(/\/+$/, '').split('/').pop();
 
+/** `normalizeDecisionId` with every separator folded to `-`, so `jev-1.13` meets AA's `jev-1-13`. */
+const looseId = (id: string): string => normalizeDecisionId(id).replace(/[._\s]+/g, '-');
+/** AA's slug is `<host>_<model>`; the model is the part a listing names. */
+const slugTail = (key: string): string => key.replace(/^[^_]*_/, '');
+
 export function scoreFor(id: string, catalog: DecisionCatalog | undefined): DecisionCatalogEntry | undefined {
   if (catalog === undefined) return undefined;
   const want = normalizeDecisionId(id);
+  const loose = looseId(id);
   return catalog.systems.find((s) => normalizeDecisionId(s.key) === want)
+    ?? catalog.systems.find((s) => looseId(slugTail(s.key)) === loose || looseId(s.display) === loose)
     ?? catalog.systems.find((s) => {
       const tail = repoTail(s.repo);
       return tail !== undefined && normalizeDecisionId(tail) === want;
@@ -72,21 +81,33 @@ export function chooseDecisionModel(opts: {
   baseUrl: string; pinned?: string; listed: ListedDecisionModel[] | undefined; catalog: DecisionCatalog | undefined;
 }): DecisionChoice {
   if (opts.pinned !== undefined) return { model: opts.pinned, reason: 'pinned', ranked: [] };
-  const rows = (opts.listed ?? []).map((m, index) => ({ ...m, index, capability: scoreFor(m.id, opts.catalog)?.capability }));
+  const rows = (opts.listed ?? []).map((m, index) => {
+    const scored = scoreFor(m.id, opts.catalog);
+    return { ...m, index, capability: scored?.capability, usdPer1000: scored?.usdPer1000, msPerTask: scored?.msPerTask };
+  });
   rows.sort((a, b) => {
     // Scored before unscored; then capability; then price (unlisted last); then listed order.
     if ((a.capability === undefined) !== (b.capability === undefined)) return a.capability === undefined ? 1 : -1;
     if (a.capability !== undefined && b.capability !== undefined && a.capability !== b.capability) return b.capability - a.capability;
     // Unscored models keep their listed order: price only breaks a tie between scores.
     if (a.capability === undefined) return a.index - b.index;
+    // The listing's own price is what this URL charges, so it comes first; AA's
+    // cost per task (the efficiency tab) covers a URL that lists none, and
+    // time per task is the last tie-break before listed order.
     const pa = a.pricePerToken ?? Number.POSITIVE_INFINITY;
     const pb = b.pricePerToken ?? Number.POSITIVE_INFINITY;
-    return pa !== pb ? pa - pb : a.index - b.index;
+    if (pa !== pb) return pa - pb;
+    const ca = a.usdPer1000 ?? Number.POSITIVE_INFINITY;
+    const cb = b.usdPer1000 ?? Number.POSITIVE_INFINITY;
+    if (ca !== cb) return ca - cb;
+    const ta = a.msPerTask ?? Number.POSITIVE_INFINITY;
+    const tb = b.msPerTask ?? Number.POSITIVE_INFINITY;
+    return ta !== tb ? ta - tb : a.index - b.index;
   });
   const ranked = rows.map((r) => ({ id: r.id, ...(r.capability === undefined ? {} : { capability: r.capability }) }));
   const best = rows[0];
   if (best !== undefined && best.capability !== undefined) {
-    return { model: best.id, reason: `JevBench capability ${best.capability.toFixed(1)}`, ranked };
+    return { model: best.id, reason: `Decision Index ${best.capability.toFixed(1)}`, ranked };
   }
   const why = opts.listed === undefined ? 'no model list' : opts.catalog === undefined ? 'no decision catalog' : 'no listed model is scored';
   return { model: defaultDecisionModel(opts.baseUrl), reason: `${why} — URL default`, ranked };

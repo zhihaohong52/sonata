@@ -1,0 +1,40 @@
+◆ reasonix  · deepseek-flash
+  Context is kept across turns. Type 'exit' or Ctrl-D to quit.
+  ! deepseek/deepseek-flash has no API key yet. Pick a connection and paste its key; /setup brings this panel back.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Configure deepseek
+   API Key
+   Enter credential
+ Ctrl+T test · Enter save · Esc cancel
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   Ask  · ready · Shift+Tab read-only/ask/auto/YOLO/plan · Ctrl+Y YOLO               MODEL deepseek-flash   EFFORT auto
+  ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  CTX 6.7K (0%)  COMPACT 85%
